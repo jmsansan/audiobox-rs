@@ -1,0 +1,52 @@
+name: GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths: ['site/**', 'scripts/build-site.py', 'src/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/pages.yml']
+  pull_request:
+    paths: ['site/**', 'scripts/build-site.py', 'src/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/pages.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: cargo fmt --manifest-path site/wasm/Cargo.toml --check
+      - run: cargo clippy --manifest-path site/wasm/Cargo.toml --locked --offline --all-targets -- -D warnings
+      - run: python3 scripts/build-site.py
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - run: node --test site/tests/engine.test.mjs
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/deploy-pages@v4
+        id: deployment

@@ -9,6 +9,10 @@ The original TypeScript package is maintained separately in
 [jmsansan/audiobox](https://github.com/jmsansan/audiobox).
 This is the first Rust release, version **0.1.0**, with an API independent of the npm version.
 
+## Install
+
+Website, live sandbox and API guide: [jmsansan.github.io/audiobox-rs](https://jmsansan.github.io/audiobox-rs/).
+
 ## Use from this checkout
 
 ```toml
@@ -16,7 +20,7 @@ This is the first Rust release, version **0.1.0**, with an API independent of th
 audiobox = { path = "/path/to/audiobox-rs" }
 ```
 
-After version 0.1.0 has been published to crates.io:
+Install the published crate from crates.io:
 
 ```toml
 [dependencies]

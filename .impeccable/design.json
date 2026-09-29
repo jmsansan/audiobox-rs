@@ -1,0 +1,478 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-29T23:27:26.312930+00:00",
+  "title": "Design System: audiobox",
+  "extensions": {
+    "colorMeta": {
+      "paper": {
+        "role": "neutral",
+        "displayName": "Paper",
+        "tonalRamp": [
+          "oklch(15% 0.0141 268.49)",
+          "oklch(26% 0.0141 268.49)",
+          "oklch(38% 0.0141 268.49)",
+          "oklch(49% 0.0141 268.49)",
+          "oklch(61% 0.0141 268.49)",
+          "oklch(72% 0.0141 268.49)",
+          "oklch(84% 0.0141 268.49)",
+          "oklch(95% 0.0141 268.49)"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Ink",
+        "tonalRamp": [
+          "oklch(15% 0.0702 270.55)",
+          "oklch(26% 0.0702 270.55)",
+          "oklch(38% 0.0702 270.55)",
+          "oklch(49% 0.0702 270.55)",
+          "oklch(61% 0.0702 270.55)",
+          "oklch(72% 0.0702 270.55)",
+          "oklch(84% 0.0702 270.55)",
+          "oklch(95% 0.0702 270.55)"
+        ]
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "Muted",
+        "tonalRamp": [
+          "oklch(15% 0.0656 268.71)",
+          "oklch(26% 0.0656 268.71)",
+          "oklch(38% 0.0656 268.71)",
+          "oklch(49% 0.0656 268.71)",
+          "oklch(61% 0.0656 268.71)",
+          "oklch(72% 0.0656 268.71)",
+          "oklch(84% 0.0656 268.71)",
+          "oklch(95% 0.0656 268.71)"
+        ]
+      },
+      "accent": {
+        "role": "primary",
+        "displayName": "Accent",
+        "tonalRamp": [
+          "oklch(15% 0.2012 290.18)",
+          "oklch(26% 0.2012 290.18)",
+          "oklch(38% 0.2012 290.18)",
+          "oklch(49% 0.2012 290.18)",
+          "oklch(61% 0.2012 290.18)",
+          "oklch(72% 0.2012 290.18)",
+          "oklch(84% 0.2012 290.18)",
+          "oklch(95% 0.2012 290.18)"
+        ]
+      },
+      "accent-dark": {
+        "role": "primary",
+        "displayName": "Accent Dark",
+        "tonalRamp": [
+          "oklch(15% 0.1740 289.25)",
+          "oklch(26% 0.1740 289.25)",
+          "oklch(38% 0.1740 289.25)",
+          "oklch(49% 0.1740 289.25)",
+          "oklch(61% 0.1740 289.25)",
+          "oklch(72% 0.1740 289.25)",
+          "oklch(84% 0.1740 289.25)",
+          "oklch(95% 0.1740 289.25)"
+        ]
+      },
+      "lavender": {
+        "role": "secondary",
+        "displayName": "Lavender",
+        "tonalRamp": [
+          "oklch(15% 0.0416 299.27)",
+          "oklch(26% 0.0416 299.27)",
+          "oklch(38% 0.0416 299.27)",
+          "oklch(49% 0.0416 299.27)",
+          "oklch(61% 0.0416 299.27)",
+          "oklch(72% 0.0416 299.27)",
+          "oklch(84% 0.0416 299.27)",
+          "oklch(95% 0.0416 299.27)"
+        ]
+      },
+      "blue": {
+        "role": "secondary",
+        "displayName": "Blue",
+        "tonalRamp": [
+          "oklch(15% 0.0332 266.93)",
+          "oklch(26% 0.0332 266.93)",
+          "oklch(38% 0.0332 266.93)",
+          "oklch(49% 0.0332 266.93)",
+          "oklch(61% 0.0332 266.93)",
+          "oklch(72% 0.0332 266.93)",
+          "oklch(84% 0.0332 266.93)",
+          "oklch(95% 0.0332 266.93)"
+        ]
+      },
+      "rule": {
+        "role": "neutral",
+        "displayName": "Rule",
+        "tonalRamp": [
+          "oklch(15% 0.0428 267.62)",
+          "oklch(26% 0.0428 267.62)",
+          "oklch(38% 0.0428 267.62)",
+          "oklch(49% 0.0428 267.62)",
+          "oklch(61% 0.0428 267.62)",
+          "oklch(72% 0.0428 267.62)",
+          "oklch(84% 0.0428 267.62)",
+          "oklch(95% 0.0428 267.62)"
+        ]
+      },
+      "white": {
+        "role": "neutral",
+        "displayName": "White",
+        "tonalRamp": [
+          "oklch(15% 0.0054 274.97)",
+          "oklch(26% 0.0054 274.97)",
+          "oklch(38% 0.0054 274.97)",
+          "oklch(49% 0.0054 274.97)",
+          "oklch(61% 0.0054 274.97)",
+          "oklch(72% 0.0054 274.97)",
+          "oklch(84% 0.0054 274.97)",
+          "oklch(95% 0.0054 274.97)"
+        ]
+      },
+      "code": {
+        "role": "neutral",
+        "displayName": "Code",
+        "tonalRamp": [
+          "oklch(15% 0.0562 269.16)",
+          "oklch(26% 0.0562 269.16)",
+          "oklch(38% 0.0562 269.16)",
+          "oklch(49% 0.0562 269.16)",
+          "oklch(61% 0.0562 269.16)",
+          "oklch(72% 0.0562 269.16)",
+          "oklch(84% 0.0562 269.16)",
+          "oklch(95% 0.0562 269.16)"
+        ]
+      },
+      "danger": {
+        "role": "neutral",
+        "displayName": "Danger",
+        "tonalRamp": [
+          "oklch(15% 0.1544 14.71)",
+          "oklch(26% 0.1544 14.71)",
+          "oklch(38% 0.1544 14.71)",
+          "oklch(49% 0.1544 14.71)",
+          "oklch(61% 0.1544 14.71)",
+          "oklch(72% 0.1544 14.71)",
+          "oklch(84% 0.1544 14.71)",
+          "oklch(95% 0.1544 14.71)"
+        ]
+      },
+      "code-text": {
+        "role": "neutral",
+        "displayName": "Code Text",
+        "tonalRamp": [
+          "oklch(15% 0.0190 276.35)",
+          "oklch(26% 0.0190 276.35)",
+          "oklch(38% 0.0190 276.35)",
+          "oklch(49% 0.0190 276.35)",
+          "oklch(61% 0.0190 276.35)",
+          "oklch(72% 0.0190 276.35)",
+          "oklch(84% 0.0190 276.35)",
+          "oklch(95% 0.0190 276.35)"
+        ]
+      },
+      "code-rule": {
+        "role": "neutral",
+        "displayName": "Code Rule",
+        "tonalRamp": [
+          "oklch(15% 0.0564 269.17)",
+          "oklch(26% 0.0564 269.17)",
+          "oklch(38% 0.0564 269.17)",
+          "oklch(49% 0.0564 269.17)",
+          "oklch(61% 0.0564 269.17)",
+          "oklch(72% 0.0564 269.17)",
+          "oklch(84% 0.0564 269.17)",
+          "oklch(95% 0.0564 269.17)"
+        ]
+      },
+      "code-muted": {
+        "role": "neutral",
+        "displayName": "Code Muted",
+        "tonalRamp": [
+          "oklch(15% 0.0500 268.77)",
+          "oklch(26% 0.0500 268.77)",
+          "oklch(38% 0.0500 268.77)",
+          "oklch(49% 0.0500 268.77)",
+          "oklch(61% 0.0500 268.77)",
+          "oklch(72% 0.0500 268.77)",
+          "oklch(84% 0.0500 268.77)",
+          "oklch(95% 0.0500 268.77)"
+        ]
+      },
+      "syntax-keyword": {
+        "role": "neutral",
+        "displayName": "Syntax Keyword",
+        "tonalRamp": [
+          "oklch(15% 0.1128 292.83)",
+          "oklch(26% 0.1128 292.83)",
+          "oklch(38% 0.1128 292.83)",
+          "oklch(49% 0.1128 292.83)",
+          "oklch(61% 0.1128 292.83)",
+          "oklch(72% 0.1128 292.83)",
+          "oklch(84% 0.1128 292.83)",
+          "oklch(95% 0.1128 292.83)"
+        ]
+      },
+      "syntax-string": {
+        "role": "neutral",
+        "displayName": "Syntax String",
+        "tonalRamp": [
+          "oklch(15% 0.0602 158.48)",
+          "oklch(26% 0.0602 158.48)",
+          "oklch(38% 0.0602 158.48)",
+          "oklch(49% 0.0602 158.48)",
+          "oklch(61% 0.0602 158.48)",
+          "oklch(72% 0.0602 158.48)",
+          "oklch(84% 0.0602 158.48)",
+          "oklch(95% 0.0602 158.48)"
+        ]
+      },
+      "syntax-comment": {
+        "role": "neutral",
+        "displayName": "Syntax Comment",
+        "tonalRamp": [
+          "oklch(15% 0.0479 269.04)",
+          "oklch(26% 0.0479 269.04)",
+          "oklch(38% 0.0479 269.04)",
+          "oklch(49% 0.0479 269.04)",
+          "oklch(61% 0.0479 269.04)",
+          "oklch(72% 0.0479 269.04)",
+          "oklch(84% 0.0479 269.04)",
+          "oklch(95% 0.0479 269.04)"
+        ]
+      },
+      "syntax-number": {
+        "role": "neutral",
+        "displayName": "Syntax Number",
+        "tonalRamp": [
+          "oklch(15% 0.0967 77.14)",
+          "oklch(26% 0.0967 77.14)",
+          "oklch(38% 0.0967 77.14)",
+          "oklch(49% 0.0967 77.14)",
+          "oklch(61% 0.0967 77.14)",
+          "oklch(72% 0.0967 77.14)",
+          "oklch(84% 0.0967 77.14)",
+          "oklch(95% 0.0967 77.14)"
+        ]
+      },
+      "syntax-type": {
+        "role": "neutral",
+        "displayName": "Syntax Type",
+        "tonalRamp": [
+          "oklch(15% 0.0817 257.10)",
+          "oklch(26% 0.0817 257.10)",
+          "oklch(38% 0.0817 257.10)",
+          "oklch(49% 0.0817 257.10)",
+          "oklch(61% 0.0817 257.10)",
+          "oklch(72% 0.0817 257.10)",
+          "oklch(84% 0.0817 257.10)",
+          "oklch(95% 0.0817 257.10)"
+        ]
+      },
+      "signal-grid": {
+        "role": "neutral",
+        "displayName": "Signal Grid",
+        "tonalRamp": [
+          "oklch(15% 0.0591 268.46)",
+          "oklch(26% 0.0591 268.46)",
+          "oklch(38% 0.0591 268.46)",
+          "oklch(49% 0.0591 268.46)",
+          "oklch(61% 0.0591 268.46)",
+          "oklch(72% 0.0591 268.46)",
+          "oklch(84% 0.0591 268.46)",
+          "oklch(95% 0.0591 268.46)"
+        ]
+      },
+      "segment-bed": {
+        "role": "neutral",
+        "displayName": "Segment Bed",
+        "tonalRamp": [
+          "oklch(15% 0.0454 267.40)",
+          "oklch(26% 0.0454 267.40)",
+          "oklch(38% 0.0454 267.40)",
+          "oklch(49% 0.0454 267.40)",
+          "oklch(61% 0.0454 267.40)",
+          "oklch(72% 0.0454 267.40)",
+          "oklch(84% 0.0454 267.40)",
+          "oklch(95% 0.0454 267.40)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "Homepage heading."
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "Large section headings."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Smaller headings."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Base page copy."
+      },
+      "lead": {
+        "displayName": "Lead",
+        "purpose": "Homepage introduction."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Native control labels."
+      },
+      "button": {
+        "displayName": "Button",
+        "purpose": "Shared action controls."
+      },
+      "code": {
+        "displayName": "Code",
+        "purpose": "Scrollable Rust examples."
+      },
+      "measurement": {
+        "displayName": "Measurement",
+        "purpose": "Audio metadata and playback times."
+      }
+    },
+    "shadows": [],
+    "motion": [
+      {
+        "name": "button-state",
+        "value": "background .18s ease, transform .18s ease",
+        "purpose": "Button hover changes color and translates up one pixel."
+      },
+      {
+        "name": "page-scroll",
+        "value": "smooth",
+        "purpose": "Anchor navigation; becomes auto for reduced motion."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "wide",
+        "value": "1550px"
+      },
+      {
+        "name": "medium",
+        "value": "1000px"
+      },
+      {
+        "name": "mobile",
+        "value": "720px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Shared primary action.",
+      "html": "<button class=\"ds-button-primary\">Apply changes</button>",
+      "css": ".ds-button-primary{display:inline-flex;align-items:center;justify-content:center;gap:12px;border:0;border-radius:8px;padding:13px 21px;font:700 14px/1.4 Manrope,system-ui,sans-serif;cursor:pointer;text-decoration:none;transition:background .18s ease,transform .18s ease;background:var(--accent,#6841cb);color:var(--white,#fafbff);}.ds-button-primary:hover{background:var(--accent-dark,#4e2ea1);transform:translateY(-1px)}.ds-button-primary:focus-visible{outline:3px solid var(--accent,#6841cb);outline-offset:4px}.ds-button-primary:disabled{cursor:wait;opacity:.55}@media(prefers-reduced-motion:reduce){.ds-button-primary{transition:none}}"
+    },
+    {
+      "name": "Default Button",
+      "kind": "button",
+      "refersTo": "button-default",
+      "description": "Shared default action.",
+      "html": "<button class=\"ds-button-default\">Apply changes</button>",
+      "css": ".ds-button-default{display:inline-flex;align-items:center;justify-content:center;gap:12px;border:0;border-radius:8px;padding:13px 21px;font:700 14px/1.4 Manrope,system-ui,sans-serif;cursor:pointer;text-decoration:none;transition:background .18s ease,transform .18s ease;background:var(--ink,#202a50);color:var(--white,#fafbff);}.ds-button-default:hover{background:var(--accent-dark,#4e2ea1);transform:translateY(-1px)}.ds-button-default:focus-visible{outline:3px solid var(--accent,#6841cb);outline-offset:4px}.ds-button-default:disabled{cursor:wait;opacity:.55}@media(prefers-reduced-motion:reduce){.ds-button-default{transition:none}}"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Shared secondary action.",
+      "html": "<button class=\"ds-button-secondary\">Apply changes</button>",
+      "css": ".ds-button-secondary{display:inline-flex;align-items:center;justify-content:center;gap:12px;border:0;border-radius:8px;padding:13px 21px;font:700 14px/1.4 Manrope,system-ui,sans-serif;cursor:pointer;text-decoration:none;transition:background .18s ease,transform .18s ease;background:transparent;color:var(--ink,#202a50);border:1px solid var(--rule,#bac6e3);}.ds-button-secondary:hover{background:var(--blue,#dae4fb);transform:translateY(-1px)}.ds-button-secondary:focus-visible{outline:3px solid var(--accent,#6841cb);outline-offset:4px}.ds-button-secondary:disabled{cursor:wait;opacity:.55}@media(prefers-reduced-motion:reduce){.ds-button-secondary{transition:none}}"
+    },
+    {
+      "name": "Number Field",
+      "kind": "input",
+      "refersTo": "input-number",
+      "description": "A labeled native trim control.",
+      "html": "<label class=\"ds-number-label\">Start<input class=\"ds-number\" type=\"number\" min=\"0\" max=\"30\" step=\"any\" required value=\"0\"></label>",
+      "css": ".ds-number-label{display:block;font:12px/1.65 Manrope,system-ui,sans-serif;color:var(--muted,#4e5c83)}.ds-number{display:block;margin-top:4px;max-width:100%;border:1px solid var(--rule,#bac6e3);background:var(--white,#fafbff);color:var(--ink,#202a50);border-radius:6px;padding:8px 10px;font:13px/1.65 Manrope,system-ui,sans-serif;accent-color:var(--accent,#6841cb);caret-color:var(--accent,#6841cb)}.ds-number:focus-visible{outline:3px solid var(--accent,#6841cb);outline-offset:4px}"
+    },
+    {
+      "name": "Main Navigation",
+      "kind": "nav",
+      "description": "Compact links with violet current-page state.",
+      "html": "<nav class=\"ds-nav\" aria-label=\"Main navigation\"><a href=\"#examples\">Examples</a><a href=\"#sandbox\" aria-current=\"page\">Sandbox</a><a href=\"#docs\">Docs</a></nav>",
+      "css": ".ds-nav{display:flex;align-items:center;gap:30px;font:700 14px/1.65 Manrope,system-ui,sans-serif;color:var(--ink,#202a50)}.ds-nav a{text-decoration:none;white-space:nowrap}.ds-nav a:hover,.ds-nav a[aria-current=page]{color:var(--accent,#6841cb)}.ds-nav a:focus-visible{outline:3px solid var(--accent,#6841cb);outline-offset:4px}@media(max-width:720px){.ds-nav{gap:17px;font-size:12px}}"
+    },
+    {
+      "name": "API Method Link",
+      "kind": "chip",
+      "refersTo": "method-link",
+      "description": "Compact reference link, rather than a decorative tag.",
+      "html": "<a class=\"ds-method\" href=\"#audio\">Audio</a>",
+      "css": ".ds-method{display:inline-block;font:12px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--ink,#202a50);border:1px solid var(--rule,#bac6e3);padding:6px 9px;border-radius:5px;text-decoration:none}.ds-method:hover{background:var(--blue,#dae4fb)}.ds-method:focus-visible{outline:3px solid var(--accent,#6841cb);outline-offset:4px}"
+    },
+    {
+      "name": "Code Panel",
+      "kind": "card",
+      "refersTo": "code-panel",
+      "description": "Scrollable Rust example with quiet copy action.",
+      "html": "<div class=\"ds-code\"><div class=\"ds-toolbar\"><span>main.rs</span><button class=\"ds-copy\">Copy</button></div><pre><code><span class=\"ds-keyword\">let</span> processed = audio.gain_db(-3.0)?;</code></pre></div>",
+      "css": ".ds-code{background:var(--code,#18213e);color:#eef1ff;border-radius:var(--radius,12px);overflow:hidden;min-width:0}.ds-toolbar{display:flex;align-items:center;justify-content:space-between;padding:15px 22px;border-bottom:1px solid #394464;font:12px ui-monospace,SFMono-Regular,Consolas,monospace;color:#b6c3e5}.ds-copy{border:0;background:transparent;color:inherit;font:inherit;padding:4px;cursor:pointer}.ds-copy:hover{color:white}.ds-copy:focus-visible{outline:3px solid var(--accent,#6841cb);outline-offset:4px}.ds-code pre{margin:0;overflow:auto;padding:25px 22px;font:13px/1.85 ui-monospace,SFMono-Regular,Consolas,monospace;tab-size:4}.ds-code code{font:inherit}.ds-keyword{color:#bfafff}"
+    },
+    {
+      "name": "Playback Button",
+      "kind": "button",
+      "refersTo": "play-button",
+      "description": "Circular control supporting the live signal.",
+      "html": "<button class=\"ds-play\" aria-label=\"Play original audio\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m9 5 10 7-10 7Z\"/></svg></button>",
+      "css": ".ds-play{width:42px;height:42px;display:grid;place-items:center;padding:0;background:var(--ink,#202a50);color:white;border:0;border-radius:50%;cursor:pointer}.ds-play:hover{background:var(--accent,#6841cb)}.ds-play:focus-visible{outline:3px solid var(--accent,#6841cb);outline-offset:4px}.ds-play svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}"
+    },
+    {
+      "name": "Segmented Signal State",
+      "kind": "custom",
+      "description": "Pressed state distinguishes original and faded audio.",
+      "html": "<div class=\"ds-segments\" aria-label=\"Audio version\"><button aria-pressed=\"true\">Original</button><button aria-pressed=\"false\">Faded</button></div>",
+      "css": ".ds-segments{display:inline-flex;flex-shrink:0;gap:3px;padding:3px;background:#c5d2f1;border-radius:7px}.ds-segments button{white-space:nowrap;padding:6px 13px;border:0;background:transparent;color:var(--ink,#202a50);font:750 12px/1.65 Manrope,system-ui,sans-serif;border-radius:5px;cursor:pointer}.ds-segments button[aria-pressed=true]{background:var(--white,#fafbff);color:var(--accent,#6841cb)}.ds-segments button:focus-visible{outline:3px solid var(--accent,#6841cb);outline-offset:4px}"
+    }
+  ],
+  "narrative": {
+    "northStar": "Signal score",
+    "overview": "Signal score makes audio processing readable through pale score-paper fields, deep navy ink and violet output signals. Manrope carries headings and interface copy; monospace distinguishes runnable code and measured values.\n\nThe interface stays flat and precise. Live waveforms, explicit playback controls and Rust snippets supply the visual identity; authored SVG marks provide small supporting geometry. The shared system covers the presentation, sandbox and hand-written API guide, not generated rustdoc.",
+    "keyCharacteristics": [
+      "Pale blue and lavender fields with navy ink.",
+      "Manrope headings and compact native controls.",
+      "Monospace code and tabular audio measurements.",
+      "Data-driven waveforms; flat surfaces without shadows."
+    ],
+    "rules": [
+      {
+        "name": "The Signal Identity Rule",
+        "body": "Use navy for original waveforms and violet for processed waveforms; the drawing comes from actual audio samples.",
+        "section": "colors"
+      },
+      {
+        "name": "The Two Voices Rule",
+        "body": "Use Manrope for display and interface copy; reserve monospace for code, API identifiers and audio measurements.",
+        "section": "typography"
+      },
+      {
+        "name": "The Flat Field Rule",
+        "body": "Separate surfaces with color fields and thin rules; resting surfaces have no box shadows.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do preserve the original-to-processed color relationship and draw waveforms from real audio.",
+      "Do keep labels attached to their native controls and measurements readable with tabular numbers.",
+      "Do retain the shared focus outline and honor reduced-motion preferences.",
+      "Do constrain grid children and allow code and wide format tables to scroll locally."
+    ],
+    "donts": [
+      "Don't substitute decorative waveform artwork for the audio data.",
+      "Don't use monospace for display headings.",
+      "Don't add raised shadows to the flat score fields."
+    ]
+  }
+}
