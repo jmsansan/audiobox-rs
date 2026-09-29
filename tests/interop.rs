@@ -176,7 +176,19 @@ fn external_pcm_flac_adpcm_and_rf64_inputs() {
             .zip(reference)
             .map(|(&a, b)| (a - b).abs())
             .fold(0.0, f32::max);
-        assert!(diff < 1e-6, "{ext} {codec}: {diff}");
+        // Older FFmpeg releases reconstruct IMA WAV using a single multiply;
+        // newer releases use the reference's separately truncated shifts, as
+        // audiobox does. Predictor rounding accumulates within each block.
+        // See FFmpeg n7.1 vs master, libavcodec/adpcm.c (ADPCM_IMA_WAV).
+        // For this fixed sine fixture, allow at most 32 PCM16 units of drift.
+        // Exact IMA rounding, clipping and channel grouping are tested separately
+        // against hand-calculated vectors in codecs.rs.
+        let tolerance = if codec == "adpcm_ima_wav" {
+            32.0 / 32768.0
+        } else {
+            1e-6
+        };
+        assert!(diff < tolerance, "{ext} {codec}: {diff}");
     }
 }
 #[test]

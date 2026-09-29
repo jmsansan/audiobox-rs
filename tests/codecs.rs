@@ -357,3 +357,70 @@ fn decodes_files_from_the_original_typescript_library() {
     }
     assert!(10.0 * (energy / noise).log10() > 30.0);
 }
+
+#[test]
+fn ima_adpcm_reference_vectors() {
+    fn wav(channels: u16, samples_per_block: u16, payload: &[u8]) -> Vec<u8> {
+        let block = (payload.len() / 2) as u16;
+        let mut bytes = b"RIFF".to_vec();
+        bytes.extend_from_slice(&(52 + payload.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&20u32.to_le_bytes());
+        bytes.extend_from_slice(&17u16.to_le_bytes());
+        bytes.extend_from_slice(&channels.to_le_bytes());
+        bytes.extend_from_slice(&8000u32.to_le_bytes());
+        bytes.extend_from_slice(&(8000 * block as u32 / samples_per_block as u32).to_le_bytes());
+        bytes.extend_from_slice(&block.to_le_bytes());
+        bytes.extend_from_slice(&4u16.to_le_bytes());
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&samples_per_block.to_le_bytes());
+        bytes.extend_from_slice(b"fact");
+        bytes.extend_from_slice(&4u32.to_le_bytes());
+        // Trim the final block to confirm that the WAVE fact count is honored.
+        bytes.extend_from_slice(&(samples_per_block as u32 + 5).to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(payload);
+        bytes
+    }
+
+    // Low nibble first: 0, 7, 7, 15, 8, 0, 0, 1. The reference IMA
+    // reconstruction yields these PCM16 values; a multiply-only decoder
+    // already differs at sample 2 (13 instead of 11).
+    let steps = [0, 0, 11, 41, -22, -31, -23, -16, 3];
+    let mono = [0, 0, 0, 0, 0x70, 0xf7, 0x08, 0x10];
+    let clipped = [0xf8, 0x7f, 88, 0, 0x77, 0x77, 0x77, 0x77];
+    let decoded = decode(&wav(1, 9, &[mono, clipped].concat())).unwrap();
+    let expected: Vec<f32> = steps
+        .into_iter()
+        .chain([32760, 32767, 32767, 32767, 32767])
+        .map(|n| n as f32 / 32768.0)
+        .collect();
+    assert_eq!(decoded.frames(), 14);
+    assert_eq!(decoded.channel_data(0).unwrap(), expected);
+
+    // Each stereo block has both headers, then four bytes per channel.
+    // Mirror the right channel's signs and exercise negative clipping too.
+    let stereo = [
+        0xe8, 0x03, 0, 0, 0x18, 0xfc, 0, 0, 0x70, 0xf7, 0x08, 0x10, 0xf8, 0x7f, 0x80, 0x98,
+    ];
+    let clipped = [
+        0xf8, 0x7f, 88, 0, 0x08, 0x80, 88, 0, 0x77, 0x77, 0x77, 0x77, 0xff, 0xff, 0xff, 0xff,
+    ];
+    let decoded = decode(&wav(2, 9, &[stereo, clipped].concat())).unwrap();
+    let left: Vec<f32> = steps
+        .into_iter()
+        .map(|n| 1000 + n)
+        .chain([32760, 32767, 32767, 32767, 32767])
+        .map(|n| n as f32 / 32768.0)
+        .collect();
+    let right: Vec<f32> = steps
+        .into_iter()
+        .map(|n| -1000 - n)
+        .chain([-32760, -32768, -32768, -32768, -32768])
+        .map(|n| n as f32 / 32768.0)
+        .collect();
+    assert_eq!(decoded.frames(), 14);
+    assert_eq!(decoded.channel_data(0).unwrap(), left);
+    assert_eq!(decoded.channel_data(1).unwrap(), right);
+}
