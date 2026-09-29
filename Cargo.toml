@@ -1,0 +1,19 @@
+[package]
+name = "audiobox"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+authors = ["Jose Sanchez <jose.sansan@proton.me>"]
+description = "Audio decoding, editing, analysis and encoding in Rust"
+license = "MIT"
+repository = "https://github.com/jmsansan/audiobox-rs"
+homepage = "https://github.com/jmsansan/audiobox-rs"
+readme = "README.md"
+keywords = ["audio", "wav", "flac", "mp3", "dsp"]
+categories = ["multimedia::audio", "encoding"]
+include = ["/Cargo.toml", "/Cargo.lock", "/src/**", "/tests/**", "/examples/*.rs", "/README.md", "/LICENSE"]
+
+[features]
+default = []
+
+[dependencies]
