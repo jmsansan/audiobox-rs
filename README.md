@@ -27,7 +27,17 @@ Install the published crate from crates.io:
 audiobox = "0.1"
 ```
 
-Rust 1.85 or newer is required. No optional dependencies or feature flags are needed.
+Rust 1.85 or newer is required. The crate has no dependencies. Optional features add
+modules without adding dependencies, so you compile only what you use:
+
+| Feature | Module | Adds |
+| --- | --- | --- |
+| `synth` | `audiobox::synth` | 8-bit style synthesizer and text score format |
+
+```toml
+[dependencies]
+audiobox = { version = "0.1", features = ["synth"] }
+```
 
 ```rust
 use audiobox::{AudioFormat, NormalizeOptions, decode, encode};
@@ -163,14 +173,99 @@ Workers, Web Audio and WebCodecs adapters belong to the TypeScript package and a
 not part of the Rust API. Dithering, Sony Wave64, RF64 encoding and file-system streaming
 are also not implemented in this first Rust release.
 
+## Synthesizer (`synth` feature)
+
+`audiobox::synth` renders music written as text scores in an 8-bit style. A score is a
+few kilobytes of text that the project owns, and it renders to the same samples on
+every platform.
+
+```rust
+use audiobox::synth::Score;
+
+fn render_song() -> audiobox::Result<audiobox::Audio> {
+    let score: Score = "
+        tempo 150
+        instrument lead wave=pulse duty=25 adsr=5,60,70,40 vibrato=12,160,200
+        instrument bass wave=triangle
+        instrument hat  wave=noise noise=short adsr=0,30,0,0 volume=6
+        channel melody = @lead o5 l8 L [c e g >c< g e]2 c2
+        channel bass   = @bass o3 l2 c g c1
+        channel drums  = @hat o7 l8 [c r c c]4
+    ".parse()?;
+    score.render(44_100)
+}
+```
+
+- **Channels:** up to 8, each playing one note at a time.
+- **Waveforms:** pulse with 12.5, 25, 50 and 75% duty, triangle, sawtooth, and noise from a
+  15-bit shift register in a long (hiss) or short (metallic, 93-step) mode.
+- **Instruments:** waveform, linear ADSR envelope, volume, pitch slide, vibrato,
+  arpeggio and duty sweep.
+- **Rendering:** offline with `Score::render`, or incrementally with `synth::Synth`,
+  whose `fill(&mut [f32])` allocates nothing and can run on an audio thread. Chunks
+  are identical to the offline render. Songs loop from their loop point, a set number
+  of times or forever.
+- **Aliasing:** `Aliasing::BandLimited` (default) applies PolyBLEP to pulse and saw,
+  PolyBLAMP to triangle corners, and averages noise over each sample;
+  `Aliasing::Naive` keeps the raw, harsher period sound.
+- **Determinism:** no `sin`, `exp` or `powf` decides a sample. Pitch and vibrato use
+  the crate's own series, and note positions use integer arithmetic.
+- **Rust API:** `Score::channel` returns a writer that builds the same score in code;
+  a parsed score compares equal to the same score built in code.
+
+### Score format
+
+One directive per line; `;` starts a comment.
+
+| Directive | Meaning |
+| --- | --- |
+| `tempo 150` | Quarter notes per minute, 1–999 (default 120) |
+| `ticks 48` | Time base in ticks per quarter note, 1–960 (default 48) |
+| `instrument NAME key=value ...` | Defines an instrument |
+| `pattern NAME = ...` | Defines a reusable pattern of commands |
+| `channel NAME = ...` | Appends commands to a channel; repeat the line to continue it |
+
+Instrument keys: `wave=pulse|triangle|saw|noise`, `duty=12.5|25|50|75` (a list such as
+`25,50,75` sweeps, every `duty-step` ms), `noise=long|short`,
+`adsr=attack_ms,decay_ms,sustain_percent,release_ms`, `volume=0..15`,
+`slide=cents_per_second`, `vibrato=depth_cents,period_ms[,delay_ms]`,
+`arpeggio=0,4,7` (cycled every `arpeggio-step` ms, default 16).
+
+| Command | Meaning |
+| --- | --- |
+| `c d e f g a b` | Note; `+` or `#` sharp, `-` flat, then an optional length |
+| `r` | Rest |
+| `4` `8.` `%12` | Lengths: quarter, dotted eighth, 12 ticks; without one, the `l` default |
+| `^8`, `c4&c8` | Ties: lengthen the previous note, or join two notes of the same pitch |
+| `o4` `>` `<` | Octave (0–9; `o4 a` is 440 Hz), one up, one down |
+| `l8` | Default length |
+| `v12` | Channel volume, 0–15 |
+| `q6` | Gate: notes sound 6/8 of their length, then release |
+| `@NAME` | Select instrument |
+| `[ ... \| ... ]3` | Repeat 3 times; the part after `\|` is skipped on the last time |
+| `$NAME` | Play a pattern |
+| `L` | Loop point of the song |
+
+Parse errors are `synth::ParseError` values with a line, a column and a stable
+`ErrorCode` (`Syntax`, `InvalidArgument` or `LimitExceeded`). `ScoreLimits` bounds
+the text length, the nesting of repeats and patterns, the number of channels, notes
+and expanded commands, and the song's duration. The full reference, including how
+loops, envelopes and noise pitch work, is in the `audiobox::synth` module documentation.
+
+Render the example song to a WAV file:
+
+```sh
+cargo run --example chiptune --features synth -- song.wav
+```
+
 ## Development and publishing
 
 ```sh
 cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test
-cargo test --release
-cargo doc --no-deps
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-features
+cargo test --release --all-features
+cargo doc --no-deps --all-features
 cargo package --list
 cargo publish --dry-run
 ```

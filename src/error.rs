@@ -10,6 +10,8 @@ pub enum ErrorCode {
     InvalidArgument,
     LimitExceeded,
     Io,
+    /// Malformed text, such as a synthesizer score.
+    Syntax,
 }
 
 /// An error with a stable category and human-readable context.
