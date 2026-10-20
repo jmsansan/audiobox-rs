@@ -2,26 +2,35 @@
 #![cfg(feature = "synth")]
 use audiobox::synth::{RenderOptions, Score, Synth};
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::cell::Cell;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 struct Counting;
-static COUNTING: AtomicBool = AtomicBool::new(false);
 static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
+thread_local! {
+    // Only the rendering thread counts: the test harness allocates on its own threads.
+    static COUNTING: Cell<bool> = const { Cell::new(false) };
+}
+fn count() {
+    if COUNTING.try_with(Cell::get).unwrap_or(false) {
+        ALLOCATIONS.fetch_add(1, Ordering::SeqCst);
+    }
+}
 
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if COUNTING.load(Ordering::SeqCst) {
-            ALLOCATIONS.fetch_add(1, Ordering::SeqCst);
-        }
+        count();
         unsafe { System.alloc(layout) }
+    }
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        count();
+        unsafe { System.alloc_zeroed(layout) }
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         unsafe { System.dealloc(ptr, layout) }
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, size: usize) -> *mut u8 {
-        if COUNTING.load(Ordering::SeqCst) {
-            ALLOCATIONS.fetch_add(1, Ordering::SeqCst);
-        }
+        count();
         unsafe { System.realloc(ptr, layout, size) }
     }
 }
@@ -51,13 +60,13 @@ fn fill_does_not_allocate() {
     )
     .unwrap();
     let mut buffer = vec![0.0f32; 480];
-    COUNTING.store(true, Ordering::SeqCst);
+    COUNTING.set(true);
     for _ in 0..500 {
         synth.fill(&mut buffer);
     }
     synth.reset();
     synth.fill(&mut buffer);
-    COUNTING.store(false, Ordering::SeqCst);
+    COUNTING.set(false);
     assert_eq!(ALLOCATIONS.load(Ordering::SeqCst), 0);
     assert!(buffer.iter().any(|&s| s != 0.0));
 }
