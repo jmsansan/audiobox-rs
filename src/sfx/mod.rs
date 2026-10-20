@@ -91,7 +91,7 @@ mod text;
 pub use crate::synth::ParseError;
 pub use preset::Preset;
 
-use crate::synth::math::{cos_turns, exp2, sin_turns};
+use crate::math::{cos_turns, exp2, sin_turns};
 use crate::synth::{Aliasing, Duty, NoiseMode, Oscillator, Waveform};
 use crate::{Audio, Error, Limits, Result};
 

@@ -1,6 +1,6 @@
-use super::math::cents_to_hz;
 use super::score::{Instrument, Score};
 use super::wave::{Aliasing, Duty, Oscillator, Waveform};
+use crate::math::cents_to_hz;
 use crate::{Audio, Error, Limits, Result};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -90,7 +90,7 @@ impl Plan {
         if let Some((depth, period, delay)) = self.vibrato {
             if elapsed >= delay {
                 let phase = ((elapsed - delay) % period) as f64 / period as f64;
-                cents += depth * super::math::sin_turns(phase);
+                cents += depth * crate::math::sin_turns(phase);
             }
         }
         if let Some((offsets, step)) = &self.arpeggio {

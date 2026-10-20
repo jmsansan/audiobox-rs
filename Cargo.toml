@@ -1,6 +1,6 @@
 [package]
 name = "audiobox"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 authors = ["Jose Sanchez <jose.sansan@proton.me>"]
@@ -11,7 +11,7 @@ homepage = "https://github.com/jmsansan/audiobox-rs"
 readme = "README.md"
 keywords = ["audio", "wav", "flac", "mp3", "dsp"]
 categories = ["multimedia::audio", "encoding"]
-include = ["/Cargo.toml", "/Cargo.lock", "/src/**", "/tests/**", "/examples/*.rs", "/README.md", "/LICENSE"]
+include = ["/Cargo.toml", "/Cargo.lock", "/src/**", "/tests/**", "/examples/*.rs", "/README.md", "/CHANGELOG.md", "/LICENSE"]
 
 [features]
 default = []
@@ -19,6 +19,8 @@ default = []
 synth = []
 # Parametric sound-effect generator (`audiobox::sfx`). Enables `synth`.
 sfx = ["synth"]
+# Real-time mixer for games (`audiobox::mixer`).
+mixer = []
 
 [dependencies]
 
@@ -32,3 +34,7 @@ required-features = ["synth"]
 [[example]]
 name = "sfx"
 required-features = ["sfx"]
+
+[[example]]
+name = "game_audio"
+required-features = ["mixer", "sfx"]
