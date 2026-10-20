@@ -241,3 +241,83 @@ pub extern "C" fn app_error_ptr() -> usize {
 pub extern "C" fn app_error_len() -> usize {
     STATE.with(|s| s.borrow().error.len())
 }
+
+/// Reads the input buffer as UTF-8 text, such as an effect or a score.
+fn input_text(state: &State) -> audiobox::Result<&str> {
+    std::str::from_utf8(&state.input).map_err(|_| {
+        audiobox::Error::new(
+            audiobox::ErrorCode::InvalidArgument,
+            "The text is not valid UTF-8",
+        )
+    })
+}
+fn aliasing(naive: u32) -> audiobox::synth::Aliasing {
+    if naive != 0 {
+        audiobox::synth::Aliasing::Naive
+    } else {
+        audiobox::synth::Aliasing::BandLimited
+    }
+}
+const PLAYGROUND_RATE: u32 = 44_100;
+
+/// Writes the text form of a preset effect to the output buffer.
+#[no_mangle]
+pub extern "C" fn app_sfx_preset(kind: u32, seed: f64) -> u32 {
+    use audiobox::sfx::{Effect, Preset};
+    STATE.with(|s| {
+        let mut s = s.borrow_mut();
+        let result = Preset::ALL
+            .get(kind as usize)
+            .copied()
+            .ok_or_else(|| {
+                audiobox::Error::new(audiobox::ErrorCode::InvalidArgument, "Unknown preset")
+            })
+            .map(|preset| {
+                let seed = if seed.is_finite() && seed >= 0.0 {
+                    seed as u64
+                } else {
+                    0
+                };
+                s.output = Effect::preset(preset, seed).to_string().into_bytes();
+            });
+        report(result, &mut s)
+    })
+}
+/// Parses the effect text in the input buffer and renders it as the result.
+#[no_mangle]
+pub extern "C" fn app_sfx_render(naive: u32) -> u32 {
+    STATE.with(|s| {
+        let mut s = s.borrow_mut();
+        let rendered = input_text(&s).and_then(|text| {
+            let effect: audiobox::sfx::Effect = text.parse()?;
+            effect.render_with(PLAYGROUND_RATE, aliasing(naive))
+        });
+        let result = rendered.map(|audio| s.result = Some(audio));
+        report(result, &mut s)
+    })
+}
+/// Parses the score text in the input buffer and renders it as the result: once
+/// through, then `loops` repeats of its loop section. Errors give a line and column.
+#[no_mangle]
+pub extern "C" fn app_synth_render(naive: u32, loops: u32) -> u32 {
+    use audiobox::synth::{RenderOptions, Score, ScoreLimits};
+    STATE.with(|s| {
+        let mut s = s.borrow_mut();
+        let rendered = input_text(&s).and_then(|text| {
+            let limits = ScoreLimits {
+                max_text_bytes: 64 * 1024,
+                max_duration_seconds: 120.0,
+                ..ScoreLimits::default()
+            };
+            let score = Score::parse_with_limits(text, &limits)?;
+            let options = RenderOptions {
+                aliasing: aliasing(naive),
+                loops: Some(loops.min(4)),
+                ..RenderOptions::default()
+            };
+            score.render_with(PLAYGROUND_RATE, &options)
+        });
+        let result = rendered.map(|audio| s.result = Some(audio));
+        report(result, &mut s)
+    })
+}

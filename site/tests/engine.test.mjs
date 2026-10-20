@@ -68,3 +68,48 @@ test('Invalid files and operations return recoverable errors', () => {
   assert.ok(error().length > 0);
   assert.equal(process(), 1, 'A bad operation does not poison the next request');
 });
+
+function writeText(text) {
+  const bytes = new TextEncoder().encode(text);
+  const ptr = w.app_input(bytes.length);
+  new Uint8Array(w.memory.buffer, ptr, bytes.length).set(bytes);
+}
+const outputText = () => new TextDecoder().decode(output());
+test('Sound-effect presets render, and their text round-trips through Rust', () => {
+  for (let kind = 0; kind < 7; kind++) {
+    assert.equal(w.app_sfx_preset(kind, 1234), 1, error());
+    const text = outputText();
+    assert.match(text, /^wave=/);
+    writeText(text);
+    assert.equal(w.app_sfx_render(0), 1, error());
+    assert.equal(w.app_stat(0, 0), 44100);
+    assert.equal(w.app_stat(0, 2), 1);
+    assert.ok(w.app_stat(0, 1) > 0);
+    assert.equal(w.app_encode(0, 0), 1, error());
+    assert.equal(new TextDecoder().decode(output().slice(0, 4)), 'RIFF');
+  }
+  assert.equal(w.app_sfx_preset(5, 7), 1);
+  const first = outputText();
+  assert.equal(w.app_sfx_preset(5, 7), 1);
+  assert.equal(outputText(), first, 'The same seed gives the same effect');
+  assert.equal(w.app_sfx_preset(99, 1), 0);
+  writeText('wave=pulse frequency=99999');
+  assert.equal(w.app_sfx_render(0), 0);
+  assert.match(error(), /line 1, column 22: frequency/);
+});
+test('Scores render, and errors give a line and a column', () => {
+  writeText('tempo 120\ninstrument p wave=triangle\nchannel a = @p o4 L c4 e4 g4 >c4');
+  assert.equal(w.app_synth_render(0, 0), 1, error());
+  const once = w.app_stat(0, 1);
+  assert.equal(once, 88200);
+  assert.equal(w.app_synth_render(1, 1), 1, error());
+  assert.equal(w.app_stat(0, 1), 2 * once);
+  writeText('instrument p\nchannel a = @p c4 [d e');
+  assert.equal(w.app_synth_render(0, 0), 0);
+  assert.match(error(), /^line 2, column 19: /);
+  writeText('channel a = [[[[[[o4]999]999]999]999]999]999');
+  assert.equal(w.app_synth_render(0, 0), 0);
+  assert.match(error(), /limit/);
+  writeText(new Array(70000).fill('r').join(' '));
+  assert.equal(w.app_synth_render(0, 0), 0, 'The text limit applies');
+});

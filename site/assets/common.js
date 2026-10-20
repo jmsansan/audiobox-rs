@@ -1,7 +1,22 @@
 export const $ = (id) => document.getElementById(id);
+// Dark is the default theme; the choice is remembered. The page's head applies it
+// before the first paint, and this keeps the toggle, the browser color and the
+// waveforms in step.
+const themeColors = { dark: '#0e1324', light: '#edf1fb' };
+export const theme = () => (document.documentElement.dataset.theme === 'light' ? 'light' : 'dark');
+function applyTheme(next, save) {
+  document.documentElement.dataset.theme = next;
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', themeColors[next]);
+  $('theme-toggle')?.setAttribute('aria-label', next === 'dark' ? 'Switch to light theme' : 'Switch to dark theme');
+  if (save) { try { localStorage.setItem('audiobox-theme', next); } catch { /* Private browsing. */ } }
+  window.dispatchEvent(new Event('themechange'));
+}
+applyTheme(theme(), false);
+$('theme-toggle')?.addEventListener('click', () => applyTheme(theme() === 'dark' ? 'light' : 'dark', true));
+const cssColor = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 const escaped = (text) => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 export function highlight(element, text = element.textContent) {
-  const tokens = /("(?:\\.|[^"\\])*"|\/\/[^\n]*|\b(?:use|fn|let|mut|pub|for|in|if|else|return|impl|match|as|const)\b|\b(?:Audio|AudioFormat|Result|Vec|NormalizeOptions|NormalizeUnit|EncodeOptions|DecodeOptions|Limits|FadeCurve|FilterOptions|FilterType|TimePosition|SampleFormat|Endian|PcmDecoder|PcmEncoder|Resampler)\b|\b\d[\d_.]*(?:f32|f64|u32)?\b)/g;
+  const tokens = /("(?:\\.|[^"\\])*"|\/\/[^\n]*|\b(?:use|fn|let|mut|pub|for|in|if|else|return|impl|match|as|const)\b|\b(?:Audio|AudioFormat|Result|Vec|NormalizeOptions|NormalizeUnit|EncodeOptions|DecodeOptions|Limits|FadeCurve|FilterOptions|FilterType|TimePosition|SampleFormat|Endian|PcmDecoder|PcmEncoder|Resampler|Decoder|Effect|Preset|Score|Synth|RenderOptions|Mixer|MixerConfig|Play|Fade|Loop|Arc|Default)\b|\b\d[\d_.]*(?:f32|f64|u32)?\b)/g;
   let cursor = 0;
   let html = '';
   for (const match of text.matchAll(tokens)) {
@@ -22,12 +37,15 @@ export function notice(message) {
 export function setupCopy() {
   document.querySelectorAll('[data-copy], [data-copy-target]').forEach((button) => {
     button.addEventListener('click', async () => {
-      const content = button.dataset.copy ?? $(button.dataset.copyTarget).textContent;
+      const source = button.dataset.copyTarget && $(button.dataset.copyTarget);
+      // Text areas hold what the reader typed in `value`, not `textContent`.
+      const content = button.dataset.copy ?? source.value ?? source.textContent;
       try {
         await navigator.clipboard.writeText(content);
         notice('Copied to clipboard.');
       } catch {
-        const target = button.dataset.copyTarget ? $(button.dataset.copyTarget) : button;
+        const target = source || button;
+        if (target.select) { target.select(); notice('Copy is unavailable here. The text is selected for manual copying.'); return; }
         const selection = window.getSelection();
         const range = document.createRange();
         range.selectNodeContents(target);
@@ -63,8 +81,10 @@ export class Engine {
     });
   }
 }
-export function drawWave(canvas, samples, color) {
+/** Draws a waveform in the color of a CSS variable, such as `--ink` or `--accent`. */
+export function drawWave(canvas, samples, colorVar) {
   const paint = () => {
+    const color = cssColor(colorVar);
     const rect = canvas.getBoundingClientRect();
     if (!rect.width) return;
     const scale = Math.min(window.devicePixelRatio || 1, 2);
@@ -73,7 +93,7 @@ export function drawWave(canvas, samples, color) {
     const ctx = canvas.getContext('2d');
     ctx.scale(scale, scale);
     ctx.clearRect(0, 0, rect.width, rect.height);
-    ctx.strokeStyle = '#9aa9d0';
+    ctx.strokeStyle = cssColor('--signal-grid');
     ctx.lineWidth = 0.6;
     ctx.beginPath();
     ctx.moveTo(0, rect.height / 2);
@@ -94,8 +114,11 @@ export function drawWave(canvas, samples, color) {
   };
   paint();
   if (canvas._waveObserver) canvas._waveObserver.disconnect();
+  if (canvas._wavePaint) window.removeEventListener('themechange', canvas._wavePaint);
   canvas._waveObserver = new ResizeObserver(paint);
   canvas._waveObserver.observe(canvas);
+  canvas._wavePaint = paint;
+  window.addEventListener('themechange', paint);
 }
 const playIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 10 7-10 7Z"/></svg>';
 const pauseIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5v14M16 5v14"/></svg>';
@@ -107,19 +130,21 @@ export class Player {
     this.audio = new Audio();
     this.audio.preload = 'auto';
     players.add(this);
-    button.addEventListener('click', async () => {
-      if (!this.audio.paused) return this.pause();
-      players.forEach((p) => { if (p !== this) p.pause(); });
-      try {
-        await this.audio.play();
-        this.button.innerHTML = pauseIcon;
-        this.button.setAttribute('aria-label', `Pause ${label}`);
-        this.head.classList.add('playing');
-        this.animate();
-      } catch { notice('Playback failed. Try again or download the audio.'); }
-    });
+    button.addEventListener('click', () => (this.audio.paused ? this.play() : this.pause()));
     this.audio.addEventListener('ended', () => { this.pause(); this.audio.currentTime = 0; this.render(); });
     this.audio.addEventListener('error', () => notice('This browser could not play the WAV preview. Download it to listen locally.'));
+  }
+  /** Plays from the current position, or from the start with `restart`. */
+  async play(restart = false) {
+    players.forEach((p) => { if (p !== this) p.pause(); });
+    try {
+      if (restart) this.audio.currentTime = 0;
+      await this.audio.play();
+      this.button.innerHTML = pauseIcon;
+      this.button.setAttribute('aria-label', `Pause ${this.label}`);
+      this.head.classList.add('playing');
+      this.animate();
+    } catch { notice('Playback failed. Try again or download the audio.'); }
   }
   set(bytes, duration) {
     this.pause();

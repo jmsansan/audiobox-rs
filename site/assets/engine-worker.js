@@ -20,6 +20,13 @@ function result(wasm, original = false) {
   const bytes = new Uint8Array(wasm.memory.buffer, wasm.app_output_ptr(), wasm.app_output_len()).slice().buffer;
   return { stats, wave, bytes };
 }
+function writeText(wasm, text) {
+  const bytes = new TextEncoder().encode(text);
+  if (bytes.length > 64 * 1024) throw new Error('The text exceeds the 64 KB playground limit.');
+  const ptr = wasm.app_input(bytes.length);
+  if (!ptr && bytes.length) throw new Error('The text could not be allocated.');
+  new Uint8Array(wasm.memory.buffer, ptr, bytes.length).set(bytes);
+}
 self.onmessage = async ({ data }) => {
   try {
     const wasm = await boot;
@@ -40,11 +47,18 @@ self.onmessage = async ({ data }) => {
       const c = data.config;
       check(wasm, wasm.app_process(c.gain, c.fadeIn, c.fadeOut, c.filter, c.frequency, +c.mono, +c.reverse, c.rate, c.start, c.end, +c.normalize));
       value = result(wasm);
+    } else if (data.type === 'sfx-preset') {
+      check(wasm, wasm.app_sfx_preset(data.kind, data.seed));
+      value = { text: new TextDecoder().decode(new Uint8Array(wasm.memory.buffer, wasm.app_output_ptr(), wasm.app_output_len())) };
+    } else if (data.type === 'sfx-render' || data.type === 'synth-render') {
+      writeText(wasm, data.text);
+      check(wasm, data.type === 'sfx-render' ? wasm.app_sfx_render(+data.naive) : wasm.app_synth_render(+data.naive, data.loops));
+      value = result(wasm);
     } else if (data.type === 'export') {
       check(wasm, wasm.app_encode(0, data.format));
       value = { bytes: new Uint8Array(wasm.memory.buffer, wasm.app_output_ptr(), wasm.app_output_len()).slice().buffer };
     } else throw new Error('Unknown audio operation.');
-    const transfer = [value.bytes];
+    const transfer = value.bytes ? [value.bytes] : [];
     if (value.wave) transfer.push(value.wave.buffer);
     self.postMessage({ id: data.id, result: value }, transfer);
   } catch (error) {

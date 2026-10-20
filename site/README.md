@@ -13,12 +13,15 @@ node --test site/tests/engine.test.mjs
 python3 -m http.server 8080 --directory _site
 ```
 
-Open http://localhost:8080/. The build includes complete local rustdoc under `/api/`,
+Open http://localhost:8080/. The pages are `index.html`, `sandbox.html`,
+`playground.html` (sound effects and chiptune scores) and `docs/`. The site opens in
+the dark theme; the navigation toggle switches to light and remembers the choice. The build includes complete local rustdoc under `/api/`,
 compiles every Rust guide example and checks local navigation and API links.
 Do not open the HTML directly with `file://`: workers and WASM need an HTTP origin.
 
-The Pages workflow builds on pull requests and deploys `main`. Enable GitHub Pages
-with **GitHub Actions** as its source. No API keys, server or audio upload endpoint
+The Pages workflow builds and deploys the site when a GitHub release is published,
+or on demand from the Actions tab. Enable GitHub Pages with **GitHub Actions** as its
+source, and allow `v*` tags in the `github-pages` environment's deployment rules. No API keys, server or audio upload endpoint
 are needed. Files stay in browser memory. The bridge enforces the sandbox's input limits.
 
 Generated `_site/`, the bridge's `target/`, and review captures are not committed.

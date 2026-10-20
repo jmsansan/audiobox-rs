@@ -161,7 +161,29 @@ The interface stays flat and precise. Live waveforms, explicit playback controls
 
 ## Colors
 
-Cool paper and navy ink support a violet processing accent; syntax colors stay inside dark code panels. Exact values are in the frontmatter.
+Cool paper and navy ink support a violet processing accent; syntax colors stay inside dark code panels. The frontmatter records the light palette; the dark palette below is the default theme.
+
+### Themes
+
+The site opens in **Signal score at night**, a dark theme, and a toggle in the navigation switches to the light palette; the choice is remembered in `localStorage` (`audiobox-theme`). An inline script in each page's head applies it before the first paint. Every color is a CSS custom property on `:root`: `:root, :root[data-theme=dark]` holds the dark values and `:root[data-theme=light]` the light ones, so components never name a theme. Waveform canvases read `--ink`, `--accent` and `--signal-grid` when they paint, and repaint on the `themechange` event. Text on navy or violet fills uses `--white`, which is near-white in the light theme and deep navy in the dark one.
+
+| Token | Light | Dark |
+| --- | --- | --- |
+| `paper` | `#edf1fb` | `#0e1324` |
+| `ink` | `#202a50` | `#e3e8fb` |
+| `muted` | `#4e5c83` | `#a7b2d6` |
+| `accent` | `#6841cb` | `#a58bff` |
+| `accent-dark` (button hover) | `#4e2ea1` | `#b49eff` |
+| `lavender` | `#e5dcfa` | `#221c3d` |
+| `blue` | `#dae4fb` | `#172140` |
+| `rule` | `#bac6e3` | `#2c3659` |
+| `white` (fields, text on fills) | `#fafbff` | `#151c33` |
+| `code` | `#18213e` | `#090d1a` |
+| `danger` | `#a32c42` | `#ff8197` |
+| `segment-bed` | `#c5d2f1` | `#232c4b` |
+| `signal-grid` | `#9aa9d0` | `#3e4a74` |
+
+In the dark theme, button hover lightens instead of darkening. Body text, muted text, the accent and button labels meet WCAG AA contrast on their backgrounds in both themes.
 
 ### Primary
 - **Signal Violet** (`accent`): processed waveforms, selected operations, primary actions, active navigation and focus. `accent-dark` supplies button hover.
@@ -228,7 +250,7 @@ Precise, compact actions. Primary uses violet; default uses navy; secondary is t
 Native selects and number inputs use near-white fill, thin rule borders, 6px corners and 8px 10px padding. Labels stay visible above or alongside the control. Range and checkbox accent colors are violet. Trim fields use native required and number-bound validation; runtime status errors use danger text with bold weight. The docs search field uses 7px corners and 12px text.
 
 ### Navigation
-Manrope, bold, compact and text-led. Main links use 14px desktop and 12px mobile; active and hovered links turn violet. The repository link disappears at the mobile breakpoint. The guide sidebar is sticky on desktop and becomes a wrapping row on mobile.
+Manrope, bold, compact and text-led. A 36px outlined theme toggle (32px on mobile) sits before the repository link and shows a sun in the dark theme and a moon in the light one. On mobile the Examples link also disappears so the row fits 360px screens. Main links use 14px desktop and 12px mobile; active and hovered links turn violet. The repository link disappears at the mobile breakpoint. The guide sidebar is sticky on desktop and becomes a wrapping row on mobile.
 
 ### API Method Links
 Outlined, compact monospace links with 5px corners, 6px 9px padding and blue-paper hover. They name concrete API destinations rather than decorative tags.
@@ -238,6 +260,9 @@ Flat score fields frame actual source and processed waveforms. Homepage signal h
 
 ### Segmented Signal State
 A compact blue bed surrounds two transparent buttons; the pressed button uses near-white fill and violet text. The group and selection corners are 7px and 5px. The state is exposed through `aria-pressed`, with shared keyboard focus.
+
+### Playground
+The playground pairs a lavender output lane, editable dark text panels (`.text-editor`, the code panel's colors in a resizable textarea) and the generated Rust with the sandbox's 300px controls column. Preset buttons are small secondary buttons; the selected one uses a violet border and text. Slider groups take small uppercase muted headings, and on mobile each group lays its sliders out in two columns.
 
 ### Code Panels
 Dark, clipped containers with 12px corners; a thin divider separates a monospace toolbar from scrollable Rust code. Toolbar padding is 15px 22px and code padding is 25px 22px; mobile reduces these to 13px 17px and 20px 17px. Copy is a quiet text action. Syntax colors provide readable distinctions inside the panel.

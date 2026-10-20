@@ -45,7 +45,7 @@ function resetValues() {
 }
 function showAudio(result, source) {
   const prefix = source ? 'input' : 'output';
-  drawWave($(prefix + '-wave'), result.wave, source ? '#202a50' : '#6841cb');
+  drawWave($(prefix + '-wave'), result.wave, source ? '--ink' : '--accent');
   $(prefix + '-meta').textContent = statsText(result.stats);
   $(prefix + '-peak').textContent = `Peak ${Number.isFinite(result.stats.peak) ? result.stats.peak.toFixed(1) : '−∞'} dBFS`;
   $(prefix + '-rms').textContent = `RMS ${Number.isFinite(result.stats.rms) ? result.stats.rms.toFixed(1) : '−∞'} dBFS`;
