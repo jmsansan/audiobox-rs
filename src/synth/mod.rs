@@ -113,7 +113,7 @@
 //! division and rounding, which IEEE 754 defines exactly; `sin`, `exp` and `powf` are
 //! replaced by the crate's own series. Times in milliseconds are rounded to whole
 //! samples, and note positions are computed from ticks with integer arithmetic.
-mod math;
+pub(crate) mod math;
 mod parse;
 mod render;
 mod score;

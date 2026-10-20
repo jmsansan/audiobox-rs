@@ -17,6 +17,8 @@ include = ["/Cargo.toml", "/Cargo.lock", "/src/**", "/tests/**", "/examples/*.rs
 default = []
 # 8-bit style synthesizer and text score format (`audiobox::synth`).
 synth = []
+# Parametric sound-effect generator (`audiobox::sfx`). Enables `synth`.
+sfx = ["synth"]
 
 [dependencies]
 
@@ -26,3 +28,7 @@ all-features = true
 [[example]]
 name = "chiptune"
 required-features = ["synth"]
+
+[[example]]
+name = "sfx"
+required-features = ["sfx"]

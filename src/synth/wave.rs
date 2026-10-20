@@ -138,39 +138,54 @@ impl Oscillator {
     /// Returns the sample at the current phase, in -1..=1 for naive waveforms, then
     /// advances by one frame. `frequency` is clamped to 0..=sample_rate / 2.
     pub fn next(&mut self, waveform: Waveform, frequency: f64, sample_rate: u32) -> f64 {
-        let rate = sample_rate.max(1) as f64;
-        let frequency = if frequency.is_finite() {
-            frequency.clamp(0.0, rate / 2.0)
-        } else {
-            0.0
-        };
-        if let Waveform::Noise(mode) = waveform {
-            self.lfsr.set_mode(mode);
-            let increment = (frequency * 93.0 / rate * ONE as f64).round() as u64;
-            return self.noise(increment);
+        match waveform {
+            Waveform::Pulse(duty) => {
+                self.tone(Shape::Pulse(duty.fraction()), frequency, sample_rate)
+            }
+            Waveform::Triangle => self.tone(Shape::Triangle, frequency, sample_rate),
+            Waveform::Sawtooth => self.tone(Shape::Sawtooth, frequency, sample_rate),
+            Waveform::Noise(mode) => {
+                let rate = sample_rate.max(1) as f64;
+                self.lfsr.set_mode(mode);
+                let increment =
+                    (clamp_frequency(frequency, rate) * 93.0 / rate * ONE as f64).round() as u64;
+                self.noise(increment)
+            }
         }
-        let increment = (frequency / rate * ONE as f64).round() as u64;
+    }
+    /// Like [`Oscillator::next`] for a pulse of any duty, clamped to 0.01..=0.99.
+    /// The four [`Duty`] values give the same samples as [`Waveform::Pulse`].
+    pub fn next_pulse(&mut self, duty: f64, frequency: f64, sample_rate: u32) -> f64 {
+        let duty = if duty.is_finite() {
+            duty.clamp(0.01, 0.99)
+        } else {
+            0.5
+        };
+        self.tone(Shape::Pulse(duty), frequency, sample_rate)
+    }
+    fn tone(&mut self, shape: Shape, frequency: f64, sample_rate: u32) -> f64 {
+        let rate = sample_rate.max(1) as f64;
+        let increment = (clamp_frequency(frequency, rate) / rate * ONE as f64).round() as u64;
         let t = (self.phase & FRACTION) as f64 / ONE as f64;
         let dt = increment as f64 / ONE as f64;
         self.phase = (self.phase & FRACTION) + increment;
         let band_limited = self.aliasing == Aliasing::BandLimited && dt > 0.0;
-        match waveform {
-            Waveform::Pulse(duty) => {
-                let d = duty.fraction();
+        match shape {
+            Shape::Pulse(d) => {
                 let mut value = if t < d { 1.0 } else { -1.0 };
                 if band_limited {
                     value += poly_blep(t, dt) - poly_blep(wrap(t - d), dt);
                 }
                 value
             }
-            Waveform::Sawtooth => {
+            Shape::Sawtooth => {
                 let mut value = 2.0 * t - 1.0;
                 if band_limited {
                     value -= poly_blep(t, dt);
                 }
                 value
             }
-            Waveform::Triangle => {
+            Shape::Triangle => {
                 let mut value = if t < 0.5 {
                     4.0 * t - 1.0
                 } else {
@@ -181,7 +196,6 @@ impl Oscillator {
                 }
                 value
             }
-            Waveform::Noise(_) => unreachable!(),
         }
     }
     fn noise(&mut self, increment: u64) -> f64 {
@@ -205,6 +219,21 @@ impl Oscillator {
         };
         self.phase = end & FRACTION;
         value
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Shape {
+    Pulse(f64),
+    Triangle,
+    Sawtooth,
+}
+
+fn clamp_frequency(frequency: f64, rate: f64) -> f64 {
+    if frequency.is_finite() {
+        frequency.clamp(0.0, rate / 2.0)
+    } else {
+        0.0
     }
 }
 

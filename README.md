@@ -33,10 +33,11 @@ modules without adding dependencies, so you compile only what you use:
 | Feature | Module | Adds |
 | --- | --- | --- |
 | `synth` | `audiobox::synth` | 8-bit style synthesizer and text score format |
+| `sfx` | `audiobox::sfx` | Parametric sound-effect generator with seeded presets (enables `synth`) |
 
 ```toml
 [dependencies]
-audiobox = { version = "0.1", features = ["synth"] }
+audiobox = { version = "0.1", features = ["synth", "sfx"] }
 ```
 
 ```rust
@@ -256,6 +257,66 @@ Render the example song to a WAV file:
 
 ```sh
 cargo run --example chiptune --features synth -- song.wav
+```
+
+## Sound effects (`sfx` feature)
+
+`audiobox::sfx` renders game sound effects, such as jumps, coins, hits and menu blips,
+from a few parameters that can be kept as text in a game's repository. It uses the
+synthesizer's waveforms and gives the same samples on every platform.
+
+```rust
+use audiobox::sfx::{Effect, Preset};
+
+fn effects() -> audiobox::Result<(audiobox::Audio, audiobox::Audio)> {
+    let coin: Effect = "wave=pulse duty=50 frequency=987.8 sustain=0.05 punch=0.5
+                        decay=0.3 arpeggio=5 arpeggio-time=0.07".parse()?;
+    let coin_audio = coin.render(44_100)?;
+
+    // Presets draw parameters from a seed: try seeds until one sounds right,
+    // then keep the seed or the text that `to_string` writes.
+    let jump = Effect::preset(Preset::Jump, 7);
+    println!("{jump}");
+    let jump_audio = jump.render(44_100)?;
+    Ok((coin_audio, jump_audio))
+}
+```
+
+The text form is whitespace-separated `key=value` pairs, on one line or several, with
+`;` comments. Missing keys keep their defaults. `Display` writes the same form, and
+parsing it gives back an equal `Effect`.
+
+| Key | Unit | Range | Default |
+| --- | --- | --- | --- |
+| `wave` | `pulse`, `triangle`, `saw`, `noise` | | `pulse` |
+| `duty` | pulse duty, percent | `12.5`, `25`, `50`, `75` | `50` |
+| `noise` | noise mode | `long`, `short` | `long` |
+| `frequency` | Hz | 10–20000 | 440 |
+| `slide` | octaves per second | ±64 | 0 |
+| `slide-change` | octaves per second² | ±256 | 0 |
+| `vibrato-depth`, `vibrato-speed` | semitones, Hz | 0–24, 0–100 | 0 |
+| `attack`, `sustain`, `decay` | seconds | 0–10 each | 0, 0.1, 0.2 |
+| `punch` | extra level at the start of the sustain | 0–1 | 0 |
+| `duty-sweep` | duty change per second (pulse only) | ±10 | 0 |
+| `low-pass`, `high-pass` | cutoff in Hz, 0 for off | 0 or 10–20000 | 0 |
+| `low-pass-sweep`, `high-pass-sweep` | octaves per second | ±16 | 0 |
+| `arpeggio`, `arpeggio-time` | semitones, seconds | ±48, 0–10 | 0 |
+| `repeat` | seconds; restarts pitch, slides, arpeggio and duty; 0 for off | 0 or 0.01–10 | 0 |
+| `volume` | linear | 0–1 | 0.5 |
+
+The effect lasts `attack + sustain + decay`, which must be more than 0 and at most
+10 seconds. The filters are 12 dB/octave Butterworth state-variable filters that
+attenuate their cutoff by 3 dB. Out-of-range values give `ErrorCode::InvalidArgument`;
+in text, the `ParseError` also gives the line and column of the value.
+
+`Preset` covers `Pickup`, `Laser`, `Explosion`, `PowerUp`, `Hit`, `Jump` and `Blip`.
+The same preset and seed always give the same parameters and samples. The full
+reference is in the `audiobox::sfx` module documentation.
+
+Write a few effects to WAV files:
+
+```sh
+cargo run --example sfx --features sfx -- out_dir
 ```
 
 ## Development and publishing
