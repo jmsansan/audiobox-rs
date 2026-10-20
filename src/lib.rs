@@ -20,6 +20,8 @@ mod io;
 pub mod mp3;
 pub mod pcm;
 pub mod stream;
+#[cfg(feature = "synth")]
+pub mod synth;
 mod types;
 pub use audio::Audio;
 pub use codec::{

@@ -15,5 +15,14 @@ include = ["/Cargo.toml", "/Cargo.lock", "/src/**", "/tests/**", "/examples/*.rs
 
 [features]
 default = []
+# 8-bit style synthesizer and text score format (`audiobox::synth`).
+synth = []
 
 [dependencies]
+
+[package.metadata.docs.rs]
+all-features = true
+
+[[example]]
+name = "chiptune"
+required-features = ["synth"]
