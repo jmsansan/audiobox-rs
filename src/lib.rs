@@ -18,6 +18,10 @@ mod error;
 mod flac;
 mod formats;
 mod io;
+#[cfg(any(feature = "synth", feature = "mixer"))]
+mod math;
+#[cfg(feature = "mixer")]
+pub mod mixer;
 pub mod mp3;
 pub mod pcm;
 #[cfg(feature = "sfx")]
