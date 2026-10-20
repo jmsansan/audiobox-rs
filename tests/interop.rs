@@ -285,3 +285,65 @@ fn external_mp3_all_rates_joint_stereo_and_vbr() {
         }
     }
 }
+#[test]
+fn incremental_decoding_of_external_files() {
+    if !enabled() {
+        return;
+    }
+    let tmp = Temp::new();
+    // FFmpeg's FLAC encoder writes a SEEKTABLE, and LAME uses the bit reservoir.
+    for (ext, codec, extra) in [
+        ("flac", "flac", vec![]),
+        (
+            "flac",
+            "flac",
+            vec!["-sample_fmt", "s32", "-compression_level", "8"],
+        ),
+        ("mp3", "libmp3lame", vec!["-q:a", "2"]),
+        ("mp3", "libmp3lame", vec!["-b:a", "320k"]),
+        ("mp3", "libmp3lame", vec!["-ar", "16000", "-b:a", "24k"]),
+        ("wav", "pcm_s24le", vec!["-rf64", "always"]),
+        ("wav", "adpcm_ima_wav", vec![]),
+    ] {
+        let path = tmp.path(&format!("stream.{ext}"));
+        let mut args = vec![
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=44100:duration=4,aeval='val(0)*(0.5+0.5*sin(t))'",
+            "-ac",
+            "2",
+            "-c:a",
+            codec,
+        ];
+        args.extend(extra.iter().copied());
+        args.push(text(&path));
+        run(&args);
+        let bytes = std::fs::read(&path).unwrap();
+        let whole = decode(&bytes).unwrap().to_interleaved();
+        let channels = 2;
+        let mut decoder = stream::Decoder::new(bytes.as_slice()).unwrap();
+        let mut buffer = vec![0.0; 1000 * channels];
+        for start in [0, 100_000, 7, 150_000, 44_100, 3_000] {
+            let start = start.min(whole.len() / channels);
+            decoder.seek(start as u64).unwrap();
+            let mut got = Vec::new();
+            loop {
+                let n = decoder.read(&mut buffer).unwrap();
+                if n == 0 {
+                    break;
+                }
+                got.extend_from_slice(&buffer[..n * channels]);
+            }
+            let expected = &whole[start * channels..];
+            assert!(
+                got.len() == expected.len()
+                    && got
+                        .iter()
+                        .zip(expected)
+                        .all(|(a, b)| a.to_bits() == b.to_bits()),
+                "{ext} {codec} {extra:?} from {start}"
+            );
+        }
+    }
+}

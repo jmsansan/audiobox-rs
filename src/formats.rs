@@ -34,7 +34,23 @@ fn chunk(out: &mut Vec<u8>, tag: &[u8; 4], bytes: &[u8], le: bool) -> Result<()>
     Ok(())
 }
 
-pub(crate) fn decode_wav(bytes: &[u8], options: &DecodeOptions) -> Result<Audio> {
+/// Where a WAVE file's samples are and how they are encoded.
+pub(crate) struct WavLayout {
+    pub code: u16,
+    pub format: SampleFormat,
+    pub channels: usize,
+    pub rate: u32,
+    pub align: usize,
+    /// Frames per IMA ADPCM block.
+    pub samples_per_block: usize,
+    /// Byte ranges of the data chunks, in order. Their concatenation is the payload.
+    pub payloads: Vec<std::ops::Range<usize>>,
+    /// Frames after decoding, including the `fact` truncation of IMA ADPCM.
+    pub frames: usize,
+    pub metadata: crate::AudioMetadata,
+}
+
+pub(crate) fn parse_wav(bytes: &[u8], limits: &crate::Limits) -> Result<WavLayout> {
     let mut r = Reader::new(bytes);
     let magic = r.take(4)?;
     let size = r.u32(true)? as usize;
@@ -65,6 +81,7 @@ pub(crate) fn decode_wav(bytes: &[u8], options: &DecodeOptions) -> Result<Audio>
         if n > end - r.pos {
             return Err(Error::decode("WAVE chunk exceeds container"));
         }
+        let at = r.pos;
         let b = r.take(n)?;
         match id {
             b"ds64" => {
@@ -112,7 +129,7 @@ pub(crate) fn decode_wav(bytes: &[u8], options: &DecodeOptions) -> Result<Audio>
                 }
                 desc = Some((code, channels, rate, align, bits, spb));
             }
-            b"data" => payloads.push(b),
+            b"data" => payloads.push(at..at + n),
             b"fact" if b.len() >= 4 => {
                 fact = Some(u32::from_le_bytes(b[..4].try_into().unwrap()) as usize)
             }
@@ -141,7 +158,7 @@ pub(crate) fn decode_wav(bytes: &[u8], options: &DecodeOptions) -> Result<Audio>
     if payloads.is_empty() {
         return Err(Error::decode("Missing WAVE data chunk"));
     }
-    options.limits.check(0, channels, rate)?;
+    limits.check(0, channels, rate)?;
     let size = payloads
         .iter()
         .try_fold(0usize, |n, b| n.checked_add(b.len()))
@@ -167,31 +184,64 @@ pub(crate) fn decode_wav(bytes: &[u8], options: &DecodeOptions) -> Result<Audio>
         }
         size / align
     };
-    options.limits.check(frames, channels, rate)?;
-    let payload: Vec<u8> = payloads.into_iter().flatten().copied().collect();
-    let mut audio = if code == 17 {
-        crate::pcm::decode_ima(&payload, channels, rate, align, spb, &options.limits)?
+    limits.check(frames, channels, rate)?;
+    if code == 17 {
+        if !(1..=2).contains(&channels) || align < channels * 4 || spb == 0 || size % align != 0 {
+            return Err(Error::decode("Invalid IMA ADPCM blocks"));
+        }
+    } else if size % align != 0 {
+        return Err(Error::decode("Incomplete PCM frame"));
+    }
+    let frames = match fact {
+        Some(n) if code == 17 && n > frames => {
+            return Err(Error::decode("ADPCM fact exceeds decoded frames"));
+        }
+        Some(n) if code == 17 => n,
+        _ => frames,
+    };
+    Ok(WavLayout {
+        code,
+        format,
+        channels,
+        rate,
+        align,
+        samples_per_block: spb,
+        payloads,
+        frames,
+        metadata,
+    })
+}
+
+pub(crate) fn decode_wav(bytes: &[u8], options: &DecodeOptions) -> Result<Audio> {
+    let layout = parse_wav(bytes, &options.limits)?;
+    let payload: Vec<u8> = layout
+        .payloads
+        .iter()
+        .flat_map(|range| bytes[range.clone()].iter().copied())
+        .collect();
+    let mut audio = if layout.code == 17 {
+        crate::pcm::decode_ima(
+            &payload,
+            layout.channels,
+            layout.rate,
+            layout.align,
+            layout.samples_per_block,
+            &options.limits,
+        )?
     } else {
         decode_pcm(
             &payload,
-            format,
+            layout.format,
             Endian::Little,
-            channels,
-            rate,
+            layout.channels,
+            layout.rate,
             &options.limits,
         )?
     };
-    if code == 17 {
-        if let Some(n) = fact {
-            if n > audio.frames() {
-                return Err(Error::decode("ADPCM fact exceeds decoded frames"));
-            }
-            for c in &mut audio.data {
-                c.truncate(n);
-            }
-        }
+    for c in &mut audio.data {
+        c.truncate(layout.frames);
     }
-    audio.info.metadata = metadata;
+    audio.info.metadata = layout.metadata;
     Ok(finish(audio, AudioFormat::Wav))
 }
 

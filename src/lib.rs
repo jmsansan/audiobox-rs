@@ -12,6 +12,7 @@
 pub mod analyze;
 mod audio;
 mod codec;
+mod decoder;
 mod dsp;
 mod error;
 mod flac;
