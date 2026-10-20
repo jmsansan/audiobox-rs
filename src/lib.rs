@@ -19,6 +19,8 @@ mod formats;
 mod io;
 pub mod mp3;
 pub mod pcm;
+#[cfg(feature = "sfx")]
+pub mod sfx;
 pub mod stream;
 #[cfg(feature = "synth")]
 pub mod synth;
