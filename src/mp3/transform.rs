@@ -75,6 +75,10 @@ fn basis() -> &'static Basis {
         }
     })
 }
+/// Computes the transform tables now, so that decoding does not allocate later.
+pub(super) fn prepare() {
+    basis();
+}
 pub(super) fn alias(x: &mut [f32; 576], short: bool, mixed: bool, inverse: bool) {
     if short && !mixed {
         return;
@@ -138,6 +142,7 @@ pub(super) fn imdct(spectrum: &[f32; 576], g: &Granule, overlap: &mut [f32; 576]
     invert(&mut out);
     out
 }
+#[derive(Clone)]
 pub(super) struct Synthesis {
     history: [f32; 1024],
     offset: usize,
@@ -171,16 +176,15 @@ impl Synthesis {
         }
         out
     }
-    pub fn granule(&mut self, time: &[f32; 576]) -> Vec<f32> {
-        let mut out = Vec::with_capacity(576);
+    /// Writes the 576 samples of a granule to `out`.
+    pub fn granule(&mut self, time: &[f32; 576], out: &mut [f32]) {
         for slot in 0..18 {
             let mut sub = [0.0; 32];
             for sb in 0..32 {
                 sub[sb] = time[sb * 18 + slot];
             }
-            out.extend_from_slice(&self.process(&sub));
+            out[slot * 32..slot * 32 + 32].copy_from_slice(&self.process(&sub));
         }
-        out
     }
 }
 pub(super) struct Analysis {

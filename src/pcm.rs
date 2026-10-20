@@ -168,49 +168,61 @@ pub(crate) fn decode_ima(
     limits.check(frames, channels, rate)?;
     let mut data: Vec<Vec<f32>> = (0..channels).map(|_| Vec::with_capacity(frames)).collect();
     for b in bytes.chunks_exact(block) {
-        let mut predictor = vec![0i32; channels];
-        let mut index = vec![0i32; channels];
-        for c in 0..channels {
-            predictor[c] = i16::from_le_bytes([b[c * 4], b[c * 4 + 1]]) as i32;
-            index[c] = b[c * 4 + 2] as i32;
-            if index[c] > 88 {
-                return Err(Error::decode("Invalid ADPCM step index"));
-            }
-            data[c].push(predictor[c] as f32 / 32768.0);
-        }
-        let mut pos = channels * 4;
-        let mut emitted = vec![1; channels];
-        while pos < b.len() {
-            for c in 0..channels {
-                let count = if channels == 1 { b.len() - pos } else { 4 };
-                let chunk = b
-                    .get(pos..pos + count)
-                    .ok_or_else(|| Error::decode("Incomplete ADPCM channel group"))?;
-                for &v in chunk {
-                    for shift in [0, 4] {
-                        if emitted[c] >= samples_per_block {
-                            break;
-                        }
-                        let code = (v >> shift) & 15;
-                        let step = IMA_STEPS[index[c] as usize];
-                        let diff = (step >> 3)
-                            + if code & 1 != 0 { step >> 2 } else { 0 }
-                            + if code & 2 != 0 { step >> 1 } else { 0 }
-                            + if code & 4 != 0 { step } else { 0 };
-                        predictor[c] = (predictor[c] + if code & 8 != 0 { -diff } else { diff })
-                            .clamp(-32768, 32767);
-                        index[c] = (index[c] + [-1, -1, -1, -1, 2, 4, 6, 8][(code & 7) as usize])
-                            .clamp(0, 88);
-                        data[c].push(predictor[c] as f32 / 32768.0);
-                        emitted[c] += 1;
-                    }
-                }
-                pos += count;
-            }
-        }
-        if emitted.iter().any(|&n| n != samples_per_block) {
-            return Err(Error::decode("ADPCM block has too few samples"));
-        }
+        decode_ima_block(b, samples_per_block, &mut data)?;
     }
     Audio::decoded(data, rate, DecodeInfo::default())
+}
+
+/// Appends one IMA ADPCM block of one or two channels to `data`. Allocates nothing
+/// when `data` has room for `samples_per_block` more samples.
+pub(crate) fn decode_ima_block(
+    b: &[u8],
+    samples_per_block: usize,
+    data: &mut [Vec<f32>],
+) -> Result<()> {
+    let channels = data.len();
+    let mut predictor = [0i32; 2];
+    let mut index = [0i32; 2];
+    for c in 0..channels {
+        predictor[c] = i16::from_le_bytes([b[c * 4], b[c * 4 + 1]]) as i32;
+        index[c] = b[c * 4 + 2] as i32;
+        if index[c] > 88 {
+            return Err(Error::decode("Invalid ADPCM step index"));
+        }
+        data[c].push(predictor[c] as f32 / 32768.0);
+    }
+    let mut pos = channels * 4;
+    let mut emitted = [1; 2];
+    while pos < b.len() {
+        for c in 0..channels {
+            let count = if channels == 1 { b.len() - pos } else { 4 };
+            let chunk = b
+                .get(pos..pos + count)
+                .ok_or_else(|| Error::decode("Incomplete ADPCM channel group"))?;
+            for &v in chunk {
+                for shift in [0, 4] {
+                    if emitted[c] >= samples_per_block {
+                        break;
+                    }
+                    let code = (v >> shift) & 15;
+                    let step = IMA_STEPS[index[c] as usize];
+                    let diff = (step >> 3)
+                        + if code & 1 != 0 { step >> 2 } else { 0 }
+                        + if code & 2 != 0 { step >> 1 } else { 0 }
+                        + if code & 4 != 0 { step } else { 0 };
+                    predictor[c] = (predictor[c] + if code & 8 != 0 { -diff } else { diff })
+                        .clamp(-32768, 32767);
+                    index[c] =
+                        (index[c] + [-1, -1, -1, -1, 2, 4, 6, 8][(code & 7) as usize]).clamp(0, 88);
+                    data[c].push(predictor[c] as f32 / 32768.0);
+                    emitted[c] += 1;
+                }
+            }
+            pos += count;
+        }
+    }
+    if emitted[..channels].iter().any(|&n| n != samples_per_block) {
+        return Err(Error::decode("ADPCM block has too few samples"));
+    }
+    Ok(())
 }

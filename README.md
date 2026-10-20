@@ -161,6 +161,48 @@ fn decode_upload(bytes: &[u8]) -> audiobox::Result<audiobox::Audio> {
 Limits bound decoded PCM, not the size of the input already held by the caller or all
 intermediate DSP buffers. Enforce upload size limits in the calling application.
 
+## Incremental decoding
+
+`stream::Decoder` decodes WAV, FLAC or MP3 held in memory a chunk at a time, so a
+game can play music without decoding all of it: three minutes of 44.1 kHz stereo is
+about 63 MB as `f32`. It takes the bytes as `&'static [u8]` (from `include_bytes!`),
+`Vec<u8>` or `Arc<[u8]>`.
+
+```rust
+use audiobox::stream::Decoder;
+
+fn play(bytes: &'static [u8]) -> audiobox::Result<()> {
+    let mut music = Decoder::new(bytes)?;
+    let mut buffer = vec![0.0f32; 1024 * music.channels()];
+    loop {
+        let frames = music.read(&mut buffer)?; // Interleaved; 0 at the end.
+        if frames == 0 {
+            music.rewind()?; // Loop without decoding anything again.
+            break;
+        }
+        // Send buffer[..frames * channels] to the audio device.
+    }
+    music.seek(44_100)?; // Or jump to any frame.
+    Ok(())
+}
+```
+
+- **Equal to `decode`:** the concatenated output equals what `decode` gives for the
+  same bytes, sample for sample, for every chunk size.
+- **Seeking:** `seek(frame)` moves to any frame. WAV seeks directly. FLAC uses the
+  SEEKTABLE when there is one and otherwise decodes forward. MP3 restarts a few frames
+  before the target to refill the bit reservoir and filter state, so the samples
+  match a whole decode. `rewind()` returns to the start at once.
+- **Bounded memory:** apart from the input bytes, the decoder holds one block of the
+  input format (a FLAC block, an MP3 frame, an IMA ADPCM block or `chunk_frames` of
+  PCM) and the MP3 bit reservoir: tens of kilobytes, allocated when it opens.
+  `read` allocates nothing, so it can run on an audio thread. `DecoderOptions` takes
+  the same `Limits` as `decode`, checked against the declared stream on opening.
+- **Errors:** malformed or truncated input gives the crate's errors, never a panic.
+  After an error, reads return it again until a seek or rewind.
+
+AIFF, CAF and AU, and Ogg Vorbis and Opus, are not decoded incrementally.
+
 ## Streaming PCM
 
 `stream::PcmDecoder` retains partial frames between input chunks. `stream::PcmEncoder`
@@ -169,10 +211,9 @@ validates that successive chunks have the same sample rate and channel count.
 call `finish` to drain its tail. Its output matches whole-buffer resampling regardless
 of input chunk boundaries. Stream limits apply to the complete stream, not each chunk.
 
-Container/MP3/FLAC decoding currently operates on complete input slices. Browser
-Workers, Web Audio and WebCodecs adapters belong to the TypeScript package and are
-not part of the Rust API. Dithering, Sony Wave64, RF64 encoding and file-system streaming
-are also not implemented in this first Rust release.
+Browser Workers, Web Audio and WebCodecs adapters belong to the TypeScript package and
+are not part of the Rust API. Dithering, Sony Wave64, RF64 encoding and reading files
+from disk incrementally are also not implemented.
 
 ## Synthesizer (`synth` feature)
 

@@ -4,7 +4,7 @@ mod encoder;
 mod tables;
 mod transform;
 use crate::{Audio, DecodeOptions, EncodeOptions, Error, Result};
-pub(crate) use decoder::decode;
+pub(crate) use decoder::{DECODER_DELAY, FLUSH, Mp3State, decode, main_data_begin, payload_len};
 pub(crate) use encoder::encode;
 
 #[derive(Clone, Copy, Debug)]
@@ -19,7 +19,7 @@ pub struct Mp3Info {
     pub encoder_padding: usize,
 }
 #[derive(Clone, Copy, Debug)]
-pub(super) struct Header {
+pub(crate) struct Header {
     pub version: u8,
     pub rate: u32,
     pub channels: usize,
@@ -33,7 +33,7 @@ pub(super) struct Header {
 pub(super) const BITRATES: [u32; 16] = [
     0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0,
 ];
-pub(super) fn header(bytes: &[u8], at: usize) -> Option<Header> {
+pub(crate) fn header(bytes: &[u8], at: usize) -> Option<Header> {
     let b = bytes.get(at..at.checked_add(4)?)?;
     if b[0] != 255 || b[1] & 224 != 224 || b[1] & 6 != 2 {
         return None;
@@ -91,7 +91,7 @@ pub(super) fn header(bytes: &[u8], at: usize) -> Option<Header> {
         bitrate,
     })
 }
-pub(super) fn tag_size(bytes: &[u8]) -> usize {
+pub(crate) fn tag_size(bytes: &[u8]) -> usize {
     if !bytes.starts_with(b"ID3") || bytes.len() < 10 {
         return 0;
     }
@@ -101,7 +101,7 @@ pub(super) fn tag_size(bytes: &[u8]) -> usize {
         + (bytes[9] as usize & 127)
         + if bytes[5] & 16 != 0 { 10 } else { 0 }
 }
-pub(super) fn find(bytes: &[u8], start: usize) -> Option<(usize, Header)> {
+pub(crate) fn find(bytes: &[u8], start: usize) -> Option<(usize, Header)> {
     for i in start..bytes.len().saturating_sub(3) {
         if let Some(h) = header(bytes, i) {
             if i + h.length > bytes.len() {
@@ -124,12 +124,12 @@ pub(crate) fn has_frame(bytes: &[u8]) -> bool {
     find(&bytes[..bytes.len().min(8192)], 0).is_some()
 }
 #[derive(Clone, Copy, Default)]
-pub(super) struct Vbr {
+pub(crate) struct Vbr {
     pub frames: usize,
     pub delay: usize,
     pub padding: usize,
 }
-pub(super) fn vbr(bytes: &[u8], at: usize, h: Header) -> Result<Option<Vbr>> {
+pub(crate) fn vbr(bytes: &[u8], at: usize, h: Header) -> Result<Option<Vbr>> {
     let start = at + 4 + h.crc + h.side;
     let end = at + h.length;
     let read = |p: usize| -> Result<u32> {

@@ -1,4 +1,9 @@
-//! Incremental raw PCM I/O. Decoder input chunks may end in the middle of a frame.
+//! Incremental decoding and encoding.
+//!
+//! [`Decoder`] decodes WAV, FLAC or MP3 bytes held in memory a chunk at a time, with
+//! seeking. [`PcmDecoder`] and [`PcmEncoder`] convert raw PCM whose input chunks may
+//! end in the middle of a frame, and [`Resampler`] resamples across chunks.
+pub use crate::decoder::{Decoder, DecoderOptions};
 use crate::{Audio, Endian, Error, Limits, Result, SampleFormat};
 
 #[derive(Debug)]

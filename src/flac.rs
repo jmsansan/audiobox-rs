@@ -123,7 +123,8 @@ fn signed(br: &mut Bits<'_>, n: usize) -> Result<i64> {
         Err(Error::decode("Invalid FLAC bit depth"))
     }
 }
-fn subframe(br: &mut Bits<'_>, n: usize, bits: usize) -> Result<Vec<i64>> {
+fn subframe(br: &mut Bits<'_>, out: &mut [i64], bits: usize) -> Result<()> {
+    let n = out.len();
     if br.read(1)? != 0 {
         return Err(Error::decode("Invalid FLAC subframe padding"));
     }
@@ -137,14 +138,13 @@ fn subframe(br: &mut Bits<'_>, n: usize, bits: usize) -> Result<Vec<i64>> {
         .checked_sub(wasted)
         .filter(|&n| n > 0 && n <= 33)
         .ok_or_else(|| Error::decode("Invalid FLAC wasted bits"))?;
-    let mut out = vec![0i64; n];
     match kind {
         0 => {
             let v = signed(br, effective)?;
             out.fill(v);
         }
         1 => {
-            for v in &mut out {
+            for v in out.iter_mut() {
                 *v = signed(br, effective)?;
             }
         }
@@ -160,8 +160,10 @@ fn subframe(br: &mut Bits<'_>, n: usize, bits: usize) -> Result<Vec<i64>> {
             for v in &mut out[..order] {
                 *v = signed(br, effective)?;
             }
-            let (coeff, shift) = if kind < 32 {
-                (FIXED[order].to_vec(), 0)
+            let mut coeff = [0i64; 32];
+            let shift = if kind < 32 {
+                coeff[..order].copy_from_slice(FIXED[order]);
+                0
             } else {
                 let precision = br.read(4)? as usize + 1;
                 if precision == 16 {
@@ -171,16 +173,15 @@ fn subframe(br: &mut Bits<'_>, n: usize, bits: usize) -> Result<Vec<i64>> {
                 if shift < 0 {
                     return Err(Error::decode("Negative FLAC LPC shift"));
                 }
-                let mut coeff = Vec::new();
-                for _ in 0..order {
-                    coeff.push(br.signed(precision)? as i64);
+                for c in &mut coeff[..order] {
+                    *c = br.signed(precision)? as i64;
                 }
-                (coeff, shift as u32)
+                shift as u32
             };
-            residual(br, &mut out, order)?;
+            residual(br, out, order)?;
             for i in order..n {
                 let mut prediction = 0i64;
-                for (j, &coef) in coeff.iter().enumerate() {
+                for (j, &coef) in coeff[..order].iter().enumerate() {
                     prediction = prediction
                         .checked_add(
                             coef.checked_mul(out[i - j - 1])
@@ -195,27 +196,57 @@ fn subframe(br: &mut Bits<'_>, n: usize, bits: usize) -> Result<Vec<i64>> {
         }
         _ => return Err(Error::decode("Reserved FLAC subframe")),
     }
-    for s in &mut out {
+    for s in out.iter_mut() {
         *s = s
             .checked_mul(1i64 << wasted)
             .ok_or_else(|| Error::decode("FLAC wasted bits overflow"))?;
     }
-    Ok(out)
+    Ok(())
 }
 
-pub(crate) fn decode(bytes: &[u8], options: &DecodeOptions) -> Result<Audio> {
+/// The STREAMINFO shape and the parts of the metadata that decoding needs.
+pub(crate) struct FlacInfo {
+    pub rate: u32,
+    pub channels: usize,
+    pub bits: usize,
+    /// Total frames, or 0 if unknown.
+    pub total: usize,
+    /// Largest block size.
+    pub max: usize,
+    pub md5: [u8; 16],
+    pub metadata: crate::AudioMetadata,
+    /// Offset of the first audio frame.
+    pub first_frame: usize,
+    /// Byte range of the SEEKTABLE block's points, if any.
+    pub seek_table: Option<std::ops::Range<usize>>,
+}
+impl FlacInfo {
+    pub fn sample_format(&self) -> SampleFormat {
+        if self.bits <= 16 {
+            SampleFormat::S16
+        } else if self.bits <= 24 {
+            SampleFormat::S24
+        } else {
+            SampleFormat::S32
+        }
+    }
+}
+
+pub(crate) fn parse_info(bytes: &[u8], limits: &crate::Limits) -> Result<FlacInfo> {
     let mut r = Reader::new(bytes);
     if r.take(4)? != b"fLaC" {
         return Err(Error::decode("Invalid FLAC magic"));
     }
     let mut stream = None;
     let mut metadata = crate::AudioMetadata::new();
-    let mut expected_md5 = [0u8; 16];
+    let mut md5 = [0u8; 16];
+    let mut seek_table = None;
     loop {
         let header = r.take(4)?;
         let last = header[0] & 128 != 0;
         let kind = header[0] & 127;
         let n = ((header[1] as usize) << 16) | ((header[2] as usize) << 8) | header[3] as usize;
+        let at = r.pos;
         let b = r.take(n)?;
         if kind == 0 {
             if b.len() != 34 || stream.is_some() {
@@ -229,12 +260,14 @@ pub(crate) fn decode(bytes: &[u8], options: &DecodeOptions) -> Result<Audio> {
             let frames = ((br.read(4)? as u64) << 32) | br.read(32)? as u64;
             let frames =
                 usize::try_from(frames).map_err(|_| Error::limit("FLAC sample count overflow"))?;
-            options.limits.check(frames, channels, rate)?;
+            limits.check(frames, channels, rate)?;
             if !(4..=32).contains(&bits) || max == 0 {
                 return Err(Error::decode("Invalid FLAC stream shape"));
             }
-            expected_md5.copy_from_slice(&b[18..34]);
+            md5.copy_from_slice(&b[18..34]);
             stream = Some((rate, channels, bits, frames, max));
+        } else if kind == 3 {
+            seek_table = Some(at..at + n - n % 18);
         } else if kind == 4 {
             let mut tags = Reader::new(b);
             let vendor = tags.u32(true)? as usize;
@@ -254,12 +287,43 @@ pub(crate) fn decode(bytes: &[u8], options: &DecodeOptions) -> Result<Audio> {
     }
     let (rate, channels, bits, total, max) =
         stream.ok_or_else(|| Error::decode("Missing FLAC STREAMINFO"))?;
-    let mut out = vec![Vec::<f32>::new(); channels];
-    let mut pcm_hash = Md5::new();
-    let mut written = 0usize;
-    while r.pos < bytes.len() {
-        let start = r.pos;
-        let mut br = Bits::new(&bytes[start..]);
+    Ok(FlacInfo {
+        rate,
+        channels,
+        bits,
+        total,
+        max,
+        md5,
+        metadata,
+        first_frame: r.pos,
+        seek_table,
+    })
+}
+
+/// Decodes one audio frame at a time into buffers sized for the largest block.
+pub(crate) struct FlacFrame {
+    /// Samples of each channel, `max` long; the first `n` are valid after a decode.
+    pub samples: Vec<Vec<i64>>,
+    /// Little-endian PCM of the last frame, for the MD5 check.
+    pub raw: Vec<u8>,
+}
+impl FlacFrame {
+    pub fn new(info: &FlacInfo) -> Self {
+        Self {
+            samples: vec![vec![0; info.max]; info.channels],
+            raw: Vec::with_capacity(info.max * info.channels * info.bits.div_ceil(8)),
+        }
+    }
+    /// Decodes the frame at `start`, checking both CRCs and the stream shape.
+    /// Returns its block size and the offset of the next frame.
+    pub fn decode(
+        &mut self,
+        bytes: &[u8],
+        start: usize,
+        info: &FlacInfo,
+    ) -> Result<(usize, usize)> {
+        let (rate, channels, bits, max) = (info.rate, info.channels, info.bits, info.max);
+        let mut br = Bits::new(bytes.get(start..).unwrap_or_default());
         if br.read(14)? != 0x3ffe || br.read(1)? != 0 {
             return Err(Error::decode("Invalid FLAC frame sync"));
         }
@@ -312,34 +376,24 @@ pub(crate) fn decode(bytes: &[u8], options: &DecodeOptions) -> Result<Audio> {
         if crc8(&bytes[start..start + header_len]) != checksum {
             return Err(Error::decode("FLAC header CRC mismatch"));
         }
-        let next = written
-            .checked_add(n)
-            .ok_or_else(|| Error::limit("FLAC frame count overflow"))?;
-        options.limits.check(next, channels, rate)?;
-        if total != 0 && next > total {
-            return Err(Error::decode("FLAC exceeds declared sample count"));
-        }
-        for c in &mut out {
-            c.try_reserve_exact(n)
-                .map_err(|_| Error::limit("Cannot allocate FLAC output"))?;
-        }
-        let mut subs = Vec::new();
-        for c in 0..channels {
+        for (c, samples) in self.samples.iter_mut().enumerate() {
             let extra =
                 (assign == 8 && c == 1) || (assign == 9 && c == 0) || (assign == 10 && c == 1);
-            subs.push(subframe(&mut br, n, bits + usize::from(extra))?);
+            subframe(&mut br, &mut samples[..n], bits + usize::from(extra))?;
         }
         if assign >= 8 {
+            let (left, right) = self.samples.split_at_mut(1);
+            let (left, right) = (&mut left[0], &mut right[0]);
             for i in 0..n {
-                let a = subs[0][i];
-                let b = subs[1][i];
+                let a = left[i];
+                let b = right[i];
                 match assign {
-                    8 => subs[1][i] = a - b,
-                    9 => subs[0][i] = a + b,
+                    8 => right[i] = a - b,
+                    9 => left[i] = a + b,
                     10 => {
                         let mid = (a << 1) | (b & 1);
-                        subs[0][i] = (mid + b) >> 1;
-                        subs[1][i] = (mid - b) >> 1;
+                        left[i] = (mid + b) >> 1;
+                        right[i] = (mid - b) >> 1;
                     }
                     _ => unreachable!(),
                 }
@@ -351,43 +405,66 @@ pub(crate) fn decode(bytes: &[u8], options: &DecodeOptions) -> Result<Audio> {
         if crc16(&bytes[start..start + end]) != crc {
             return Err(Error::decode("FLAC frame CRC mismatch"));
         }
-        r.pos = start + br.pos / 8;
-        let scale = (1u64 << (bits - 1)) as f64;
-        let mut raw = Vec::with_capacity(n * channels * bits.div_ceil(8));
+        self.raw.clear();
         for i in 0..n {
             for c in 0..channels {
-                let s = subs[c][i];
+                let s = self.samples[c][i];
                 if s < -(1i64 << (bits - 1)) || s >= (1i64 << (bits - 1)) {
                     return Err(Error::decode("FLAC sample exceeds bit depth"));
                 }
-                out[c].push((s as f64 / scale) as f32);
                 for j in 0..bits.div_ceil(8) {
-                    raw.push((s >> (8 * j)) as u8);
+                    self.raw.push((s >> (8 * j)) as u8);
                 }
             }
         }
-        pcm_hash.update(&raw);
+        Ok((n, start + br.pos / 8))
+    }
+}
+
+pub(crate) fn to_float(sample: i64, bits: usize) -> f32 {
+    (sample as f64 / (1u64 << (bits - 1)) as f64) as f32
+}
+
+pub(crate) fn decode(bytes: &[u8], options: &DecodeOptions) -> Result<Audio> {
+    let info = parse_info(bytes, &options.limits)?;
+    let (rate, channels, total) = (info.rate, info.channels, info.total);
+    let mut frame = FlacFrame::new(&info);
+    let mut out = vec![Vec::<f32>::new(); channels];
+    let mut pcm_hash = Md5::new();
+    let mut written = 0usize;
+    let mut pos = info.first_frame;
+    while pos < bytes.len() {
+        let (n, next_pos) = frame.decode(bytes, pos, &info)?;
+        let next = written
+            .checked_add(n)
+            .ok_or_else(|| Error::limit("FLAC frame count overflow"))?;
+        options.limits.check(next, channels, rate)?;
+        if total != 0 && next > total {
+            return Err(Error::decode("FLAC exceeds declared sample count"));
+        }
+        for (c, samples) in out.iter_mut().zip(&frame.samples) {
+            c.try_reserve_exact(n)
+                .map_err(|_| Error::limit("Cannot allocate FLAC output"))?;
+            c.extend(samples[..n].iter().map(|&s| to_float(s, info.bits)));
+        }
+        pcm_hash.update(&frame.raw);
         written = next;
+        pos = next_pos;
     }
     if total != 0 && written != total {
         return Err(Error::decode("FLAC sample count mismatch"));
     }
-    if expected_md5 != [0; 16] && pcm_hash.digest() != expected_md5 {
+    if info.md5 != [0; 16] && pcm_hash.digest() != info.md5 {
         return Err(Error::decode("FLAC PCM MD5 mismatch"));
     }
+    let sample_format = info.sample_format();
     Audio::decoded(
         out,
         rate,
         DecodeInfo {
             format: Some(AudioFormat::Flac),
-            sample_format: Some(if bits <= 16 {
-                SampleFormat::S16
-            } else if bits <= 24 {
-                SampleFormat::S24
-            } else {
-                SampleFormat::S32
-            }),
-            metadata,
+            sample_format: Some(sample_format),
+            metadata: info.metadata,
         },
     )
 }
@@ -562,74 +639,97 @@ pub(crate) fn encode(audio: &Audio, options: &EncodeOptions) -> Result<Vec<u8>> 
     Ok(out)
 }
 
-struct Md5 {
+const MD5_K: [u32; 64] = [
+    0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
+    0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821,
+    0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa, 0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8,
+    0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed, 0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a,
+    0xfffa3942, 0x8771f681, 0x6d9d6122, 0xfde5380c, 0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70,
+    0x289b7ec6, 0xeaa127fa, 0xd4ef3085, 0x04881d05, 0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665,
+    0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
+    0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1, 0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391,
+];
+
+/// MD5 of the decoded PCM, for checking FLAC's STREAMINFO signature. Allocation-free.
+pub(crate) struct Md5 {
     state: [u32; 4],
-    pending: Vec<u8>,
+    pending: [u8; 64],
+    filled: usize,
     length: u64,
 }
 impl Md5 {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             state: [0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476],
-            pending: Vec::new(),
+            pending: [0; 64],
+            filled: 0,
             length: 0,
         }
     }
-    fn update(&mut self, bytes: &[u8]) {
+    pub fn update(&mut self, mut bytes: &[u8]) {
         self.length += bytes.len() as u64;
-        self.pending.extend_from_slice(bytes);
-        let full = self.pending.len() / 64 * 64;
-        for chunk in self.pending[..full].chunks_exact(64) {
-            let mut m = [0u32; 16];
-            for (i, b) in chunk.chunks_exact(4).enumerate() {
-                m[i] = u32::from_le_bytes(b.try_into().unwrap());
-            }
-            let [mut a, mut b, mut c, mut d] = self.state;
-            let shifts = [
-                [7, 12, 17, 22],
-                [5, 9, 14, 20],
-                [4, 11, 16, 23],
-                [6, 10, 15, 21],
-            ];
-            for i in 0..64 {
-                let (f, g) = if i < 16 {
-                    ((b & c) | (!b & d), i)
-                } else if i < 32 {
-                    ((d & b) | (!d & c), (5 * i + 1) % 16)
-                } else if i < 48 {
-                    (b ^ c ^ d, (3 * i + 5) % 16)
-                } else {
-                    (c ^ (b | !d), (7 * i) % 16)
-                };
-                let k = (((i + 1) as f64).sin().abs() * 4294967296.0).floor() as u32;
-                let next = b.wrapping_add(
-                    a.wrapping_add(f)
-                        .wrapping_add(k)
-                        .wrapping_add(m[g])
-                        .rotate_left(shifts[i / 16][i % 4]),
-                );
-                a = d;
-                d = c;
-                c = b;
-                b = next;
-            }
-            for (s, v) in self.state.iter_mut().zip([a, b, c, d]) {
-                *s = s.wrapping_add(v);
+        while !bytes.is_empty() {
+            let n = (64 - self.filled).min(bytes.len());
+            self.pending[self.filled..self.filled + n].copy_from_slice(&bytes[..n]);
+            self.filled += n;
+            bytes = &bytes[n..];
+            if self.filled == 64 {
+                let block = self.pending;
+                self.block(&block);
+                self.filled = 0;
             }
         }
-        self.pending.drain(..full);
     }
-    fn digest(mut self) -> [u8; 16] {
+    fn block(&mut self, chunk: &[u8; 64]) {
+        let mut m = [0u32; 16];
+        for (i, b) in chunk.chunks_exact(4).enumerate() {
+            m[i] = u32::from_le_bytes(b.try_into().unwrap());
+        }
+        let [mut a, mut b, mut c, mut d] = self.state;
+        let shifts = [
+            [7, 12, 17, 22],
+            [5, 9, 14, 20],
+            [4, 11, 16, 23],
+            [6, 10, 15, 21],
+        ];
+        for i in 0..64 {
+            let (f, g) = if i < 16 {
+                ((b & c) | (!b & d), i)
+            } else if i < 32 {
+                ((d & b) | (!d & c), (5 * i + 1) % 16)
+            } else if i < 48 {
+                (b ^ c ^ d, (3 * i + 5) % 16)
+            } else {
+                (c ^ (b | !d), (7 * i) % 16)
+            };
+            let next = b.wrapping_add(
+                a.wrapping_add(f)
+                    .wrapping_add(MD5_K[i])
+                    .wrapping_add(m[g])
+                    .rotate_left(shifts[i / 16][i % 4]),
+            );
+            a = d;
+            d = c;
+            c = b;
+            b = next;
+        }
+        for (s, v) in self.state.iter_mut().zip([a, b, c, d]) {
+            *s = s.wrapping_add(v);
+        }
+    }
+    pub fn digest(mut self) -> [u8; 16] {
         let bits = self.length * 8;
-        let n = if self.pending.len() < 56 {
-            56 - self.pending.len()
+        let n = if self.filled < 56 {
+            56 - self.filled
         } else {
-            120 - self.pending.len()
+            120 - self.filled
         };
-        let mut pad = vec![0; n];
+        let mut pad = [0u8; 72];
         pad[0] = 128;
-        pad.extend_from_slice(&bits.to_le_bytes());
-        self.update(&pad);
+        pad[n..n + 8].copy_from_slice(&bits.to_le_bytes());
+        let length = self.length;
+        self.update(&pad[..n + 8]);
+        self.length = length;
         let mut out = [0; 16];
         for (i, s) in self.state.iter().enumerate() {
             out[i * 4..i * 4 + 4].copy_from_slice(&s.to_le_bytes());

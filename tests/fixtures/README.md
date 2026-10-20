@@ -4,3 +4,10 @@ These six files were generated from the original audiobox TypeScript implementat
 amplitude 0.4 on the right. PCM/FLAC files use 16-bit samples. MP3 uses VBR,
 quality 2 and a 192 kbit/s ceiling. The fixtures are synthetic, MIT-licensed
 repository test data and require no runtime JavaScript dependency.
+
+The `lame-*.mp3` and `ima-stereo.wav` files are synthetic sines encoded with FFmpeg 8
+and libmp3lame, for the incremental decoder's tests. `lame-stereo.mp3` is 3 s of
+44.1 kHz joint stereo (VBR `-q:a 6`, with a LAME gapless tag), `lame-mpeg2.mp3` 2 s
+of 22.05 kHz mono at 32 kbit/s (MPEG-2), and `lame-mpeg25.mp3` 2 s of 8 kHz mono at
+16 kbit/s (MPEG-2.5). Most of their frames use the bit reservoir. `ima-stereo.wav` is
+2 s of 11.025 kHz stereo IMA ADPCM.

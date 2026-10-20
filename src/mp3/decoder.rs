@@ -18,17 +18,35 @@ pub(super) struct Granule {
     pub count: usize,
 }
 #[derive(Clone, Default)]
-struct Scalefactors {
+pub(super) struct Scalefactors {
     long: [u32; 23],
     short: [[u32; 14]; 3],
     long_illegal: [bool; 23],
     short_illegal: [[bool; 14]; 3],
 }
-type SideInfo = (usize, Vec<[u32; 4]>, Vec<Vec<Granule>>);
+struct SideInfo {
+    /// main_data_begin: bytes of earlier frames' main data that this frame uses.
+    back: usize,
+    scfsi: [[u32; 4]; 2],
+    granules: [[Granule; 2]; 2],
+    count: usize,
+}
+/// The bit reservoir offset at the start of a frame's side information.
+pub(crate) fn main_data_begin(bytes: &[u8], pos: usize, h: Header) -> Result<usize> {
+    let start = pos + 4 + h.crc;
+    let side = bytes
+        .get(start..start + h.side)
+        .ok_or_else(|| Error::decode("Truncated MP3 frame"))?;
+    Ok(Bits::new(side).read(if h.version == 1 { 9 } else { 8 })? as usize)
+}
+/// Bytes of main data that a frame adds to the bit reservoir.
+pub(crate) fn payload_len(h: Header) -> usize {
+    h.length - 4 - h.crc - h.side
+}
 fn side(bytes: &[u8], h: Header) -> Result<SideInfo> {
     let mut br = Bits::new(bytes);
     let mpeg1 = h.version == 1;
-    let main = br.read(if mpeg1 { 9 } else { 8 })? as usize;
+    let back = br.read(if mpeg1 { 9 } else { 8 })? as usize;
     br.read(if mpeg1 {
         if h.channels == 1 { 5 } else { 3 }
     } else if h.channels == 1 {
@@ -36,19 +54,19 @@ fn side(bytes: &[u8], h: Header) -> Result<SideInfo> {
     } else {
         2
     })?;
-    let mut scfsi = vec![[0; 4]; h.channels];
+    let mut scfsi = [[0; 4]; 2];
     if mpeg1 {
-        for c in &mut scfsi {
+        for c in &mut scfsi[..h.channels] {
             for v in c {
                 *v = br.read(1)?;
             }
         }
     }
-    let mut granules = Vec::new();
-    for _ in 0..if mpeg1 { 2 } else { 1 } {
-        let mut gs = Vec::new();
-        for _ in 0..h.channels {
-            let mut g = Granule {
+    let mut granules: [[Granule; 2]; 2] = Default::default();
+    let count = if mpeg1 { 2 } else { 1 };
+    for gs in &mut granules[..count] {
+        for g in &mut gs[..h.channels] {
+            *g = Granule {
                 length: br.read(12)? as usize,
                 pairs: br.read(9)? as usize,
                 gain: br.read(8)?,
@@ -82,11 +100,14 @@ fn side(bytes: &[u8], h: Header) -> Result<SideInfo> {
             g.pre = mpeg1 && br.read(1)? != 0;
             g.scale = if br.read(1)? != 0 { 1.0 } else { 0.5 };
             g.count = br.read(1)? as usize;
-            gs.push(g);
         }
-        granules.push(gs);
     }
-    Ok((main, scfsi, granules))
+    Ok(SideInfo {
+        back,
+        scfsi,
+        granules,
+        count,
+    })
 }
 const NR: [[[usize; 4]; 3]; 6] = [
     [[6, 5, 5, 5], [9, 9, 9, 9], [6, 9, 9, 9]],
@@ -367,11 +388,17 @@ fn stereo(
 ) {
     let ms = h.extension & 2 != 0;
     let intensity = h.extension & 1 != 0;
-    let mut regions = Vec::new();
+    // At most 22 long bands, or 8 long and 39 short regions.
+    let mut regions = [(0, 0, 0, 0, 0, false); 64];
+    let mut count = 0;
+    let mut push = |region| {
+        regions[count] = region;
+        count += 1;
+    };
     if g.block != 2 {
         let bands = sfb_long(h.rate);
         for b in 0..22 {
-            regions.push((bands[b], bands[b + 1], 0, b, sf.long[b], sf.long_illegal[b]));
+            push((bands[b], bands[b + 1], 0, b, sf.long[b], sf.long_illegal[b]));
         }
     } else {
         let long = sfb_long(h.rate);
@@ -382,7 +409,7 @@ fn stereo(
                 if long[b] >= mixed_lines {
                     break;
                 }
-                regions.push((
+                push((
                     long[b],
                     long[b + 1].min(mixed_lines),
                     0,
@@ -396,13 +423,14 @@ fn stereo(
         for b in if g.mixed { 3 } else { 0 }..13 {
             for w in 0..3 {
                 let end = (pos + short[b + 1] - short[b]).min(576);
-                regions.push((pos, end, w, b, sf.short[w][b], sf.short_illegal[w][b]));
+                push((pos, end, w, b, sf.short[w][b], sf.short_illegal[w][b]));
                 pos = end;
             }
         }
     }
+    let regions = &regions[..count];
     let mut last = [None; 3];
-    for &(from, to, w, b, _, _) in &regions {
+    for &(from, to, w, b, _, _) in regions {
         if right[from..to].iter().any(|&s| s != 0.0) {
             last[w] = Some(b);
         }
@@ -413,7 +441,7 @@ fn stereo(
             last.fill(Some(b));
         }
     }
-    for &(from, to, w, b, mut position, mut illegal) in &regions {
+    for &(from, to, w, b, mut position, mut illegal) in regions {
         let final_band = if g.block == 2 { 12 } else { 21 };
         if b == final_band {
             if last[w].is_some_and(|n| n >= b - 1) {
@@ -464,6 +492,123 @@ fn stereo(
         }
     }
 }
+/// Samples that a decoder adds before the first sample of the stream.
+pub(crate) const DECODER_DELAY: usize = 529;
+/// Samples of filter tail emitted after the last frame.
+pub(crate) const FLUSH: usize = 64;
+
+/// The state carried from frame to frame: the bit reservoir, the IMDCT overlap and
+/// the synthesis filterbank. Decoding a frame allocates nothing.
+#[derive(Clone)]
+pub(crate) struct Mp3State {
+    channels: usize,
+    rate: u32,
+    history: Vec<u8>,
+    main: Vec<u8>,
+    overlap: [[f32; 576]; 2],
+    synth: [transform::Synthesis; 2],
+    previous: [Scalefactors; 2],
+}
+impl Mp3State {
+    pub fn new(channels: usize, rate: u32) -> Self {
+        transform::prepare();
+        Self {
+            channels,
+            rate,
+            history: Vec::with_capacity(4096 + 2048),
+            main: Vec::with_capacity(4096 + 2048),
+            overlap: [[0.0; 576]; 2],
+            synth: [transform::Synthesis::new(), transform::Synthesis::new()],
+            previous: Default::default(),
+        }
+    }
+    pub fn reset(&mut self) {
+        self.history.clear();
+        self.overlap = [[0.0; 576]; 2];
+        self.synth = [transform::Synthesis::new(), transform::Synthesis::new()];
+        self.previous = Default::default();
+    }
+    /// Adds the frame at `pos` to the bit reservoir and, when `output` is set and the
+    /// reservoir holds the earlier data the frame refers to, decodes it into
+    /// `out[channel][..n]`. Returns `n`, or 0 when the frame was not decoded.
+    pub fn frame(
+        &mut self,
+        bytes: &[u8],
+        pos: usize,
+        h: Header,
+        output: bool,
+        out: &mut [[f32; 1152]; 2],
+    ) -> Result<usize> {
+        let side_start = pos + 4 + h.crc;
+        let data_start = side_start + h.side;
+        let payload = &bytes[data_start..pos + h.length];
+        let SideInfo {
+            back,
+            scfsi,
+            mut granules,
+            count,
+        } = side(&bytes[side_start..data_start], h)?;
+        let enough = back <= self.history.len();
+        self.main.clear();
+        if enough {
+            self.main
+                .extend_from_slice(&self.history[self.history.len() - back..]);
+        }
+        self.main.extend_from_slice(payload);
+        self.history.extend_from_slice(payload);
+        if self.history.len() > 4096 {
+            self.history.drain(..self.history.len() - 4096);
+        }
+        if !output || !enough {
+            return Ok(0);
+        }
+        let (channels, rate) = (self.channels, self.rate);
+        let main = &self.main;
+        let mut br = Bits::new(main);
+        for (gr, gs) in granules[..count].iter_mut().enumerate() {
+            let mut spectra = [[0.0; 576]; 2];
+            let mut factors: [Scalefactors; 2] = Default::default();
+            for ch in 0..channels {
+                let g = &mut gs[ch];
+                let end = br
+                    .pos
+                    .checked_add(g.length)
+                    .filter(|&n| n <= main.len() * 8)
+                    .ok_or_else(|| Error::decode("MP3 granule exceeds main data"))?;
+                let sf = scalefactors(&mut br, g, h, scfsi[ch], gr, &self.previous[ch], ch)?;
+                if br.pos > end {
+                    return Err(Error::decode("MP3 scalefactors exceed granule"));
+                }
+                let (values, _) = huffman(&mut br, g, rate, end)?;
+                spectra[ch] = requantize(&values, g, &sf, rate);
+                br.pos = end;
+                self.previous[ch] = sf.clone();
+                factors[ch] = sf;
+            }
+            if channels == 2 && h.mode == 1 {
+                let (l, r) = spectra.split_at_mut(1);
+                stereo(&mut l[0], &mut r[0], h, &gs[1], &factors[1]);
+            }
+            for ch in 0..channels {
+                reorder(&mut spectra[ch], &gs[ch], rate);
+                transform::alias(&mut spectra[ch], gs[ch].block == 2, gs[ch].mixed, false);
+                let time = transform::imdct(&spectra[ch], &gs[ch], &mut self.overlap[ch]);
+                self.synth[ch].granule(&time, &mut out[ch][gr * 576..gr * 576 + 576]);
+            }
+        }
+        Ok(count * 576)
+    }
+    /// Writes the synthesis filter's tail, [`FLUSH`] samples, after the last frame.
+    pub fn flush(&mut self, out: &mut [[f32; 1152]; 2]) -> usize {
+        for (samples, synth) in out.iter_mut().zip(&mut self.synth).take(self.channels) {
+            for half in samples[..FLUSH].chunks_exact_mut(32) {
+                half.copy_from_slice(&synth.process(&[0.0; 32]));
+            }
+        }
+        FLUSH
+    }
+}
+
 pub(crate) fn decode(bytes: &[u8], options: &DecodeOptions) -> Result<Audio> {
     let (at, first) = find(bytes, tag_size(bytes))
         .ok_or_else(|| Error::decode("No readable MPEG Layer III frame"))?;
@@ -479,12 +624,9 @@ pub(crate) fn decode(bytes: &[u8], options: &DecodeOptions) -> Result<Audio> {
             .ok_or_else(|| Error::limit("MP3 sample count overflow"))?;
         options.limits.check(frames, channels, rate)?;
     }
-    let mut history = Vec::new();
-    let mut overlap = vec![[0.0; 576]; channels];
-    let mut synth: Vec<_> = (0..channels).map(|_| transform::Synthesis::new()).collect();
-    let mut previous = vec![Scalefactors::default(); channels];
+    let mut state = Mp3State::new(channels, rate);
+    let mut buffer = Box::new([[0.0; 1152]; 2]);
     let mut pos = at;
-    let mut index = 0;
     let mut frames = 0usize;
     while let Some(h) = super::header(bytes, pos) {
         if pos + h.length > bytes.len() {
@@ -493,70 +635,20 @@ pub(crate) fn decode(bytes: &[u8], options: &DecodeOptions) -> Result<Audio> {
         if h.rate != rate || h.channels != channels {
             return Err(Error::decode("MP3 stream shape changed"));
         }
-        let side_start = pos + 4 + h.crc;
-        let data_start = side_start + h.side;
-        let payload = &bytes[data_start..pos + h.length];
-        let (back, scfsi, mut granules) = side(&bytes[side_start..data_start], h)?;
-        let enough = back <= history.len();
-        let mut main = if enough {
-            history[history.len() - back..].to_vec()
-        } else {
-            Vec::new()
-        };
-        main.extend_from_slice(payload);
-        history.extend_from_slice(payload);
-        if history.len() > 4096 {
-            history.drain(..history.len() - 4096);
-        }
+        let output_frame = !(pos == at && tag.is_some());
+        let n = state.frame(bytes, pos, h, output_frame, &mut buffer)?;
         pos += h.length;
-        index += 1;
-        if index == 1 && tag.is_some() {
-            continue;
-        }
-        if !enough {
+        if n == 0 {
             continue;
         }
         let next = frames
-            .checked_add(granules.len() * 576)
+            .checked_add(n)
             .ok_or_else(|| Error::limit("MP3 sample count overflow"))?;
         options.limits.check(next, channels, rate)?;
-        for c in &mut output {
-            c.try_reserve_exact(next - frames)
+        for (c, samples) in output.iter_mut().zip(buffer.iter()) {
+            c.try_reserve_exact(n)
                 .map_err(|_| Error::limit("Cannot allocate MP3 output"))?;
-        }
-        let mut br = Bits::new(&main);
-        for (gr, gs) in granules.iter_mut().enumerate() {
-            let mut spectra = [[0.0; 576]; 2];
-            let mut factors = Vec::new();
-
-            for ch in 0..channels {
-                let g = &mut gs[ch];
-                let end = br
-                    .pos
-                    .checked_add(g.length)
-                    .filter(|&n| n <= main.len() * 8)
-                    .ok_or_else(|| Error::decode("MP3 granule exceeds main data"))?;
-                let sf = scalefactors(&mut br, g, h, scfsi[ch], gr, &previous[ch], ch)?;
-                if br.pos > end {
-                    return Err(Error::decode("MP3 scalefactors exceed granule"));
-                }
-                let (values, _) = huffman(&mut br, g, rate, end)?;
-
-                spectra[ch] = requantize(&values, g, &sf, rate);
-                br.pos = end;
-                previous[ch] = sf.clone();
-                factors.push(sf);
-            }
-            if channels == 2 && h.mode == 1 {
-                let (l, r) = spectra.split_at_mut(1);
-                stereo(&mut l[0], &mut r[0], h, &gs[1], &factors[1]);
-            }
-            for ch in 0..channels {
-                reorder(&mut spectra[ch], &gs[ch], rate);
-                transform::alias(&mut spectra[ch], gs[ch].block == 2, gs[ch].mixed, false);
-                let time = transform::imdct(&spectra[ch], &gs[ch], &mut overlap[ch]);
-                output[ch].extend_from_slice(&synth[ch].granule(&time));
-            }
+            c.extend_from_slice(&samples[..n]);
         }
         frames = next;
     }
@@ -565,24 +657,22 @@ pub(crate) fn decode(bytes: &[u8], options: &DecodeOptions) -> Result<Audio> {
     }
     options.limits.check(
         frames
-            .checked_add(64)
+            .checked_add(FLUSH)
             .ok_or_else(|| Error::limit("MP3 flush overflow"))?,
         channels,
         rate,
     )?;
-    for ch in 0..channels {
-        output[ch]
-            .try_reserve_exact(64)
+    state.flush(&mut buffer);
+    for (c, samples) in output.iter_mut().zip(buffer.iter()) {
+        c.try_reserve_exact(FLUSH)
             .map_err(|_| Error::limit("Cannot allocate MP3 filter tail"))?;
-        for _ in 0..2 {
-            output[ch].extend_from_slice(&synth[ch].process(&[0.0; 32]));
-        }
+        c.extend_from_slice(&samples[..FLUSH]);
     }
     let tag = tag.unwrap_or_default();
-    let start = (tag.delay + 529 + 64).min(output[0].len());
+    let start = (tag.delay + DECODER_DELAY + FLUSH).min(output[0].len());
     let end = output[0]
         .len()
-        .saturating_sub(tag.padding.saturating_sub(529))
+        .saturating_sub(tag.padding.saturating_sub(DECODER_DELAY))
         .max(start);
     let data = output.into_iter().map(|c| c[start..end].to_vec()).collect();
     Audio::decoded(
