@@ -1,11 +1,10 @@
 name: Rust
 
+# Runs when a release is published, or on demand from the Actions tab, to save
+# Actions minutes. Run the checks locally before releasing (see the README).
 on:
-  push:
-    branches: [main, master]
-    paths: ['Cargo.toml', 'Cargo.lock', 'src/**', 'tests/**', 'examples/*.rs', 'README.md', '.github/workflows/ci.yml']
-  pull_request:
-    paths: ['Cargo.toml', 'Cargo.lock', 'src/**', 'tests/**', 'examples/*.rs', 'README.md', '.github/workflows/ci.yml']
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:

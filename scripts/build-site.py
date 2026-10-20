@@ -57,7 +57,7 @@ def verify_examples():
         (project / 'examples').mkdir()
         (project / 'Cargo.toml').write_text(
             '[package]\nname = "audiobox-doc-examples"\nversion = "0.0.0"\nedition = "2024"\n'
-            f'[dependencies]\naudiobox = {{ path = "{ROOT.as_posix()}" }}\n')
+            f'[dependencies]\naudiobox = {{ path = "{ROOT.as_posix()}", features = ["mixer", "sfx"] }}\n')
         for i, code in enumerate(snippets.snippets):
             if not re.search(r'\bfn\s+main\s*\(', code):
                 code += '\nfn main() {}\n'
@@ -67,7 +67,7 @@ def verify_examples():
 
 def verify_links(output):
     documents = {}
-    for file in [output / 'index.html', output / 'sandbox.html', output / 'docs/index.html']:
+    for file in [output / 'index.html', output / 'sandbox.html', output / 'playground.html', output / 'docs/index.html']:
         parsed = Links()
         parsed.feed(file.read_text())
         documents[file.resolve()] = parsed
@@ -95,11 +95,11 @@ def main():
         raise RuntimeError('Choose a separate output directory.')
     run('cargo', 'build', '--locked', '--offline', '--release', '--target', 'wasm32-unknown-unknown',
         '--manifest-path', 'site/wasm/Cargo.toml')
-    run('cargo', 'doc', '--locked', '--offline', '--no-deps')
+    run('cargo', 'doc', '--locked', '--offline', '--no-deps', '--all-features')
     if not args.skip_example_check:
         verify_examples()
     output.mkdir(parents=True, exist_ok=True)
-    for relative in ('index.html', 'sandbox.html', '404.html', 'docs/index.html'):
+    for relative in ('index.html', 'sandbox.html', 'playground.html', '404.html', 'docs/index.html'):
         destination = output / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / 'site' / relative, destination)

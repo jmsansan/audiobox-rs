@@ -1,16 +1,17 @@
 [package]
 name = "audiobox"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.85"
 authors = ["Jose Sanchez <jose.sansan@proton.me>"]
-description = "Audio decoding, editing, analysis and encoding in Rust"
+description = "Zero-dependency, safe Rust audio: decode, edit, analyze, encode and stream WAV, FLAC and MP3, plus a real-time game mixer, an 8-bit chiptune synthesizer and sfxr-style sound effects"
 license = "MIT"
 repository = "https://github.com/jmsansan/audiobox-rs"
-homepage = "https://github.com/jmsansan/audiobox-rs"
+homepage = "https://jmsansan.github.io/audiobox-rs/"
+documentation = "https://docs.rs/audiobox"
 readme = "README.md"
-keywords = ["audio", "wav", "flac", "mp3", "dsp"]
-categories = ["multimedia::audio", "encoding"]
+keywords = ["audio", "gamedev", "mp3", "flac", "synthesizer"]
+categories = ["multimedia::audio", "multimedia::encoding", "game-development", "encoding", "wasm"]
 include = ["/Cargo.toml", "/Cargo.lock", "/src/**", "/tests/**", "/examples/*.rs", "/README.md", "/CHANGELOG.md", "/LICENSE"]
 
 [features]
@@ -26,6 +27,7 @@ mixer = []
 
 [package.metadata.docs.rs]
 all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [[example]]
 name = "chiptune"

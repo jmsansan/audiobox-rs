@@ -33,7 +33,7 @@ let original, faded;
 function selectAudio(isFaded) {
   const selected = isFaded ? faded : original;
   player.set(selected.bytes, selected.stats.duration);
-  drawWave($('hero-wave'), selected.wave, isFaded ? '#6841cb' : '#202a50');
+  drawWave($('hero-wave'), selected.wave, isFaded ? '--accent' : '--ink');
   $('demo-original').setAttribute('aria-pressed', !isFaded);
   $('demo-faded').setAttribute('aria-pressed', isFaded);
   $('hero-operation').textContent = isFaded ? 'audio.fade(0.8, 1.2, FadeCurve::EqualPower)?' : 'audio.clone()';

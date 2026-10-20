@@ -8,7 +8,7 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-audiobox = { path = "../.." }
+audiobox = { path = "../..", features = ["sfx"] }
 
 [profile.release]
 opt-level = "s"

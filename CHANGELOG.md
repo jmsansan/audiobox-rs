@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.2.1
+
+### Changed
+
+- Crate metadata for discovery: a description that covers game audio, `gamedev` and
+  `synthesizer` keywords, the `multimedia::encoding`, `game-development` and `wasm`
+  categories, and links to the website and docs.rs.
+- A crate overview on the docs.rs front page, and feature badges on the `mixer`,
+  `synth` and `sfx` items.
+- The README's opening: what the crate does, badges, examples for files and games,
+  and when to use it or another crate.
+
+### Website
+
+- A playground that generates sound effects from presets and seeds, with every
+  parameter on a slider and its text form, and renders chiptune scores with errors at
+  their line and column. Both run this crate through WebAssembly and export WAV.
+- A dark theme, now the default, with a toggle that remembers the choice.
+- Guide sections on incremental decoding and game audio, and the API reference with
+  every feature.
+
 ## 0.2.0
 
 Every addition keeps the crate free of dependencies and `unsafe`. New modules sit

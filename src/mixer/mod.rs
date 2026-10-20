@@ -145,6 +145,7 @@ impl<B: AsRef<[u8]> + Send + 'static> Stream for crate::stream::Decoder<B> {
 /// [`RenderOptions::loops`](crate::synth::RenderOptions::loops) is `None`; as a voice
 /// loop it can only return to its start.
 #[cfg(feature = "synth")]
+#[cfg_attr(docsrs, doc(cfg(feature = "synth")))]
 impl Stream for crate::synth::Synth {
     fn sample_rate(&self) -> u32 {
         crate::synth::Synth::sample_rate(self)
@@ -195,6 +196,7 @@ impl<B: AsRef<[u8]> + Send + 'static> From<crate::stream::Decoder<B>> for Sound 
     }
 }
 #[cfg(feature = "synth")]
+#[cfg_attr(docsrs, doc(cfg(feature = "synth")))]
 impl From<crate::synth::Synth> for Sound {
     fn from(synth: crate::synth::Synth) -> Self {
         Self::stream(synth)

@@ -1,46 +1,58 @@
-# audiobox for Rust
+# audiobox
 
-Audio decoding, editing, analysis and encoding in **safe Rust with zero dependencies**.
-The crate uses the Rust standard library: no C/C++ libraries, FFmpeg subprocesses,
-WebAssembly blobs, build scripts, or runtime downloads.
+[![crates.io](https://img.shields.io/crates/v/audiobox.svg)](https://crates.io/crates/audiobox)
+[![docs.rs](https://docs.rs/audiobox/badge.svg)](https://docs.rs/audiobox)
+[![CI](https://github.com/jmsansan/audiobox-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/jmsansan/audiobox-rs/actions/workflows/ci.yml)
+[![MSRV 1.85](https://img.shields.io/badge/rust-1.85%2B-blue.svg)](#install)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-The Rust implementation lives in `src/` and is built by the root `Cargo.toml`.
-The original TypeScript package is maintained separately in
-[jmsansan/audiobox](https://github.com/jmsansan/audiobox).
-The current Rust release is version **0.2.0**, with an API independent of the npm version.
-See [CHANGELOG.md](CHANGELOG.md) for what changed.
+**Audio in safe Rust with zero dependencies: decode, edit, analyze, encode and stream
+WAV, FLAC and MP3, and give a game its sound with a real-time mixer, an 8-bit chiptune
+synthesizer and sfxr-style sound effects.**
+
+No C libraries, FFmpeg, build scripts or `unsafe`: only the standard library. It
+compiles to WebAssembly, and the synthesizer, effects and mixer render the same samples
+on every platform.
+
+**[Try it in your browser →](https://jmsansan.github.io/audiobox-rs/playground.html)**
+Generate sound effects and play chiptune scores, rendered by this crate through
+WebAssembly. The [sandbox](https://jmsansan.github.io/audiobox-rs/sandbox.html) edits
+your own audio files the same way.
+
+- **Codecs:** decode WAV, AIFF, CAF, AU, FLAC and MP3; encode all of them, including
+  FLAC and MP3. Formats are detected from the bytes.
+- **Editing and analysis:** cut, mix, fade, filter, resample, limit, change tempo and
+  pitch; measure peaks, RMS, LUFS loudness and spectra.
+- **Streaming:** decode WAV, FLAC and MP3 a chunk at a time, with seeking and bounded
+  memory, so games play music without decoding it whole.
+- **Game audio:** a mixer for audio callbacks (voices, buses, fades, loops, resampling,
+  no allocation while rendering), a synthesizer that plays text scores, and a
+  sound-effect generator with seeded presets.
 
 ## Install
-
-Website, live sandbox and API guide: [jmsansan.github.io/audiobox-rs](https://jmsansan.github.io/audiobox-rs/).
-
-## Use from this checkout
-
-```toml
-[dependencies]
-audiobox = { path = "/path/to/audiobox-rs" }
-```
-
-Install the published crate from crates.io:
 
 ```toml
 [dependencies]
 audiobox = "0.2"
 ```
 
-Rust 1.85 or newer is required. The crate has no dependencies. Optional features add
-modules without adding dependencies, so you compile only what you use:
+Rust 1.85 or newer. Optional features add modules, never dependencies, so you compile
+only what you use:
 
 | Feature | Module | Adds |
 | --- | --- | --- |
-| `synth` | `audiobox::synth` | 8-bit style synthesizer and text score format |
-| `sfx` | `audiobox::sfx` | Parametric sound-effect generator with seeded presets (enables `synth`) |
-| `mixer` | `audiobox::mixer` | Real-time mixer for games: voices, buses, fades, loops and resampling |
+| `mixer` | [`audiobox::mixer`](https://docs.rs/audiobox/latest/audiobox/mixer/) | Real-time game mixer: voices, buses, fades, loops and resampling |
+| `synth` | [`audiobox::synth`](https://docs.rs/audiobox/latest/audiobox/synth/) | 8-bit style synthesizer and text score format |
+| `sfx` | [`audiobox::sfx`](https://docs.rs/audiobox/latest/audiobox/sfx/) | Parametric sound effects with seeded presets (enables `synth`) |
 
 ```toml
 [dependencies]
 audiobox = { version = "0.2", features = ["mixer", "synth", "sfx"] }
 ```
+
+## Examples
+
+Prepare a recording: cut, downmix, resample, normalize and encode.
 
 ```rust
 use audiobox::{AudioFormat, NormalizeOptions, decode, encode};
@@ -56,9 +68,58 @@ fn prepare_recording(bytes: &[u8]) -> audiobox::Result<Vec<u8>> {
 }
 ```
 
+Give a game its sound: chiptune music from a text score and a jump effect from a seed,
+mixed in the audio callback.
+
+```rust
+use audiobox::mixer::{Mixer, MixerConfig, Play};
+use audiobox::sfx::{Effect, Preset};
+use audiobox::synth::{RenderOptions, Score, Synth};
+use std::sync::Arc;
+
+fn game_audio() -> audiobox::Result<()> {
+    let (mut mixer, mut handle) = Mixer::new(MixerConfig::default())?;
+    let score: Score = "
+        tempo 140
+        instrument lead wave=pulse duty=25 adsr=4,80,60,60 vibrato=12,170,200
+        channel melody = @lead o5 l8 L [c e g >c< g e]2
+    ".parse()?;
+    let looping = RenderOptions { loops: None, ..RenderOptions::default() };
+    handle.play(Synth::new(&score, 48_000, &looping)?, &Play { priority: 255, ..Play::default() })?;
+
+    let jump = Arc::new(Effect::preset(Preset::Jump, 7).render(48_000)?);
+    handle.play(jump, &Play { pan: -0.3, ..Play::default() })?;
+
+    let mut buffer = vec![0.0f32; 2 * 512]; // In the audio callback:
+    mixer.render(&mut buffer);
+    Ok(())
+}
+```
+
+More in [`examples/`](examples): `convert`, `chiptune` (a song to WAV), `sfx` (effects
+to WAV) and `game_audio` (music and effects mixed on an audio thread).
+
+## When to use audiobox
+
+audiobox fits when you want one dependency-free crate that both decodes **and encodes**,
+edits and analyzes audio; when you need deterministic synthesized audio for a game; when
+you target WebAssembly; or when you want to bring your own audio output. It does not open
+audio devices: pass the mixer's `render` to the callback of whatever library does.
+
+Other crates may suit you better:
+
+- [symphonia](https://crates.io/crates/symphonia) decodes many more formats and codecs,
+  such as AAC, ALAC and Vorbis, and is tuned for decoding speed. It does not encode.
+- [hound](https://crates.io/crates/hound) reads and writes WAV, and nothing else.
+- [rodio](https://crates.io/crates/rodio) plays audio on output devices through cpal.
+- [kira](https://crates.io/crates/kira) is a complete game audio engine with device
+  output, mixer tracks, tweens and effects such as reverb.
+
 All transforms create a new `Audio`. Channel data is exposed as immutable slices;
 construction validates channel lengths and finite samples. Errors are `Result<T, Error>`
-with a stable `ErrorCode`.
+with a stable `ErrorCode`. The original TypeScript package lives separately in
+[jmsansan/audiobox](https://github.com/jmsansan/audiobox); the Rust API is independent
+of it. See [CHANGELOG.md](CHANGELOG.md) for releases.
 
 ## Formats
 
@@ -427,39 +488,34 @@ Render a short scene with music and effects to a WAV file:
 cargo run --example game_audio --features mixer,sfx -- game.wav
 ```
 
-## Development and publishing
+## Development and releases
+
+CI runs only when a release is published (or on demand from the Actions tab), so run
+the checks locally before releasing:
 
 ```sh
 cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo clippy --all-targets --features synth -- -D warnings
+cargo clippy --all-targets --features mixer -- -D warnings
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-features
 cargo test --release --all-features
-cargo doc --no-deps --all-features
-cargo package --list
+cargo +1.85.0 test --all-features
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
+AUDIOBOX_FFMPEG_TESTS=1 cargo test --test interop   # needs FFmpeg
+python3 scripts/build-site.py && node --test site/tests/engine.test.mjs
 cargo publish --dry-run
 ```
 
-Independent interoperability tests use an installed FFmpeg **only in tests**:
+The interoperability tests use an installed FFmpeg **only in tests**. Publishing a
+GitHub release runs CI on Linux, macOS and Windows, MSRV and FFmpeg interoperability,
+and builds and deploys the website. The `.crate` contains the Rust implementation,
+tests, examples, this README, the changelog and the MIT license; it excludes the
+website and build output.
 
-```sh
-AUDIOBOX_FFMPEG_TESTS=1 cargo test --test interop
-```
-
-CI runs Rust formatting, linting, tests on Linux/macOS/Windows, MSRV compilation,
-FFmpeg interoperability, and package verification. The `.crate` contains the Rust
-implementation, tests, Rust example, this README and MIT license; it excludes the
-TypeScript sources, node_modules, website and build output.
-
-Try the file-conversion example:
-
-```sh
-cargo run --example convert -- input.mp3 output.flac
-```
-
-Publishing has not been performed by preparing this checkout. Before the first release,
-verify that the `audiobox` name is available to your crates.io account. Follow the
-[Cargo publishing guide](https://doc.rust-lang.org/cargo/reference/publishing.html),
-authenticate with `cargo login`, commit the release, then run `cargo publish`.
+To release: update `CHANGELOG.md` and the version in `Cargo.toml`, run the checks,
+merge to `main`, run `cargo publish`, then tag `vX.Y.Z` and publish a GitHub release.
 
 ## License
 
