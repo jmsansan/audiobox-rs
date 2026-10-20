@@ -7,7 +7,8 @@ WebAssembly blobs, build scripts, or runtime downloads.
 The Rust implementation lives in `src/` and is built by the root `Cargo.toml`.
 The original TypeScript package is maintained separately in
 [jmsansan/audiobox](https://github.com/jmsansan/audiobox).
-This is the first Rust release, version **0.1.0**, with an API independent of the npm version.
+The current Rust release is version **0.2.0**, with an API independent of the npm version.
+See [CHANGELOG.md](CHANGELOG.md) for what changed.
 
 ## Install
 
@@ -24,7 +25,7 @@ Install the published crate from crates.io:
 
 ```toml
 [dependencies]
-audiobox = "0.1"
+audiobox = "0.2"
 ```
 
 Rust 1.85 or newer is required. The crate has no dependencies. Optional features add
@@ -34,10 +35,11 @@ modules without adding dependencies, so you compile only what you use:
 | --- | --- | --- |
 | `synth` | `audiobox::synth` | 8-bit style synthesizer and text score format |
 | `sfx` | `audiobox::sfx` | Parametric sound-effect generator with seeded presets (enables `synth`) |
+| `mixer` | `audiobox::mixer` | Real-time mixer for games: voices, buses, fades, loops and resampling |
 
 ```toml
 [dependencies]
-audiobox = { version = "0.1", features = ["synth", "sfx"] }
+audiobox = { version = "0.2", features = ["mixer", "synth", "sfx"] }
 ```
 
 ```rust
@@ -358,6 +360,71 @@ Write a few effects to WAV files:
 
 ```sh
 cargo run --example sfx --features sfx -- out_dir
+```
+
+## Mixer (`mixer` feature)
+
+`audiobox::mixer` mixes a game's sounds in its audio callback. The crate does not open
+the audio device: pass `Mixer::render` to whatever library does (the callback of
+`cpal`, Web Audio, SDL and so on).
+
+```rust
+use audiobox::mixer::{Fade, Loop, Mixer, MixerConfig, Play};
+use audiobox::stream::Decoder;
+use std::sync::Arc;
+
+fn start(music: &'static [u8], jump: Arc<audiobox::Audio>) -> audiobox::Result<()> {
+    let (mut mixer, mut handle) = Mixer::new(MixerConfig {
+        buses: vec!["music".into(), "effects".into()],
+        ..MixerConfig::default() // 48 kHz stereo, 32 voices
+    })?;
+    let music_bus = handle.bus("music").unwrap();
+    let effects = handle.bus("effects").unwrap();
+
+    // Game thread: compressed music streams; effects share decoded audio.
+    handle.play(Decoder::new(music)?, &Play {
+        bus: music_bus,
+        looping: Loop::Whole,
+        priority: 255,
+        fade_in: Fade::linear(2.0),
+        ..Play::default()
+    })?;
+    let voice = handle.play(jump, &Play { bus: effects, pan: 0.3, ..Play::default() })?;
+    handle.set_bus_gain(music_bus, 0.5, Fade::linear(0.3))?;
+    handle.stop(voice, Fade::linear(0.05))?;
+
+    // Audio thread: once per device buffer (interleaved stereo).
+    let mut buffer = vec![0.0f32; 2 * 512];
+    mixer.render(&mut buffer);
+
+    // Game thread, once per frame: events, and freeing finished voices.
+    while let Some(_event) = handle.poll_event() {}
+    Ok(())
+}
+```
+
+- **Sounds:** decoded `Audio` shared through an `Arc`, so several voices play one sound
+  without copying it, and streams: the incremental `Decoder`, a synthesizer `Synth`, or
+  any `mixer::Stream`. Effects from `sfx` play as rendered `Audio`.
+- **Voices:** gain, constant-power pan, looping (the whole sound or a region), and
+  fades in, out and between gains with a `FadeCurve`. At most `max_voices` play; a new
+  voice takes the place of the lowest-priority, oldest voice if that priority is not
+  higher than its own, which fades out over 5 ms; otherwise the new voice is rejected.
+- **Buses:** a master bus and named buses, each with a gain that can fade.
+- **Rendering:** `render(&mut [f32])` fills interleaved mono or stereo at the output
+  rate, resampling sources at other rates with a 16-tap windowed-sinc filter. It writes
+  whole frames and zeroes any remainder; 0 frames only applies due changes.
+- **Real time:** `render` allocates nothing, takes no lock and does not block. Changes
+  travel through a bounded queue drained at the start of each render, and finished
+  voices travel back to be freed on the game's thread.
+- **Determinism:** `handle.at(frame)` schedules changes at exact frames, independent of
+  buffer sizes, and the same changes at the same frames give the same samples on every
+  platform.
+
+Render a short scene with music and effects to a WAV file:
+
+```sh
+cargo run --example game_audio --features mixer,sfx -- game.wav
 ```
 
 ## Development and publishing

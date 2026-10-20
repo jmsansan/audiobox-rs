@@ -1,3 +1,4 @@
+#![allow(dead_code)] // Each feature uses part of this module.
 //! Deterministic replacements for platform math. Only `+`, `-`, `*`, `/` and `floor`
 //! are used, which IEEE 754 rounds identically on every target.
 use std::f64::consts::{LN_2, TAU};
@@ -34,7 +35,6 @@ pub(crate) fn sin_turns(x: f64) -> f64 {
 }
 
 /// `cos(2πx)`.
-#[cfg_attr(not(feature = "sfx"), allow(dead_code))]
 pub(crate) fn cos_turns(x: f64) -> f64 {
     sin_turns(x + 0.25)
 }

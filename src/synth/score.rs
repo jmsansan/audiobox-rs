@@ -73,7 +73,7 @@ impl Pitch {
     }
     /// Equal-tempered frequency with A4 at 440 Hz.
     pub fn frequency(self) -> f64 {
-        super::math::cents_to_hz((self.0 as f64 - 69.0) * 100.0)
+        crate::math::cents_to_hz((self.0 as f64 - 69.0) * 100.0)
     }
 }
 
