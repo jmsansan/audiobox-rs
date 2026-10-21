@@ -1913,3 +1913,74 @@ fn positions_wrap_for_loops_of_unknown_length() {
     render(&mut m, 2, 2);
     assert_eq!(h.voice_status(id).unwrap().position, (3 * 128) % 10);
 }
+
+#[test]
+fn instance_limits_respect_priorities() {
+    let coin = mono(vec![0.5; 48_000], RATE);
+    let (mut m, mut h) = mixer(1, &[], 1);
+    let limit = Instances::of(&coin).max(1).policy(OverLimit::StopOldest);
+    let high = h
+        .play(
+            coin.clone(),
+            &Play {
+                priority: 255,
+                instances: Some(limit),
+                ..Play::default()
+            },
+        )
+        .unwrap();
+    let low = h
+        .at(100)
+        .play(
+            coin.clone(),
+            &Play {
+                priority: 0,
+                instances: Some(limit),
+                ..Play::default()
+            },
+        )
+        .unwrap();
+    render(&mut m, 500, 100);
+    assert_eq!(events(&mut h), [MixerEvent::Limited(low)]);
+    assert_eq!(h.voice_status(high).unwrap().state, VoiceState::Playing);
+}
+
+/// A stream that gives `frames` frames, then fails.
+struct Failing {
+    frames: usize,
+}
+impl Stream for Failing {
+    fn sample_rate(&self) -> u32 {
+        RATE
+    }
+    fn channels(&self) -> usize {
+        1
+    }
+    fn read(&mut self, out: &mut [f32]) -> audiobox::Result<usize> {
+        if self.frames == 0 {
+            return Err(audiobox::Error::new(ErrorCode::DecodeError, "broken"));
+        }
+        let n = out.len().min(self.frames);
+        out[..n].fill(0.25);
+        self.frames -= n;
+        Ok(n)
+    }
+    fn seek(&mut self, _frame: u64) -> audiobox::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_stream_failing_while_publishing_is_reported_at_once() {
+    let (mut m, mut h) = mixer(1, &[], 4);
+    let id = h
+        .play(Sound::stream(Failing { frames: 256 }), &Play::default())
+        .unwrap();
+    render(&mut m, 248, 248);
+    assert_eq!(
+        events(&mut h),
+        [MixerEvent::Failed(id, ErrorCode::DecodeError)]
+    );
+    assert_eq!(h.voice_status(id).unwrap().state, VoiceState::Finished);
+    assert_eq!(m.active_voices(), 0);
+}

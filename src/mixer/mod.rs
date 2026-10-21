@@ -401,7 +401,8 @@ pub enum Distance {
 /// [`MixerEvent::Limited`]; a start within the gap is always refused. Limits are
 /// judged with the mixer's bound on voices and its priorities when the start is
 /// applied, so scheduled starts are judged at their own frame, and a start refused for
-/// any reason stops no voice and does not begin a gap. Each start is checked against
+/// any reason stops no voice and does not begin a gap. Only instances of no higher
+/// priority than the new voice give way to it. Each start is checked against
 /// its own gap, from the sound's last start. The mixer remembers the last starts of up
 /// to 1024 limited sounds within any 60 seconds; a limited start beyond that is refused.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -800,6 +801,12 @@ impl Mixer {
                 .store((lowest as f32).to_bits(), Ordering::Relaxed);
         }
         self.frame = end;
+        // Read each voice up to its position before publishing it, and retire any
+        // stream that fails doing so, also on renders of no frames.
+        for v in self.voices.iter_mut().flatten() {
+            v.settle();
+        }
+        self.retire_done();
         self.publish();
         self.send_returns();
         self.clock.store(end, Ordering::Release);
@@ -978,12 +985,15 @@ impl Mixer {
                     if limit.policy == OverLimit::Refuse {
                         return self.refuse(voice, MixerEvent::Limited);
                     }
+                    // Only instances of no higher priority may give way, as with the
+                    // mixer's bound; without enough of them, the start is refused.
+                    let priority = voice.priority;
                     for _ in 0..playing + 1 - limit.max as usize {
                         let voices = &self.voices;
                         let unmarked = || {
                             voices.iter().enumerate().filter_map(|(i, v)| {
                                 v.as_deref()
-                                    .filter(|v| same(v) && !v.marked)
+                                    .filter(|v| same(v) && !v.marked && v.priority <= priority)
                                     .map(|v| (i, v))
                             })
                         };
@@ -996,8 +1006,14 @@ impl Mixer {
                             _ => unmarked().min_by_key(|(_, v)| v.order),
                         }
                         .map(|(i, _)| i);
-                        if let Some(v) = pick.and_then(|i| self.voices[i].as_mut()) {
-                            v.marked = true;
+                        match pick.and_then(|i| self.voices[i].as_mut()) {
+                            Some(v) => v.marked = true,
+                            None => {
+                                for v in self.voices.iter_mut().flatten() {
+                                    v.marked = false;
+                                }
+                                return self.refuse(voice, MixerEvent::Limited);
+                            }
                         }
                     }
                 }
@@ -1140,11 +1156,10 @@ impl Mixer {
     }
 
     /// Publishes every voice's state for [`MixerHandle::voice_status`].
-    fn publish(&mut self) {
+    fn publish(&self) {
         let master_paused = self.buses[0].paused;
-        for (slot, voice) in self.voices.iter_mut().enumerate() {
+        for (slot, voice) in self.voices.iter().enumerate() {
             if let Some(v) = voice {
-                v.settle();
                 let state = if v.state == State::Stopping {
                     VoiceState::Stopping
                 } else if v.paused() || self.buses[v.bus].paused || master_paused {
