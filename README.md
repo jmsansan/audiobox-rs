@@ -476,7 +476,8 @@ fn start(music: &'static [u8], jump: Arc<audiobox::Audio>) -> audiobox::Result<(
   rate, resampling sources at other rates with a 16-tap windowed-sinc filter. It writes
   whole frames and zeroes any remainder; 0 frames only applies due changes.
 - **Real time:** `render` allocates nothing, takes no lock and does not block. Changes
-  travel through a bounded queue drained at the start of each render, and finished
+  travel through a bounded single-producer, single-consumer queue of the crate's own,
+  drained at the start of each render, and finished
   voices travel back to be freed on the game's thread.
 - **Determinism:** `handle.at(frame)` schedules changes at exact frames, independent of
   buffer sizes, and the same changes at the same frames give the same samples on every
