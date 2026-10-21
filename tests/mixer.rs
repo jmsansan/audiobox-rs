@@ -1125,3 +1125,140 @@ fn instance_limits_and_priorities_together() {
     assert_eq!(events(&mut h), [MixerEvent::Rejected(c)]);
     assert_eq!(h.voice_status(b).unwrap().state, VoiceState::Playing);
 }
+
+#[test]
+fn a_2d_position_pans_and_fades_with_distance() {
+    let space = Space2d {
+        width: 8.0,
+        min_distance: 2.0,
+        max_distance: 20.0,
+        model: Distance::Linear,
+    };
+    // At the listener: centred, full gain.
+    assert_eq!(space.place([0.0, 0.0]), (0.0, 1.0));
+    // At the stated width: fully to one side.
+    assert_eq!(space.place([8.0, 0.0]).0, 1.0);
+    assert_eq!(space.place([-30.0, 0.0]).0, -1.0);
+    assert_eq!(space.place([4.0, 0.0]).0, 0.5);
+    // Beyond the maximum distance: silent; between: as the model states.
+    assert_eq!(space.place([0.0, 20.0]).1, 0.0);
+    assert_eq!(space.place([12.0, 16.0]).1, 0.0);
+    assert!((space.place([0.0, 11.0]).1 - 0.5).abs() < 1e-6);
+    let inverse = Space2d {
+        model: Distance::Inverse,
+        ..space
+    };
+    let expected = (2.0 / 5.0 - 0.1) / 0.9;
+    assert!((inverse.place([3.0, 4.0]).1 - expected).abs() < 1e-6);
+    assert!(
+        inverse.place([0.0, 19.999]).1 < 1e-4,
+        "inverse reaches 0 at the maximum"
+    );
+
+    // In the mixer: a coin to the right sounds to the right, quieter with distance.
+    let (mut m, mut h) = Mixer::new(MixerConfig {
+        sample_rate: RATE,
+        space,
+        ..MixerConfig::default()
+    })
+    .unwrap();
+    h.play(
+        mono(vec![1.0; 1000], RATE),
+        &Play {
+            position: Some([8.0, 6.0]),
+            ..Play::default()
+        },
+    )
+    .unwrap();
+    let out = render(&mut m, 10, 10);
+    let gain = space.place([8.0, 6.0]).1 as f64;
+    assert!(
+        close(out[0], 0.0, 1e-7) && close(out[1], gain, 1e-6),
+        "{:?}",
+        &out[..2]
+    );
+    assert!((gain - (1.0 - 8.0 / 18.0)).abs() < 1e-6);
+    let (_m, mut h) = mixer(2, &[], 4);
+    assert!(
+        h.play(
+            mono(vec![0.0; 10], RATE),
+            &Play {
+                position: Some([f32::NAN, 0.0]),
+                ..Play::default()
+            }
+        )
+        .is_err()
+    );
+    assert!(
+        Mixer::new(MixerConfig {
+            space: Space2d {
+                max_distance: 1.0,
+                ..space
+            },
+            ..MixerConfig::default()
+        })
+        .is_err()
+    );
+}
+
+#[test]
+fn a_moving_sound_changes_smoothly() {
+    let space = Space2d {
+        width: 10.0,
+        min_distance: 0.0,
+        max_distance: 20.0,
+        model: Distance::Linear,
+    };
+    let (mut m, mut h) = Mixer::new(MixerConfig {
+        sample_rate: RATE,
+        space,
+        ..MixerConfig::default()
+    })
+    .unwrap();
+    let id = h
+        .play(
+            mono(vec![1.0; 48_000], RATE),
+            &Play {
+                position: Some([-10.0, 0.0]),
+                ..Play::default()
+            },
+        )
+        .unwrap();
+    // A sound crossing from left to right, updated every 800 frames (60 per second)
+    // with a ramp of one update.
+    for k in 1..=30 {
+        let x = -10.0 + 20.0 * k as f32 / 30.0;
+        h.at(k * 800)
+            .set_position(id, [x, 0.0], Fade::linear(800.0 / RATE as f64))
+            .unwrap();
+    }
+    let out = render(&mut m, 30 * 800 + 1000, 256);
+    let (l, r) = (channel(&out, 2, 0), channel(&out, 2, 1));
+    let worst = |c: &[f32]| {
+        c.windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0f32, f32::max)
+    };
+    // Each update moves 2/3 of a unit over 800 frames: per frame, gains change by far
+    // less than a zipper step.
+    assert!(
+        worst(&l) < 2e-4 && worst(&r) < 2e-4,
+        "{} {}",
+        worst(&l),
+        worst(&r)
+    );
+    // Ten units away of a maximum of twenty: half gain, fully left.
+    assert!(
+        (l[0] - 0.5).abs() < 1e-6 && r[0] < 1e-6,
+        "starts on the left: {} {}",
+        l[0],
+        r[0]
+    );
+    let end = 30 * 800 + 900;
+    let (pan, gain) = space.place([10.0, 0.0]);
+    assert_eq!(pan, 1.0);
+    assert!(
+        l[end] < 1e-6 && (r[end] as f64 - gain as f64).abs() < 1e-6,
+        "ends on the right at its distance gain"
+    );
+}

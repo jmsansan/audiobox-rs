@@ -177,6 +177,10 @@ fn rendering_allocates_and_frees_nothing() {
             .pause(id, Fade::linear(0.005))
             .unwrap();
         handle.at(i * 3000 + 1700).resume(id, Fade::NONE).unwrap();
+        handle
+            .at(i * 3000 + 300)
+            .set_position(id, [0.5, 0.2], Fade::linear(0.016))
+            .unwrap();
         if i % 3 == 0 {
             handle
                 .at(i * 3000 + 900)

@@ -63,6 +63,10 @@
 //! with a policy for one more, and a minimum gap between starts. A refused start
 //! reports [`MixerEvent::Limited`].
 //!
+//! A voice can have a 2D position relative to the listener ([`Play::position`],
+//! [`MixerHandle::set_position`]), which sets its pan and a distance gain through the
+//! mixer's [`Space2d`].
+//!
 //! Every voice plays through a bus: the master bus, or one of the named buses of
 //! [`MixerConfig::buses`], which play through the master. A voice's samples are scaled
 //! by its gain, its fades, its pan, its bus's gain and the master gain.
@@ -299,6 +303,85 @@ pub struct Play {
     pub start: TimePosition,
     /// Limits on how many voices of this sound play at once and how often it starts.
     pub instances: Option<Instances>,
+    /// The sound's position relative to the listener, such as the camera's centre, in
+    /// the units of [`MixerConfig::space`]. It sets the voice's pan, replacing
+    /// [`Play::pan`], and a distance gain on top of [`Play::gain`]. Default none.
+    pub position: Option<[f32; 2]>,
+}
+
+/// How a 2D position relative to the listener becomes a pan and a gain.
+///
+/// The horizontal offset `x` pans the sound with the mixer's constant-power law:
+/// `pan = x / width`, limited to -1..=1, so a sound `width` units to the right is fully
+/// right. The distance `d = √(x² + y²)` sets a gain of 1 up to `min_distance` and 0 from
+/// `max_distance`; in between, [`Distance::Linear`] falls in a straight line and
+/// [`Distance::Inverse`] follows `min/d`, shifted and scaled so it reaches 0 at the
+/// maximum instead of jumping there.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Space2d {
+    /// Horizontal offset at which a sound is fully to one side. Default 1.
+    pub width: f32,
+    /// Distance up to which a sound plays at full gain. Default 1.
+    pub min_distance: f32,
+    /// Distance from which a sound is silent. Default 10.
+    pub max_distance: f32,
+    pub model: Distance,
+}
+impl Default for Space2d {
+    fn default() -> Self {
+        Self {
+            width: 1.0,
+            min_distance: 1.0,
+            max_distance: 10.0,
+            model: Distance::Linear,
+        }
+    }
+}
+impl Space2d {
+    /// The pan and the distance gain of a sound at `[x, y]` from the listener.
+    pub fn place(&self, [x, y]: [f32; 2]) -> (f32, f32) {
+        let (x, y) = (x as f64, y as f64);
+        let pan = (x / self.width as f64).clamp(-1.0, 1.0);
+        let d = (x * x + y * y).sqrt();
+        let (min, max) = (self.min_distance as f64, self.max_distance as f64);
+        let gain = if d <= min {
+            1.0
+        } else if d >= max {
+            0.0
+        } else {
+            match self.model {
+                Distance::Linear => 1.0 - (d - min) / (max - min),
+                Distance::Inverse => {
+                    let floor = min / max;
+                    (min / d - floor) / (1.0 - floor)
+                }
+            }
+        };
+        (pan as f32, gain as f32)
+    }
+    fn validate(&self) -> Result<()> {
+        let ok = self.width.is_finite()
+            && self.width > 0.0
+            && self.min_distance.is_finite()
+            && self.min_distance >= 0.0
+            && self.max_distance.is_finite()
+            && self.max_distance > self.min_distance;
+        if ok {
+            Ok(())
+        } else {
+            Err(Error::invalid(
+                "A 2D space needs a positive width and 0 <= min_distance < max_distance, all finite",
+            ))
+        }
+    }
+}
+
+/// How gain falls with distance in a [`Space2d`].
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Distance {
+    #[default]
+    Linear,
+    Inverse,
 }
 
 /// Limits for one sound: at most `max` voices with the same key play at once, and a
@@ -377,6 +460,7 @@ impl Default for Play {
             variation: Variation::NONE,
             start: TimePosition::Frames(0),
             instances: None,
+            position: None,
         }
     }
 }
@@ -415,6 +499,8 @@ pub struct MixerConfig {
     pub queue: usize,
     /// Seed of the generator that draws each voice's [`Variation`]. Default 0.
     pub seed: u64,
+    /// How positions of voices become pans and gains.
+    pub space: Space2d,
 }
 impl Default for MixerConfig {
     fn default() -> Self {
@@ -425,6 +511,7 @@ impl Default for MixerConfig {
             buses: Vec::new(),
             queue: 1024,
             seed: 0,
+            space: Space2d::default(),
         }
     }
 }
@@ -452,6 +539,7 @@ enum Action {
     Pan(VoiceId, f64, u64, FadeCurve),
     Rate(VoiceId, f64, u64, FadeCurve),
     Pitch(VoiceId, f64, u64, FadeCurve),
+    Position(VoiceId, f64, f64, u64, FadeCurve),
     Pause(VoiceId, u64, FadeCurve),
     Resume(VoiceId, u64, FadeCurve),
     PauseBus(usize, u64, FadeCurve),
@@ -513,6 +601,7 @@ pub struct MixerHandle {
     tables: Vec<(u32, Arc<SincTable>)>,
     bank: Arc<SincBank>,
     random: SplitMix,
+    space: Space2d,
 }
 
 /// SplitMix64: a small, fixed generator, so variations are the same on every platform.
@@ -540,7 +629,9 @@ impl Mixer {
             buses,
             queue,
             seed,
+            space,
         } = config;
+        space.validate()?;
         Limits::default().check(0, channels, sample_rate)?;
         if !(1..=2).contains(&channels) {
             return Err(Error::invalid("The mixer's output has 1 or 2 channels"));
@@ -604,6 +695,7 @@ impl Mixer {
             tables: Vec::new(),
             bank: Arc::new(SincBank::new()),
             random: SplitMix(seed),
+            space,
         };
         Ok((mixer, handle))
     }
@@ -726,6 +818,13 @@ impl Mixer {
             Action::Pitch(id, pitch, len, curve) => {
                 if let Some(v) = self.voice_mut(id) {
                     v.pitch.retarget(v.time(frame), pitch, len, curve);
+                }
+            }
+            Action::Position(id, pan, gain, len, curve) => {
+                if let Some(v) = self.voice_mut(id) {
+                    let time = v.time(frame);
+                    v.pan.retarget(time, pan, len, curve);
+                    v.distance.retarget(time, gain, len, curve);
                 }
             }
             Action::Pause(id, len, curve) => {
@@ -1105,6 +1204,23 @@ impl MixerHandle {
     pub fn set_pitch(&mut self, voice: VoiceId, semitones: f32, fade: Fade) -> Result<()> {
         self.now().set_pitch(voice, semitones, fade)
     }
+    /// Moves a voice to `position` relative to the listener, ramping its pan and
+    /// distance gain over the fade so a moving sound does not zipper. A fade of about
+    /// one game frame suits positions updated every frame.
+    pub fn set_position(&mut self, voice: VoiceId, position: [f32; 2], fade: Fade) -> Result<()> {
+        self.now().set_position(voice, position, fade)
+    }
+    /// The 2D space that positions use.
+    pub fn space(&self) -> Space2d {
+        self.space
+    }
+    fn place(&self, position: [f32; 2]) -> Result<(f64, f64)> {
+        if !position.iter().all(|c| c.is_finite()) {
+            return Err(Error::invalid("A position must be finite"));
+        }
+        let (pan, gain) = self.space.place(position);
+        Ok((pan as f64, gain as f64))
+    }
     /// Restarts the generator of variations from `seed`.
     pub fn reseed(&mut self, seed: u64) {
         self.random = SplitMix(seed);
@@ -1235,6 +1351,11 @@ impl Commands<'_> {
         voice.rate = Ramp::constant(play.rate as f64);
         voice.pitch = Ramp::constant(pitch);
         voice.pan = Ramp::constant(play.pan.clamp(-1.0, 1.0) as f64);
+        if let Some(position) = play.position {
+            let (pan, distance) = handle.place(position)?;
+            voice.pan = Ramp::constant(pan);
+            voice.distance = Ramp::constant(distance);
+        }
         voice.fade_in = fade_in;
         voice.set_start(start)?;
         if let Some(limit) = play.instances {
@@ -1296,6 +1417,12 @@ impl Commands<'_> {
             self.frame,
             Action::Pitch(voice, semitones as f64, len, curve),
         )
+    }
+    pub fn set_position(self, voice: VoiceId, position: [f32; 2], fade: Fade) -> Result<()> {
+        let (pan, gain) = self.handle.place(position)?;
+        let (len, curve) = self.handle.frames(fade)?;
+        self.handle
+            .send(self.frame, Action::Position(voice, pan, gain, len, curve))
     }
     pub fn pause(self, voice: VoiceId, fade: Fade) -> Result<()> {
         let (len, curve) = self.handle.frames(fade)?;
