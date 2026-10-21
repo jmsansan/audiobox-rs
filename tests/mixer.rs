@@ -1967,6 +1967,32 @@ fn a_sound_that_has_ended_leaves_room_for_the_next_instance() {
     }
 }
 
+#[test]
+fn a_stop_overtaken_by_a_pause_ends_the_voice_whatever_the_blocks() {
+    let mut outs = Vec::new();
+    for block in [1500, 1] {
+        let (mut m, mut h) = mixer(2, &[], 1);
+        let id = h
+            .play(mono(vec![1.0; 48_000], RATE), &Play::default())
+            .unwrap();
+        h.at(10)
+            .pause(id, Fade::linear(100.0 / RATE as f64))
+            .unwrap();
+        h.at(20)
+            .stop(id, Fade::linear(1000.0 / RATE as f64))
+            .unwrap();
+        h.at(150).resume(id, Fade::NONE).unwrap();
+        let out = render(&mut m, 1500, block);
+        assert!(
+            out[2 * 150..].iter().all(|&s| s == 0.0),
+            "blocks of {block}"
+        );
+        assert_eq!(events(&mut h), [MixerEvent::Ended(id)], "blocks of {block}");
+        outs.push(out);
+    }
+    assert_eq!(outs[0], outs[1]);
+}
+
 /// A stream that gives `frames` frames, then fails.
 struct Failing {
     frames: usize,

@@ -478,6 +478,12 @@ impl Voice {
             if self.pausing && self.pause.finished(time + 1) {
                 self.pausing = false;
                 self.paused = true;
+                // A stopping voice that falls silent has stopped: ending it here, not
+                // at the next block, keeps a later resume from reviving it.
+                if self.state == State::Stopping {
+                    self.state = State::Finished;
+                    return;
+                }
                 self.freeze((frames - j - 1) as u64);
                 return;
             }
