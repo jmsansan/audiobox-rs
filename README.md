@@ -183,6 +183,12 @@ The returned WAV metadata uses its RIFF keys, such as `INAM` for a title.
 - Measurement: `peak`, `peak_db`, `true_peak_db`, `rms_db`, `loudness`, `waveform`.
 - Spectral analysis: `analyze::spectrum`, `analyze::spectrogram`.
 
+Transforms that render audio (pan, gain, fades, crossfades, filters, the limiter,
+resampling, tempo, pitch, silence trimming and peak normalization) compute with the
+crate's own math, so they give the same samples on every platform, WebAssembly
+included; CI pins them with checksums. Analysis that only reports numbers, such as
+loudness, uses the platform's math.
+
 The resampler uses a Kaiser-windowed sinc filter with a downsampling anti-alias cutoff.
 The limiter links channels with lookahead and release. Loudness uses K-weighting and
 BS.1770 absolute/relative gating; `range` retains the original library's 400-ms block

@@ -1,3 +1,4 @@
+use crate::math::sin_turns;
 use crate::{DecodeInfo, Error, Limits, Result, TimePosition};
 use std::fmt;
 
@@ -211,8 +212,10 @@ impl Audio {
         for (a, b) in self.data.iter().zip(&other.data) {
             let mut out = a[..a.len() - n].to_vec();
             for i in 0..n {
-                let t = i as f64 / n.saturating_sub(1).max(1) as f64 * std::f64::consts::FRAC_PI_2;
-                out.push(a[a.len() - n + i] * t.cos() as f32 + b[i] * t.sin() as f32);
+                // An equal-power crossfade over a quarter turn: cos and sin of t·π/2.
+                let turns = i as f64 / n.saturating_sub(1).max(1) as f64 / 4.0;
+                let (fade_out, fade_in) = (sin_turns(0.25 - turns), sin_turns(turns));
+                out.push(a[a.len() - n + i] * fade_out as f32 + b[i] * fade_in as f32);
             }
             out.extend_from_slice(&b[n..]);
             data.push(out);
@@ -259,13 +262,15 @@ impl Audio {
         if !position.is_finite() {
             return Err(Error::invalid("Pan must be finite"));
         }
-        let angle = (position.clamp(-1.0, 1.0) + 1.0) * std::f64::consts::FRAC_PI_4;
+        // cos θ and sin θ with θ = (position + 1)·π/4, as the mixer pans.
+        let turns = (position.clamp(-1.0, 1.0) + 1.0) / 8.0;
+        let (left, right) = (sin_turns(0.25 - turns) as f32, sin_turns(turns) as f32);
         let mut out = self.to_stereo();
         for s in &mut out.data[0] {
-            *s *= angle.cos() as f32;
+            *s *= left;
         }
         for s in &mut out.data[1] {
-            *s *= angle.sin() as f32;
+            *s *= right;
         }
         Ok(out)
     }

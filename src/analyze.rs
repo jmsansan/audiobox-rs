@@ -10,7 +10,7 @@ pub fn to_db(linear: f64) -> f64 {
     }
 }
 pub fn from_db(db: f64) -> f64 {
-    10f64.powf(db / 20.0)
+    crate::math::db_to_gain(db)
 }
 #[derive(Clone, Debug)]
 pub struct LoudnessResult {
