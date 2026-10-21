@@ -38,7 +38,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! audiobox = { version = "0.2", features = ["mixer", "synth", "sfx"] }
+//! audiobox = { version = "0.3", features = ["mixer", "synth", "sfx"] }
 //! ```
 //!
 //! # Determinism

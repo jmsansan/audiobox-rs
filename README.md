@@ -33,7 +33,7 @@ your own audio files the same way.
 
 ```toml
 [dependencies]
-audiobox = "0.2"
+audiobox = "0.3"
 ```
 
 Rust 1.85 or newer. Optional features add modules, never dependencies, so you compile
@@ -47,7 +47,7 @@ only what you use:
 
 ```toml
 [dependencies]
-audiobox = { version = "0.2", features = ["mixer", "synth", "sfx"] }
+audiobox = { version = "0.3", features = ["mixer", "synth", "sfx"] }
 ```
 
 ## Examples
