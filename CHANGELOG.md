@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Added
+
+- Mixer voices have a playback rate and a pitch offset, set when they start and
+  changed while they play with a ramp (`Play::rate`, `Play::pitch`,
+  `MixerHandle::set_rate`, `set_pitch`), and seeded random variation of pitch and
+  gain for repeated sounds (`Variation`, `MixerConfig::seed`, `MixerHandle::reseed`).
+
 ### Changed
 
 - The mixer's commands and finished voices travel through a bounded

@@ -471,6 +471,24 @@ fn start(music: &'static [u8], jump: Arc<audiobox::Audio>) -> audiobox::Result<(
   fades in, out and between gains with a `FadeCurve`. At most `max_voices` play; a new
   voice takes the place of the lowest-priority, oldest voice if that priority is not
   higher than its own, which fades out over 5 ms; otherwise the new voice is rejected.
+- **Rate, pitch and variation:** a playback rate and a pitch offset per voice, set at
+  the start and changed while it plays with a ramp, and seeded random variation of
+  pitch and gain for repeated sounds:
+
+  ```rust
+  use audiobox::mixer::{Mixer, MixerConfig, Play, Variation};
+  use std::sync::Arc;
+
+  fn footsteps(step: Arc<audiobox::Audio>) -> audiobox::Result<()> {
+      let (_mixer, mut handle) = Mixer::new(MixerConfig { seed: 42, ..MixerConfig::default() })?;
+      // Each step is up to a semitone higher or lower and 2 dB louder or softer.
+      let footstep = Play { variation: Variation { pitch: 1.0, gain_db: 2.0 }, ..Play::default() };
+      for i in 0..4 {
+          handle.at(i * 18_000).play(step.clone(), &footstep)?;
+      }
+      Ok(())
+  }
+  ```
 - **Buses:** a master bus and named buses, each with a gain that can fade.
 - **Rendering:** `render(&mut [f32])` fills interleaved mono or stereo at the output
   rate, resampling sources at other rates with a 16-tap windowed-sinc filter. It writes

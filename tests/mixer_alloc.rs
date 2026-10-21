@@ -142,6 +142,10 @@ fn rendering_allocates_and_frees_nothing() {
                     bus: effects,
                     pan: -0.8,
                     fade_in: Fade::linear(0.01),
+                    variation: Variation {
+                        pitch: 1.0,
+                        gain_db: 2.0,
+                    },
                     ..Play::default()
                 },
             )
@@ -153,6 +157,14 @@ fn rendering_allocates_and_frees_nothing() {
         handle
             .at(i * 3000 + 700)
             .set_gain(id, 0.5, Fade::linear(0.01))
+            .unwrap();
+        handle
+            .at(i * 3000 + 800)
+            .set_pitch(id, 3.0, Fade::linear(0.02))
+            .unwrap();
+        handle
+            .at(i * 3000 + 1200)
+            .set_rate(id, 1.5, Fade::NONE)
             .unwrap();
         if i % 3 == 0 {
             handle
