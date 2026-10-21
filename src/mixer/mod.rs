@@ -401,8 +401,9 @@ pub enum Distance {
 /// [`MixerEvent::Limited`]; a start within the gap is always refused. Limits are
 /// judged with the mixer's bound on voices and its priorities when the start is
 /// applied, so scheduled starts are judged at their own frame, and a start refused for
-/// any reason stops no voice and does not begin a gap. At most 256 sounds can be
-/// within their gap at once; a start that would need one more is refused.
+/// any reason stops no voice and does not begin a gap. Each start is checked against
+/// its own gap, from the sound's last start. The mixer remembers the last starts of up
+/// to 1024 limited sounds within any 60 seconds; a limited start beyond that is refused.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Instances {
     /// Voices with the same key share the limits. [`Instances::of`] keys a sound by
@@ -454,9 +455,12 @@ pub enum OverLimit {
     StopQuietest,
 }
 
-/// Sounds whose minimum gap between starts can run at once. A start that would need
-/// one more is refused.
-const GAPS: usize = 256;
+/// Sounds with instance limits whose last start the mixer remembers at once. An
+/// entry is kept for [`MAX_GAP`] seconds, the longest gap a start can ask for; a
+/// limited start that finds the table full is refused.
+const STARTS: usize = 1024;
+/// The longest minimum gap between starts, in seconds.
+const MAX_GAP: f64 = 60.0;
 impl Default for Play {
     fn default() -> Self {
         Self {
@@ -597,8 +601,11 @@ pub struct Mixer {
     clock: Arc<AtomicU64>,
     status: Arc<status::Table>,
     steal_fade: u64,
-    /// Keys of sounds with a minimum gap, and the frame until which each must wait.
-    gaps: [(u64, u64); GAPS],
+    /// Keys of sounds with instance limits and the frame of each one's last start
+    /// (`None` for a free entry).
+    starts: [(u64, Option<u64>); STARTS],
+    /// Frames after which a start can no longer be within any gap.
+    max_gap: u64,
     limiter: Option<limiter::Limiter>,
     limiter_gain: Arc<AtomicU32>,
 }
@@ -706,7 +713,8 @@ impl Mixer {
             clock: clock.clone(),
             status: status.clone(),
             steal_fade: (STEAL_FADE * sample_rate as f64).round() as u64,
-            gaps: [(0, 0); GAPS],
+            starts: [(0, None); STARTS],
+            max_gap: (MAX_GAP * sample_rate as f64).round() as u64,
             limiter,
             limiter_gain: limiter_gain.clone(),
         };
@@ -926,30 +934,31 @@ impl Mixer {
 
     fn start(&mut self, frame: u64, mut voice: Box<Voice>) {
         // Decide everything first, so that a refused voice changes nothing.
-        let mut gap_entry = None;
+        let mut start_entry = None;
         let mut instance_victim = None;
         if let Some(limit) = voice.instances {
-            if limit.min_gap > 0 {
-                if self
-                    .gaps
-                    .iter()
-                    .any(|&(key, until)| key == limit.key && until > frame)
-                {
+            // The incoming start's own gap, measured from the sound's last start.
+            let own = self
+                .starts
+                .iter()
+                .position(|&(key, last)| key == limit.key && last.is_some());
+            if let Some(last) = own.and_then(|i| self.starts[i].1) {
+                if limit.min_gap > 0 && frame < last + limit.min_gap {
                     return self.refuse(voice, MixerEvent::Limited);
                 }
-                // The sound's own entry, or any whose gap has passed. When every entry
-                // still holds an unexpired gap, the start is refused rather than
-                // forgetting one.
-                let entry = self
-                    .gaps
-                    .iter()
-                    .position(|&(key, _)| key == limit.key)
-                    .or_else(|| self.gaps.iter().position(|&(_, until)| until <= frame));
-                let Some(entry) = entry else {
-                    return self.refuse(voice, MixerEvent::Limited);
-                };
-                gap_entry = Some(entry);
             }
+            // Its entry, a free one, or one too old to refuse any start. When every
+            // entry is still needed, the start is refused rather than forgetting one.
+            let max_gap = self.max_gap;
+            let entry = own.or_else(|| {
+                self.starts
+                    .iter()
+                    .position(|&(_, last)| last.is_none_or(|last| frame >= last + max_gap))
+            });
+            let Some(entry) = entry else {
+                return self.refuse(voice, MixerEvent::Limited);
+            };
+            start_entry = Some(entry);
             if limit.max > 0 {
                 let same = |v: &Voice| v.live() && v.instances.is_some_and(|l| l.key == limit.key);
                 let candidates = || {
@@ -998,8 +1007,8 @@ impl Mixer {
                 self.event(MixerEvent::Stolen(id));
             }
         }
-        if let (Some(entry), Some(limit)) = (gap_entry, voice.instances) {
-            self.gaps[entry] = (limit.key, frame + limit.min_gap);
+        if let (Some(entry), Some(limit)) = (start_entry, voice.instances) {
+            self.starts[entry] = (limit.key, Some(frame));
         }
         voice.order = self.order;
         self.order += 1;
@@ -1426,7 +1435,7 @@ impl Commands<'_> {
         voice.fade_in = fade_in;
         voice.set_start(start)?;
         if let Some(limit) = play.instances {
-            if !limit.min_gap.is_finite() || !(0.0..=60.0).contains(&limit.min_gap) {
+            if !limit.min_gap.is_finite() || !(0.0..=MAX_GAP).contains(&limit.min_gap) {
                 return Err(Error::invalid("An instance gap must be 0..=60 seconds"));
             }
             voice.instances = Some(voice::InstanceLimit {

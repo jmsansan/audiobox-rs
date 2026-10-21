@@ -1537,3 +1537,36 @@ fn invalid_dimensions_are_errors_with_a_limiter() {
         assert!(Mixer::new(config).is_err());
     }
 }
+
+#[test]
+fn each_start_is_checked_against_its_own_gap() {
+    let coin = mono(vec![0.5; 10], RATE);
+    let (mut m, mut h) = mixer(1, &[], 8);
+    let short = Play {
+        instances: Some(Instances::of(&coin).min_gap(0.01)),
+        ..Play::default()
+    };
+    let long = Play {
+        instances: Some(Instances::of(&coin).min_gap(1.0)),
+        ..Play::default()
+    };
+    let unlimited = Play {
+        instances: Some(Instances::of(&coin)),
+        ..Play::default()
+    };
+    h.at(0).play(coin.clone(), &short).unwrap();
+    // 20 ms later: the first start's 10 ms gap has passed, but this start asks for 1 s.
+    let refused = h.at(960).play(coin.clone(), &long).unwrap();
+    // A start without a gap plays, and becomes the sound's last start.
+    h.at(1000).play(coin.clone(), &unlimited).unwrap();
+    let after_unlimited = h.at(1200).play(coin.clone(), &short).unwrap();
+    let late = h.at(49_000).play(coin.clone(), &long).unwrap();
+    render(&mut m, 50_000, 1000);
+    let got = events(&mut h);
+    assert!(got.contains(&MixerEvent::Limited(refused)), "{got:?}");
+    assert!(
+        got.contains(&MixerEvent::Limited(after_unlimited)),
+        "{got:?}"
+    );
+    assert!(!got.contains(&MixerEvent::Limited(late)), "{got:?}");
+}
