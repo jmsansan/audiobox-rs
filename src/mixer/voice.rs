@@ -355,7 +355,9 @@ impl Voice {
             self.bank_index = None;
             return;
         }
-        let speed = (rate * exp2(pitch / 12.0)).clamp(1.0 / 64.0, 64.0);
+        // Every accepted rate (1/16..=8) and pitch (±48 semitones) combines to
+        // 1/256..=128, which the fixed-point step represents exactly.
+        let speed = (rate * exp2(pitch / 12.0)).clamp(1.0 / 256.0, 128.0);
         self.step = ((self.base_step as f64 * speed).round() as u64).max(1);
         self.bank_index = Some(SincBank::index(self.base_ratio * speed));
     }
@@ -378,12 +380,13 @@ impl Voice {
             };
         }
     }
-    pub fn stop(&mut self, frame: u64, len: u64, curve: FadeCurve) {
+    /// Stops the voice, fading out over `len` frames. A voice paused by itself, or
+    /// `frozen` by its bus, is silent and still, so it stops at once.
+    pub fn stop(&mut self, frame: u64, len: u64, curve: FadeCurve, frozen: bool) {
         if self.done() {
             return;
         }
-        // A paused voice is silent and frozen, so it stops at once.
-        if len == 0 || self.paused {
+        if len == 0 || self.paused || frozen {
             self.state = State::Finished;
         } else {
             self.fade.retarget(frame, 0.0, len, curve);

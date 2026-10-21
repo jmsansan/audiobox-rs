@@ -3,8 +3,18 @@
 //! are used, which IEEE 754 rounds identically on every target.
 use std::f64::consts::{LN_2, TAU};
 
-/// `2^x`, accurate to about 1e-15 relative error.
+/// `2^x`, accurate to about 1e-15 relative error. Infinities and results beyond the
+/// `f64` range give infinity or 0, as `f64::exp2` does, and NaN stays NaN.
 pub(crate) fn exp2(x: f64) -> f64 {
+    if x.is_nan() {
+        return x;
+    }
+    if x >= 1024.0 {
+        return f64::INFINITY;
+    }
+    if x < -1075.0 {
+        return 0.0;
+    }
     let whole = x.floor();
     let f = (x - whole) * LN_2;
     let (mut sum, mut term) = (1.0, 1.0);
@@ -12,8 +22,15 @@ pub(crate) fn exp2(x: f64) -> f64 {
         term = term * f / k as f64;
         sum += term;
     }
-    let exponent = (whole as i64).clamp(-1022, 1023);
-    sum * f64::from_bits(((exponent + 1023) as u64) << 52)
+    let power = |e: i64| f64::from_bits(((e + 1023) as u64) << 52);
+    let exponent = whole as i64;
+    if exponent >= -1022 {
+        sum * power(exponent)
+    } else {
+        // Subnormal results: scale exactly to the smallest normal power first, so the
+        // second multiplication rounds once.
+        sum * power(-1022) * power(exponent + 1022)
+    }
 }
 
 /// `sin(2πx)`, accurate to about 1e-11.
@@ -65,6 +82,15 @@ mod tests {
             assert!((sin_turns(x) - (TAU * x).sin()).abs() < 1e-10, "sin({x})");
             assert!((cos_turns(x) - (TAU * x).cos()).abs() < 1e-10, "cos({x})");
         }
+        for x in [1023.5, 1100.0, -1030.0, -1030.5, -1074.0, -1080.0, -0.0] {
+            let (ours, platform) = (exp2(x), x.exp2());
+            let close = ours == platform || (ours / platform - 1.0).abs() < 1e-14;
+            assert!(close, "exp2({x}): {ours} vs {platform}");
+        }
+        assert_eq!(exp2(f64::NEG_INFINITY), 0.0);
+        assert_eq!(exp2(f64::INFINITY), f64::INFINITY);
+        assert!(exp2(f64::NAN).is_nan());
+        assert_eq!(db_to_gain(f64::NEG_INFINITY), 0.0);
         assert_eq!(cents_to_hz(0.0), 440.0);
         assert_eq!(cents_to_hz(1200.0), 880.0);
     }

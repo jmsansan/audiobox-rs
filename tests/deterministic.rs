@@ -82,6 +82,13 @@ fn pan_gain_fades_and_crossfades_match_platform_math() {
         TOLERANCE,
     );
     assert!((audiobox::analyze::from_db(-4.5) - factor).abs() < 1e-15);
+    // Infinite levels convert as before: silence to 0, and infinity to infinity.
+    assert_eq!(audiobox::analyze::from_db(f64::NEG_INFINITY), 0.0);
+    assert_eq!(
+        audiobox::analyze::from_db(audiobox::analyze::to_db(0.0)),
+        0.0
+    );
+    assert_eq!(audiobox::analyze::from_db(f64::INFINITY), f64::INFINITY);
     // An equal-power fade-in of 1000 frames: sin(t·π/2).
     let faded = mono
         .fade(1000.0 / 48_000.0, 0.0, FadeCurve::EqualPower)
