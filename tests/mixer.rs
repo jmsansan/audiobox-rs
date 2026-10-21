@@ -1726,3 +1726,50 @@ fn panned_stereo_audio_is_a_new_sound() {
         Instances::of(&mono_sound.pan(0.5).unwrap())
     );
 }
+
+#[test]
+fn replacing_many_voices_at_once_loses_no_event() {
+    let coin = mono(vec![0.1; 48_000], RATE);
+    let (mut m, mut h) = Mixer::new(MixerConfig {
+        sample_rate: RATE,
+        channels: 1,
+        max_voices: 32,
+        queue: 1,
+        buses: vec!["game".into()],
+        ..MixerConfig::default()
+    })
+    .unwrap();
+    let game = h.bus("game").unwrap();
+    let key = Instances::of(&coin);
+    for _ in 0..32 {
+        h.play(
+            coin.clone(),
+            &Play {
+                bus: game,
+                instances: Some(key),
+                ..Play::default()
+            },
+        )
+        .unwrap();
+        render(&mut m, 1, 1);
+    }
+    h.pause_bus(game, Fade::NONE).unwrap();
+    render(&mut m, 1, 1);
+    let only = Play {
+        bus: game,
+        instances: Some(key.max(1).policy(OverLimit::StopOldest)),
+        ..Play::default()
+    };
+    h.play(coin.clone(), &only).unwrap();
+    render(&mut m, 1, 1);
+    let got = events(&mut h);
+    let stolen = got
+        .iter()
+        .filter(|e| matches!(e, MixerEvent::Stolen(_)))
+        .count();
+    let ended = got
+        .iter()
+        .filter(|e| matches!(e, MixerEvent::Ended(_)))
+        .count();
+    assert_eq!((stolen, ended), (32, 32), "{got:?}");
+}

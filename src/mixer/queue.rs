@@ -11,6 +11,10 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, TryLockError};
 
+/// The counters run over `0..2 × capacity`, a "mirrored" index: the slot is the
+/// counter modulo the capacity, and a full ring (`tail - head == capacity`) differs
+/// from an empty one (`tail == head`). They never wrap around `usize`, so the slot
+/// order holds forever, whatever the capacity.
 struct Ring<T> {
     slots: Box<[Mutex<Option<T>>]>,
     /// Next slot to read. Written only by the consumer.
@@ -20,6 +24,18 @@ struct Ring<T> {
 }
 
 impl<T> Ring<T> {
+    fn next(&self, counter: usize) -> usize {
+        let next = counter + 1;
+        if next == 2 * self.slots.len() {
+            0
+        } else {
+            next
+        }
+    }
+    fn len(&self, head: usize, tail: usize) -> usize {
+        let span = 2 * self.slots.len();
+        (tail + span - head) % span
+    }
     fn with_slot<R>(&self, index: usize, f: impl FnOnce(&mut Option<T>) -> R) -> Option<R> {
         let slot = &self.slots[index % self.slots.len()];
         match slot.try_lock() {
@@ -74,7 +90,7 @@ impl<T> Producer<T> {
         let ring = &self.ring;
         let tail = ring.tail.load(Ordering::Relaxed);
         let head = ring.head.load(Ordering::Acquire);
-        if tail.wrapping_sub(head) >= ring.slots.len() {
+        if ring.len(head, tail) >= ring.slots.len() {
             return Err(PushError::Full(value));
         }
         let mut value = Some(value);
@@ -83,7 +99,7 @@ impl<T> Producer<T> {
                 value.take().expect("the value was not stored"),
             ));
         }
-        ring.tail.store(tail.wrapping_add(1), Ordering::Release);
+        ring.tail.store(ring.next(tail), Ordering::Release);
         Ok(())
     }
 }
@@ -97,7 +113,7 @@ impl<T> Consumer<T> {
             return None;
         }
         let value = ring.with_slot(head, Option::take)?;
-        ring.head.store(head.wrapping_add(1), Ordering::Release);
+        ring.head.store(ring.next(head), Ordering::Release);
         value
     }
 }
@@ -121,6 +137,24 @@ mod tests {
         );
         drop(rx);
         assert!(matches!(tx.push(4), Err(PushError::Disconnected(4))));
+    }
+
+    #[test]
+    fn slot_order_holds_through_many_wraps_of_an_odd_capacity() {
+        let (mut tx, mut rx) = queue::<u32>(3);
+        let mut next = 0;
+        for round in 0..1000u32 {
+            let n = round % 4;
+            for i in 0..n.min(3) {
+                assert!(tx.push(round * 10 + i).is_ok());
+            }
+            for i in 0..n.min(3) {
+                assert_eq!(rx.pop(), Some(round * 10 + i), "round {round}");
+                next += 1;
+            }
+            assert_eq!(rx.pop(), None);
+        }
+        assert!(next > 1000);
     }
 
     #[test]

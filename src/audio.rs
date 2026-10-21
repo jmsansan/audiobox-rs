@@ -10,10 +10,12 @@ pub struct Audio {
     pub(crate) rate: u32,
     pub(crate) info: DecodeInfo,
     /// Unique for the life of the process; clones share it, since audio never changes.
-    #[cfg_attr(not(feature = "mixer"), allow(dead_code))]
+    /// Only the mixer uses it, which also needs 64-bit atomics.
+    #[cfg(feature = "mixer")]
     id: u64,
 }
 /// Identities of audio values, from 2^63 up, so they cannot meet keys a caller picks.
+#[cfg(feature = "mixer")]
 fn next_id() -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1 << 63);
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -21,7 +23,7 @@ fn next_id() -> u64 {
 impl Audio {
     /// This audio's identity: unique among the audio values made by the process, and
     /// shared by clones.
-    #[cfg_attr(not(feature = "mixer"), allow(dead_code))]
+    #[cfg(feature = "mixer")]
     pub(crate) fn id(&self) -> u64 {
         self.id
     }
@@ -40,6 +42,7 @@ impl Audio {
             data,
             rate: sample_rate,
             info: DecodeInfo::default(),
+            #[cfg(feature = "mixer")]
             id: next_id(),
         })
     }
@@ -56,6 +59,7 @@ impl Audio {
             data,
             rate,
             info,
+            #[cfg(feature = "mixer")]
             id: next_id(),
         })
     }
@@ -64,6 +68,7 @@ impl Audio {
             data,
             rate: self.rate,
             info: self.info.clone(),
+            #[cfg(feature = "mixer")]
             id: next_id(),
         }
     }
@@ -288,7 +293,10 @@ impl Audio {
         let (left, right) = (sin_turns(0.25 - turns) as f32, sin_turns(turns) as f32);
         let mut out = self.to_stereo();
         // Stereo input comes back as a clone; the panned samples are a new sound.
-        out.id = next_id();
+        #[cfg(feature = "mixer")]
+        {
+            out.id = next_id();
+        }
         for s in &mut out.data[0] {
             *s *= left;
         }

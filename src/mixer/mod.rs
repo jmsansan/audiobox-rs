@@ -689,7 +689,10 @@ impl Mixer {
         let limiter_gain = Arc::new(AtomicU32::new(1f32.to_bits()));
         let slots = max_voices + TAILS;
         let (command_tx, command_rx) = queue::queue(queue);
-        let (return_tx, return_rx) = queue::queue(slots + queue);
+        // Per render, at most `slots + queue` voices end or are refused, and as many
+        // are stolen, so the way back holds every event and voice of a render.
+        let returns = 2 * (slots + queue);
+        let (return_tx, return_rx) = queue::queue(returns);
         let clock = Arc::new(AtomicU64::new(0));
         let status = Arc::new(status::Table::new(slots));
         let mixer = Mixer {
@@ -711,7 +714,7 @@ impl Mixer {
             pending: Vec::with_capacity(queue),
             commands: command_rx,
             returns: return_tx,
-            retired: Vec::with_capacity(slots + queue),
+            retired: Vec::with_capacity(returns),
             clock: clock.clone(),
             status: status.clone(),
             steal_fade: (STEAL_FADE * sample_rate as f64).round() as u64,
