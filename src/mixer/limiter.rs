@@ -90,16 +90,18 @@ impl Limiter {
     /// constant amortized time.
     fn push_peak(&mut self, peak: f64) -> f64 {
         let w = self.window;
+        // Expire peaks that leave the window first, so at most `w - 1` remain and the
+        // new one always fits.
+        while self.queue_len > 0 && self.queue[self.queue_head].0 + w as u64 <= self.frames {
+            self.queue_head = (self.queue_head + 1) % w;
+            self.queue_len -= 1;
+        }
         while self.queue_len > 0 && self.queue[(self.queue_head + self.queue_len - 1) % w].1 <= peak
         {
             self.queue_len -= 1;
         }
         self.queue[(self.queue_head + self.queue_len) % w] = (self.frames, peak);
         self.queue_len += 1;
-        while self.queue[self.queue_head].0 + w as u64 <= self.frames {
-            self.queue_head = (self.queue_head + 1) % w;
-            self.queue_len -= 1;
-        }
         self.frames += 1;
         self.queue[self.queue_head].1
     }
@@ -169,18 +171,40 @@ mod tests {
         .unwrap();
         let window = limiter.window;
         let mut seed = 0x9e37_79b9u32;
-        let peaks: Vec<f64> = (0..5000)
+        let mut peaks: Vec<f64> = (0..5000)
             .map(|_| {
                 seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
                 (seed >> 8) as f64 / (1u32 << 24) as f64 * 2.0
             })
             .collect();
+        // Long decreasing ramps and plateaus fill the queue; random peaks rarely do.
+        peaks.extend((0..3 * window).map(|i| 2.0 - i as f64 / (3 * window) as f64));
+        peaks.extend(std::iter::repeat_n(0.5, 2 * window));
+        peaks.extend((0..window).map(|i| 0.5 + i as f64 * 0.01));
+        peaks.extend((0..4 * window).rev().map(|i| i as f64));
         for (n, &peak) in peaks.iter().enumerate() {
             let expected = peaks[n.saturating_sub(window - 1)..=n]
                 .iter()
                 .copied()
                 .fold(0.0, f64::max);
             assert_eq!(limiter.push_peak(peak), expected, "frame {n}");
+            assert!(limiter.queue_len <= window);
         }
+    }
+
+    #[test]
+    fn decreasing_peaks_keep_the_window_maximum() {
+        // A two-frame window: 1 ms of look-ahead at 1 kHz.
+        let settings = MasterLimiter {
+            lookahead_ms: 1.0,
+            ..MasterLimiter::default()
+        };
+        let mut limiter = Limiter::new(settings, 1000, 1).unwrap();
+        assert_eq!(limiter.window, 2);
+        let got: Vec<f64> = [3.0, 2.0, 1.0, 0.5, 4.0, 0.0]
+            .iter()
+            .map(|&peak| limiter.push_peak(peak))
+            .collect();
+        assert_eq!(got, [3.0, 3.0, 2.0, 1.0, 4.0, 4.0]);
     }
 }
