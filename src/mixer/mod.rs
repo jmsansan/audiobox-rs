@@ -36,7 +36,12 @@
 //!
 //! Each voice has a gain, a pan, a bus, a priority, an optional fade-in, and a loop:
 //! off, the whole sound, or a region between two frames. Gain, pan and bus gain
-//! changes, and stops, can fade over a duration with a [`FadeCurve`]. A loop of a
+//! changes, and stops, can fade over a duration with a [`FadeCurve`].
+//!
+//! A voice also has a playback rate, which changes speed and pitch together, and a
+//! pitch offset in semitones on top of it. Both can change while the voice plays, with
+//! a ramp. [`Variation`] draws a random pitch and gain for each start of a repeated
+//! sound, such as a footstep, from a generator seeded by [`MixerConfig::seed`]. A loop of a
 //! stream seeks it back, so a stream that loops must support seeking to the loop start.
 //!
 //! # Voices and buses
@@ -59,7 +64,8 @@
 //! remaining samples to 0; a buffer shorter than a frame renders nothing, but still
 //! applies the changes that are due.
 //!
-//! Sources at another sample rate are resampled with a 16-tap windowed-sinc filter
+//! Sources at another sample rate, and voices whose rate or pitch differs from 1, are
+//! resampled with a 16-tap windowed-sinc filter
 //! (Blackman window, 256 interpolated phases, cutoff at 0.9 of the lower Nyquist
 //! frequency). It is designed for ratios up to 2:1, such as 44.1 kHz to 48 kHz;
 //! larger downsampling ratios alias more. A source at the output rate is copied
@@ -99,7 +105,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use queue::{Consumer, Producer, PushError};
-use voice::{Feed, ONE, Ramp, SincTable, State, Voice};
+use voice::{Feed, ONE, Ramp, Resampling, SincBank, SincTable, State, Voice};
 
 use crate::{Audio, Error, ErrorCode, FadeCurve, Limits, Result};
 
@@ -267,6 +273,14 @@ pub struct Play {
     pub fade_in: Fade,
     /// Decides which voice gives way when too many play. Default 128.
     pub priority: u8,
+    /// Playback rate, which changes speed and pitch together: 2 plays twice as fast
+    /// and an octave higher. 1/16..=8. Default 1.
+    pub rate: f32,
+    /// Pitch offset in semitones on top of the rate; fractions are cents, so 0.01 is
+    /// one cent. -48..=48. Default 0.
+    pub pitch: f32,
+    /// Random variation of pitch and gain, drawn from the mixer's seed.
+    pub variation: Variation,
 }
 impl Default for Play {
     fn default() -> Self {
@@ -277,8 +291,31 @@ impl Default for Play {
             looping: Loop::Off,
             fade_in: Fade::NONE,
             priority: 128,
+            rate: 1.0,
+            pitch: 0.0,
+            variation: Variation::NONE,
         }
     }
+}
+
+/// Random variation for sounds that repeat, such as footsteps, coins and impacts.
+///
+/// Each start draws a pitch offset uniformly within `±pitch` semitones and a gain
+/// within `±gain_db` decibels from the mixer's generator, seeded by
+/// [`MixerConfig::seed`] or [`MixerHandle::reseed`]. The same seed and the same
+/// sequence of starts give the same variations on every platform.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Variation {
+    /// 0..=24 semitones.
+    pub pitch: f32,
+    /// 0..=24 decibels.
+    pub gain_db: f32,
+}
+impl Variation {
+    pub const NONE: Variation = Variation {
+        pitch: 0.0,
+        gain_db: 0.0,
+    };
 }
 
 #[derive(Clone, Debug)]
@@ -293,6 +330,8 @@ pub struct MixerConfig {
     pub buses: Vec<String>,
     /// Commands that can wait for the mixer, 1..=65536. Default 1024.
     pub queue: usize,
+    /// Seed of the generator that draws each voice's [`Variation`]. Default 0.
+    pub seed: u64,
 }
 impl Default for MixerConfig {
     fn default() -> Self {
@@ -302,6 +341,7 @@ impl Default for MixerConfig {
             max_voices: 32,
             buses: Vec::new(),
             queue: 1024,
+            seed: 0,
         }
     }
 }
@@ -324,6 +364,8 @@ enum Action {
     Stop(VoiceId, u64, FadeCurve),
     Gain(VoiceId, f64, u64, FadeCurve),
     Pan(VoiceId, f64, u64, FadeCurve),
+    Rate(VoiceId, f64, u64, FadeCurve),
+    Pitch(VoiceId, f64, u64, FadeCurve),
     BusGain(usize, f64, u64, FadeCurve),
     StopAll(u64, FadeCurve),
 }
@@ -370,6 +412,24 @@ pub struct MixerHandle {
     next_voice: u64,
     next_sequence: u64,
     tables: Vec<(u32, Arc<SincTable>)>,
+    bank: Arc<SincBank>,
+    random: SplitMix,
+}
+
+/// SplitMix64: a small, fixed generator, so variations are the same on every platform.
+struct SplitMix(u64);
+impl SplitMix {
+    fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    }
+    /// Uniform in -1..1.
+    fn symmetric(&mut self) -> f64 {
+        (self.next() >> 11) as f64 / (1u64 << 52) as f64 - 1.0
+    }
 }
 
 impl Mixer {
@@ -380,6 +440,7 @@ impl Mixer {
             max_voices,
             buses,
             queue,
+            seed,
         } = config;
         Limits::default().check(0, channels, sample_rate)?;
         if !(1..=2).contains(&channels) {
@@ -434,6 +495,8 @@ impl Mixer {
             next_voice: 0,
             next_sequence: 0,
             tables: Vec::new(),
+            bank: Arc::new(SincBank::new()),
+            random: SplitMix(seed),
         };
         Ok((mixer, handle))
     }
@@ -537,6 +600,16 @@ impl Mixer {
             Action::Pan(id, pan, len, curve) => {
                 if let Some(v) = self.voice_mut(id) {
                     v.pan.retarget(frame, pan, len, curve);
+                }
+            }
+            Action::Rate(id, rate, len, curve) => {
+                if let Some(v) = self.voice_mut(id) {
+                    v.rate.retarget(frame, rate, len, curve);
+                }
+            }
+            Action::Pitch(id, pitch, len, curve) => {
+                if let Some(v) = self.voice_mut(id) {
+                    v.pitch.retarget(frame, pitch, len, curve);
                 }
             }
             Action::BusGain(bus, gain, len, curve) => {
@@ -742,6 +815,16 @@ impl MixerHandle {
     pub fn set_pan(&mut self, voice: VoiceId, pan: f32, fade: Fade) -> Result<()> {
         self.now().set_pan(voice, pan, fade)
     }
+    pub fn set_rate(&mut self, voice: VoiceId, rate: f32, fade: Fade) -> Result<()> {
+        self.now().set_rate(voice, rate, fade)
+    }
+    pub fn set_pitch(&mut self, voice: VoiceId, semitones: f32, fade: Fade) -> Result<()> {
+        self.now().set_pitch(voice, semitones, fade)
+    }
+    /// Restarts the generator of variations from `seed`.
+    pub fn reseed(&mut self, seed: u64) {
+        self.random = SplitMix(seed);
+    }
     pub fn set_bus_gain(&mut self, bus: BusId, gain: f32, fade: Fade) -> Result<()> {
         self.now().set_bus_gain(bus, gain, fade)
     }
@@ -817,6 +900,15 @@ impl Commands<'_> {
         if play.bus.0 > handle.buses.len() {
             return Err(Error::invalid("Unknown bus"));
         }
+        check_rate(play.rate)?;
+        check_pitch(play.pitch)?;
+        let Variation {
+            pitch: vary_pitch,
+            gain_db: vary_gain,
+        } = play.variation;
+        if !(0.0..=24.0).contains(&vary_pitch) || !(0.0..=24.0).contains(&vary_gain) {
+            return Err(Error::invalid("Variation ranges must be 0..=24"));
+        }
         if let Loop::Region { start, end } = play.looping {
             if start >= end || frames.is_some_and(|n| end > n) {
                 return Err(Error::invalid(
@@ -828,16 +920,35 @@ impl Commands<'_> {
         let step = (((rate as u128) << 32) + handle.rate as u128 / 2) / handle.rate as u128;
         let step = step as u64;
         let table = (step != ONE).then(|| handle.table(rate));
+        let base_ratio = rate as f64 / handle.rate as f64;
+        let mut gain = play.gain as f64;
+        let mut pitch = play.pitch as f64;
+        if vary_pitch > 0.0 {
+            pitch += handle.random.symmetric() * vary_pitch as f64;
+        }
+        if vary_gain > 0.0 {
+            let db = handle.random.symmetric() * vary_gain as f64;
+            gain *= crate::math::exp2(db * std::f64::consts::LOG2_10 / 20.0);
+        }
         let id = VoiceId(handle.next_voice);
         handle.next_voice += 1;
         let feed = match sound {
             Sound::Memory(audio) => Feed::Memory(audio),
             Sound::Stream(stream) => Feed::Stream(stream),
         };
-        let mut voice = Box::new(Voice::new(id, feed, channels, play.looping, step, table));
+        let bank = handle.bank.clone();
+        let resampling = Resampling {
+            step,
+            base_ratio,
+            table,
+            bank,
+        };
+        let mut voice = Box::new(Voice::new(id, feed, channels, play.looping, resampling));
         voice.bus = play.bus.0;
         voice.priority = play.priority;
-        voice.gain = Ramp::constant(play.gain as f64);
+        voice.gain = Ramp::constant(gain);
+        voice.rate = Ramp::constant(play.rate as f64);
+        voice.pitch = Ramp::constant(pitch);
         voice.pan = Ramp::constant(play.pan.clamp(-1.0, 1.0) as f64);
         voice.fade_in = fade_in;
         handle.send(self.frame, Action::Play(voice))?;
@@ -871,6 +982,24 @@ impl Commands<'_> {
         self.handle
             .send(self.frame, Action::Pan(voice, pan, len, curve))
     }
+    /// Changes a voice's playback rate, which changes speed and pitch together, over
+    /// the fade. 1/16..=8.
+    pub fn set_rate(self, voice: VoiceId, rate: f32, fade: Fade) -> Result<()> {
+        check_rate(rate)?;
+        let (len, curve) = self.handle.frames(fade)?;
+        self.handle
+            .send(self.frame, Action::Rate(voice, rate as f64, len, curve))
+    }
+    /// Changes a voice's pitch offset in semitones (fractions are cents) over the fade.
+    /// -48..=48.
+    pub fn set_pitch(self, voice: VoiceId, semitones: f32, fade: Fade) -> Result<()> {
+        check_pitch(semitones)?;
+        let (len, curve) = self.handle.frames(fade)?;
+        self.handle.send(
+            self.frame,
+            Action::Pitch(voice, semitones as f64, len, curve),
+        )
+    }
     /// Sets a bus's gain; [`BusId::MASTER`] sets the master gain.
     pub fn set_bus_gain(self, bus: BusId, gain: f32, fade: Fade) -> Result<()> {
         if !gain.is_finite() || gain < 0.0 {
@@ -882,5 +1011,20 @@ impl Commands<'_> {
         let (len, curve) = self.handle.frames(fade)?;
         self.handle
             .send(self.frame, Action::BusGain(bus.0, gain as f64, len, curve))
+    }
+}
+
+fn check_rate(rate: f32) -> Result<()> {
+    if (1.0 / 16.0..=8.0).contains(&rate) {
+        Ok(())
+    } else {
+        Err(Error::invalid("Playback rate must be 1/16..=8"))
+    }
+}
+fn check_pitch(semitones: f32) -> Result<()> {
+    if (-48.0..=48.0).contains(&semitones) {
+        Ok(())
+    } else {
+        Err(Error::invalid("Pitch must be -48..=48 semitones"))
     }
 }

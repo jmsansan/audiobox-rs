@@ -8,7 +8,7 @@
 use std::sync::Arc;
 use std::thread;
 
-use audiobox::mixer::{Fade, Mixer, MixerConfig, MixerEvent, Play};
+use audiobox::mixer::{Fade, Mixer, MixerConfig, MixerEvent, Play, Variation};
 use audiobox::sfx::{Effect, Preset};
 use audiobox::synth::{RenderOptions, Score, Synth};
 use audiobox::{Audio, EncodeOptions, write_audio_file};
@@ -73,6 +73,22 @@ fn main() -> audiobox::Result<()> {
                 ..Play::default()
             },
         )?;
+    }
+    // Footsteps: one sound, varied in pitch and level on every step.
+    let footstep = Arc::new(Effect::preset(Preset::Hit, 11).render(RATE)?);
+    let step = Play {
+        bus: effects,
+        gain: 0.6,
+        variation: Variation {
+            pitch: 1.5,
+            gain_db: 2.0,
+        },
+        ..Play::default()
+    };
+    for i in 0..8 {
+        audio
+            .at(at(0.4 + i as f64 * 0.3))
+            .play(footstep.clone(), &step)?;
     }
     // A pause menu ducks the music, then the level ends with a fade-out.
     audio

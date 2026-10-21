@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use super::{Loop, Stream, VoiceId};
-use crate::math::sin_turns;
+use crate::math::{exp2, sin_turns};
 use crate::{Audio, ErrorCode, FadeCurve, Result};
 
 /// Fixed-point position: 32 integer and 32 fractional bits of a source frame.
@@ -109,6 +109,41 @@ impl SincTable {
     }
 }
 
+/// Ratios of the interpolation tables shared by voices whose playback speed differs
+/// from 1. Each covers speeds up to its ratio of source to output frames.
+const BANK: [f64; 9] = [1.0, 1.25, 1.5, 2.0, 2.5, 3.0, 4.0, 6.0, 8.0];
+
+/// Interpolation tables for changing playback speeds, built once when the mixer is
+/// made, since `render` cannot build tables. A voice uses the table of the smallest
+/// ratio at or above its current one, whose cutoff is low enough not to alias.
+#[derive(Debug)]
+pub(super) struct SincBank {
+    tables: Vec<SincTable>,
+}
+impl SincBank {
+    pub fn new() -> Self {
+        Self {
+            tables: BANK.iter().map(|&ratio| SincTable::new(ratio)).collect(),
+        }
+    }
+    fn index(ratio: f64) -> usize {
+        BANK.iter()
+            .position(|&r| ratio <= r)
+            .unwrap_or(BANK.len() - 1)
+    }
+}
+
+/// How a voice reads its source at speed 1, and the tables for other speeds.
+pub(super) struct Resampling {
+    /// Fixed-point source frames per output frame.
+    pub step: u64,
+    /// Source frames per output frame.
+    pub base_ratio: f64,
+    /// The exact table for `base_ratio`, or `None` at the output rate.
+    pub table: Option<Arc<SincTable>>,
+    pub bank: Arc<SincBank>,
+}
+
 pub(super) enum Feed {
     Memory(Arc<Audio>),
     Stream(Box<dyn Stream>),
@@ -146,8 +181,19 @@ pub(super) struct Voice {
     filled: i64,
     end: Option<i64>,
     position: u64,
+    /// Fixed-point source frames per output frame, now and at speed 1.
     step: u64,
+    base_step: u64,
+    /// Source frames per output frame at speed 1.
+    base_ratio: f64,
+    /// The exact table for speed 1, or `None` when the source is at the output rate.
     table: Option<Arc<SincTable>>,
+    bank: Arc<SincBank>,
+    /// The bank table in use while the speed differs from 1.
+    bank_index: Option<usize>,
+    /// Playback rate, and pitch in semitones: together, the playback speed.
+    pub rate: Ramp,
+    pub pitch: Ramp,
 }
 
 impl Voice {
@@ -156,9 +202,14 @@ impl Voice {
         feed: Feed,
         channels: usize,
         looping: Loop,
-        step: u64,
-        table: Option<Arc<SincTable>>,
+        resampling: Resampling,
     ) -> Self {
+        let Resampling {
+            step,
+            base_ratio,
+            table,
+            bank,
+        } = resampling;
         let looping = match looping {
             Loop::Off => None,
             Loop::Whole => Some((0, None)),
@@ -183,8 +234,28 @@ impl Voice {
             end: None,
             position: 0,
             step,
+            base_step: step,
+            base_ratio,
             table,
+            bank,
+            bank_index: None,
+            rate: Ramp::constant(1.0),
+            pitch: Ramp::constant(0.0),
         }
+    }
+    /// Sets the step and table for the playback speed at `frame`. At speed 1 the voice
+    /// uses its exact step and table, so unpitched voices render as before.
+    fn update_speed(&mut self, frame: u64) {
+        let rate = self.rate.value(frame);
+        let pitch = self.pitch.value(frame);
+        if rate == 1.0 && pitch == 0.0 {
+            self.step = self.base_step;
+            self.bank_index = None;
+            return;
+        }
+        let speed = (rate * exp2(pitch / 12.0)).clamp(1.0 / 64.0, 64.0);
+        self.step = ((self.base_step as f64 * speed).round() as u64).max(1);
+        self.bank_index = Some(SincBank::index(self.base_ratio * speed));
     }
     pub fn live(&self) -> bool {
         self.state == State::Playing
@@ -224,11 +295,16 @@ impl Voice {
         let constant =
             !self.gain.changing(first) && !self.fade.changing(first) && !self.pan.changing(first);
         let fixed = constant.then(|| self.gains(first, out_channels));
+        let speeding = self.rate.changing(first) || self.pitch.changing(first);
+        self.update_speed(first);
         for j in 0..frames {
             if self.done() {
                 return;
             }
             let frame = first + j as u64;
+            if speeding {
+                self.update_speed(frame);
+            }
             let Some((left, right)) = self.next_frame() else {
                 return;
             };
@@ -295,7 +371,13 @@ impl Voice {
         let value = if direct {
             (sample(index, 0), sample(index, ch - 1))
         } else {
-            let table = self.table.as_ref().expect("resampling voices have a table");
+            let bank = &self.bank.tables;
+            let table = match self.bank_index {
+                Some(i) => &bank[i],
+                // A voice at the output rate whose position is between frames after a
+                // speed change uses the table for ratio 1.
+                None => self.table.as_deref().unwrap_or(&bank[0]),
+            };
             let scaled = frac as f64 / ONE as f64 * PHASES as f64;
             let p = (scaled as usize).min(PHASES - 1);
             let t = scaled - p as f64;

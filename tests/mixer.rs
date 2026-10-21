@@ -637,3 +637,180 @@ fn invalid_commands_are_rejected() {
     drop(m);
     assert!(h.play(one, &Play::default()).is_err());
 }
+
+/// Mean frequency of `samples[from..to]` from the times of upward zero crossings.
+fn frequency(samples: &[f32], from: usize, to: usize) -> f64 {
+    let crossings: Vec<f64> = (from.max(1)..to)
+        .filter(|&i| samples[i - 1] < 0.0 && samples[i] >= 0.0)
+        .map(|i| {
+            let (a, b) = (samples[i - 1] as f64, samples[i] as f64);
+            i as f64 - 1.0 + a / (a - b)
+        })
+        .collect();
+    (crossings.len() - 1) as f64 * RATE as f64 / (crossings[crossings.len() - 1] - crossings[0])
+}
+
+#[test]
+fn rate_and_pitch_change_speed_and_frequency() {
+    let tone = mono(sine(48_000, RATE, 300.0, 0.5), RATE);
+    let render_with = |play: Play| {
+        let (mut m, mut h) = mixer(1, &[], 4);
+        h.play(tone.clone(), &play).unwrap();
+        render(&mut m, 50_000, 512)
+    };
+    // A rate of 2 halves the duration and doubles the frequency.
+    let fast = render_with(Play {
+        rate: 2.0,
+        ..Play::default()
+    });
+    let last = fast.iter().rposition(|s| s.abs() > 1e-4).unwrap();
+    assert!((23_990..24_010).contains(&last), "ends at {last}");
+    assert!((frequency(&fast, 1000, 23_000) / 600.0 - 1.0).abs() < 1e-3);
+    // Pitch +12 semitones doubles the frequency; +7 is a fifth.
+    let octave = render_with(Play {
+        pitch: 12.0,
+        ..Play::default()
+    });
+    assert!((frequency(&octave, 1000, 23_000) / 600.0 - 1.0).abs() < 1e-3);
+    let fifth = render_with(Play {
+        pitch: 7.0,
+        ..Play::default()
+    });
+    let expected = 300.0 * 2f64.powf(7.0 / 12.0);
+    assert!((frequency(&fifth, 1000, 30_000) / expected - 1.0).abs() < 1e-3);
+    // Rate and pitch combine, also for a resampled source.
+    let (mut m, mut h) = mixer(1, &[], 4);
+    h.play(
+        mono(sine(44_100, 44_100, 1000.0, 0.5), 44_100),
+        &Play {
+            rate: 0.5,
+            pitch: 12.0,
+            ..Play::default()
+        },
+    )
+    .unwrap();
+    let out = render(&mut m, 40_000, 700);
+    assert!((frequency(&out, 1000, 39_000) / 1000.0 - 1.0).abs() < 1e-3);
+    // A voice back at speed 1 after a change keeps playing in tune.
+    let (mut m, mut h) = mixer(1, &[], 4);
+    let id = h.play(tone.clone(), &Play::default()).unwrap();
+    h.at(1000).set_pitch(id, 3.0, Fade::NONE).unwrap();
+    h.at(5000).set_pitch(id, 0.0, Fade::NONE).unwrap();
+    let out = render(&mut m, 40_000, 512);
+    assert!((frequency(&out, 6000, 39_000) / 300.0 - 1.0).abs() < 1e-3);
+}
+
+#[test]
+fn a_rate_ramp_reaches_its_target_without_a_click() {
+    let amplitude = 0.5;
+    let tone = mono(sine(96_000, RATE, 200.0, amplitude), RATE);
+    let (mut m, mut h) = mixer(1, &[], 4);
+    let id = h.play(tone, &Play::default()).unwrap();
+    h.at(4800).set_rate(id, 2.0, Fade::linear(0.5)).unwrap();
+    let out = render(&mut m, 40_000, 333);
+    // Tolerance: the steepest step of the sine at its highest frequency, plus 2%.
+    let bound = std::f64::consts::TAU * 400.0 / RATE as f64 * amplitude * 1.02;
+    let worst = out[..39_000]
+        .windows(2)
+        .map(|w| (w[1] - w[0]).abs() as f64)
+        .fold(0.0, f64::max);
+    assert!(worst <= bound, "step {worst} > {bound}");
+    assert!(
+        (frequency(&out, 1000, 4700) / 200.0 - 1.0).abs() < 1e-3,
+        "before the ramp"
+    );
+    assert!(
+        (frequency(&out, 30_000, 39_000) / 400.0 - 1.0).abs() < 1e-3,
+        "after the ramp"
+    );
+}
+
+#[test]
+fn a_seed_gives_the_same_variations() {
+    let step = mono(sine(2400, RATE, 500.0, 0.5), RATE);
+    let run = |seed: u64| {
+        let (mut m, mut h) = Mixer::new(MixerConfig {
+            sample_rate: RATE,
+            channels: 1,
+            seed,
+            ..MixerConfig::default()
+        })
+        .unwrap();
+        let footstep = Play {
+            variation: Variation {
+                pitch: 2.0,
+                gain_db: 3.0,
+            },
+            ..Play::default()
+        };
+        for i in 0..6 {
+            h.at(i * 4800).play(step.clone(), &footstep).unwrap();
+        }
+        render(&mut m, 6 * 4800, 1000)
+    };
+    let (a, b, c) = (run(7), run(7), run(8));
+    assert!(
+        a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()),
+        "same seed, same sounds"
+    );
+    assert!(
+        a.iter().zip(&c).any(|(x, y)| x != y),
+        "another seed, other sounds"
+    );
+    // Each step differs in pitch and level, within the stated ranges.
+    let mut seen = Vec::new();
+    for i in 0..6 {
+        let part = &a[i * 4800..i * 4800 + 2000];
+        let hz = frequency(part, 1, part.len());
+        let peak = part.iter().fold(0.0f32, |p, s| p.max(s.abs())) as f64;
+        let semitones = 12.0 * (hz / 500.0).log2();
+        let db = 20.0 * (peak / 0.5).log10();
+        assert!(
+            semitones.abs() <= 2.0 + 1e-3 && db.abs() <= 3.0 + 0.05,
+            "step {i}: {semitones} st, {db} dB"
+        );
+        seen.push((semitones * 100.0).round() as i64);
+    }
+    seen.dedup();
+    assert!(seen.len() > 3, "the steps vary: {seen:?}");
+}
+
+#[test]
+fn invalid_rates_are_rejected() {
+    let (_m, mut h) = mixer(1, &[], 4);
+    let one = mono(vec![0.0; 10], RATE);
+    for play in [
+        Play {
+            rate: 0.0,
+            ..Play::default()
+        },
+        Play {
+            rate: 9.0,
+            ..Play::default()
+        },
+        Play {
+            pitch: 49.0,
+            ..Play::default()
+        },
+        Play {
+            variation: Variation {
+                pitch: 25.0,
+                gain_db: 0.0,
+            },
+            ..Play::default()
+        },
+        Play {
+            rate: f32::NAN,
+            ..Play::default()
+        },
+    ] {
+        assert_eq!(
+            h.play(one.clone(), &play).unwrap_err().code,
+            ErrorCode::InvalidArgument,
+            "{play:?}"
+        );
+    }
+    let id = h.play(one, &Play::default()).unwrap();
+    assert!(h.set_rate(id, -1.0, Fade::NONE).is_err());
+    assert!(h.set_pitch(id, f32::INFINITY, Fade::NONE).is_err());
+}
