@@ -204,6 +204,9 @@ pub(super) struct Voice {
     /// Fixed-point source frames per output frame, now and at speed 1.
     step: u64,
     base_step: u64,
+    /// The step that brought the voice to its position, which decides whether it has
+    /// played out, so a speed change at that frame cannot revive it.
+    last_step: u64,
     /// Source frames per output frame at speed 1.
     base_ratio: f64,
     /// The exact table for speed 1, or `None` when the source is at the output rate.
@@ -217,7 +220,8 @@ pub(super) struct Voice {
     /// Output frames during which the voice was frozen by a pause. The voice's own
     /// time, which its ramps follow, is the output frame minus this.
     offset: u64,
-    /// Gain of pause and resume fades, in output frames.
+    /// Gain of pause and resume fades, in the voice's own time, so a bus pause also
+    /// holds an unfinished fade.
     pause: Ramp,
     /// Fading out towards a pause, or paused.
     pausing: bool,
@@ -280,6 +284,7 @@ impl Voice {
             position: 0,
             step,
             base_step: step,
+            last_step: step,
             base_ratio,
             table,
             bank,
@@ -309,13 +314,13 @@ impl Voice {
     pub fn time(&self, frame: u64) -> u64 {
         frame - self.offset
     }
-    /// The voice's gain at output frame `frame`: gain, fades and pause, without pan.
+    /// The voice's gain at output frame `frame`: gain, fades, distance and pause, without pan.
     pub fn level(&self, frame: u64) -> f64 {
         let time = self.time(frame);
         self.gain.value(time)
             * self.fade.value(time)
             * self.distance.value(time)
-            * self.pause.value(frame)
+            * self.pause.value(time)
     }
     /// Whether the voice is frozen by its own pause.
     pub fn paused(&self) -> bool {
@@ -346,6 +351,34 @@ impl Voice {
         self.pausing = false;
         self.pause.retarget(frame, 1.0, len, curve);
     }
+    /// Reads the source up to the playback position, as the next frame would, so the
+    /// position maps through every loop restart it has passed.
+    pub fn settle(&mut self) {
+        if self.done() {
+            return;
+        }
+        let index = (self.position >> 32) as i64;
+        match self.fill(index + HALF + 1) {
+            Ok(()) => self.finish_if_exhausted(),
+            Err(e) => self.state = State::Failed(e.code),
+        }
+    }
+    /// Whether the source ended before the playback position, so the next frame would
+    /// end the voice. A voice that reached its end frame exactly at speed 1 has played
+    /// out; one that got there resampling still has the interpolation's tail.
+    fn exhausted(&self) -> bool {
+        let index = (self.position >> 32) as i64;
+        let direct = self.last_step == ONE && self.position & (ONE - 1) == 0;
+        let reach = if direct { 0 } else { HALF };
+        self.end.is_some_and(|end| index - reach >= end)
+    }
+    /// Finishes a voice whose source is exhausted, as its next frame would, so a voice
+    /// that has played everything stops counting at once.
+    fn finish_if_exhausted(&mut self) {
+        if !self.done() && self.exhausted() {
+            self.state = State::Finished;
+        }
+    }
     /// The source frame being played, mapped back through loop restarts.
     pub fn source_position(&self) -> u64 {
         let index = (self.position >> 32) as i64;
@@ -374,9 +407,9 @@ impl Voice {
             self.bank_index = None;
             return;
         }
-        // Every accepted rate (1/16..=8) and pitch (±48 semitones) combines to
-        // 1/256..=128, which the fixed-point step represents exactly.
-        let speed = (rate * exp2(pitch / 12.0)).clamp(1.0 / 256.0, 128.0);
+        // Every accepted rate (1/16..=8), pitch (±48 semitones) and pitch variation
+        // (±24 more) combines to 1/1024..=512, which the fixed-point step represents.
+        let speed = (rate * exp2(pitch / 12.0)).clamp(1.0 / 1024.0, 512.0);
         self.step = ((self.base_step as f64 * speed).round() as u64).max(1);
         self.bank_index = Some(SincBank::index(self.base_ratio * speed));
     }
@@ -422,15 +455,14 @@ impl Voice {
             && !self.fade.changing(local)
             && !self.distance.changing(local)
             && !self.pan.changing(local)
-            && !self.pause.changing(first);
-        let fixed = constant.then(|| self.gains(local, first, out_channels));
+            && !self.pause.changing(local);
+        let fixed = constant.then(|| self.gains(local, out_channels));
         let speeding = self.rate.changing(local) || self.pitch.changing(local);
         self.update_speed(local);
         for j in 0..frames {
             if self.done() {
                 return;
             }
-            let frame = first + j as u64;
             let time = local + j as u64;
             if speeding {
                 self.update_speed(time);
@@ -438,7 +470,7 @@ impl Voice {
             let Some((left, right)) = self.next_frame() else {
                 return;
             };
-            let (gl, gr) = fixed.unwrap_or_else(|| self.gains(time, frame, out_channels));
+            let (gl, gr) = fixed.unwrap_or_else(|| self.gains(time, out_channels));
             if out_channels == 1 {
                 out[j] += (left * gl + right * gr) as f32;
             } else {
@@ -448,9 +480,15 @@ impl Voice {
             if self.state == State::Stopping && self.fade.finished(time + 1) {
                 self.state = State::Finished;
             }
-            if self.pausing && self.pause.finished(frame + 1) {
+            if self.pausing && self.pause.finished(time + 1) {
                 self.pausing = false;
                 self.paused = true;
+                // A stopping voice that falls silent has stopped: ending it here, not
+                // at the next block, keeps a later resume from reviving it.
+                if self.state == State::Stopping {
+                    self.state = State::Finished;
+                    return;
+                }
                 self.freeze((frames - j - 1) as u64);
                 return;
             }
@@ -463,11 +501,11 @@ impl Voice {
     /// balanced: the far side follows `√2·cos θ` or `√2·sin θ`, limited to 1, so the
     /// centre leaves both channels unchanged. Mono output sums mono sources at unit
     /// gain and averages stereo ones.
-    fn gains(&self, time: u64, frame: u64, out_channels: usize) -> (f64, f64) {
+    fn gains(&self, time: u64, out_channels: usize) -> (f64, f64) {
         let gain = self.gain.value(time)
             * self.fade.value(time)
             * self.distance.value(time)
-            * self.pause.value(frame);
+            * self.pause.value(time);
         if out_channels == 1 {
             return if self.channels == 1 {
                 (gain, 0.0)
@@ -490,8 +528,7 @@ impl Voice {
         let index = (self.position >> 32) as i64;
         let frac = self.position & (ONE - 1);
         let direct = self.step == ONE && frac == 0;
-        let reach = if direct { 0 } else { HALF };
-        if self.end.is_some_and(|end| index - reach >= end) {
+        if self.exhausted() {
             self.state = State::Finished;
             return None;
         }
@@ -531,6 +568,7 @@ impl Voice {
             (l, r)
         };
         self.position += self.step;
+        self.last_step = self.step;
         Some(value)
     }
 
@@ -578,6 +616,10 @@ impl Voice {
                 Some((start, _)) if self.source_pos > start => {
                     if let Feed::Stream(stream) = &mut self.feed {
                         stream.seek(start)?;
+                    }
+                    // A stream of unknown length shows its loop's end at the first restart.
+                    if self.loop_span.is_none() {
+                        self.loop_span = Some((start, self.source_pos));
                     }
                     self.source_pos = start;
                     self.jumps[self.jump_count % JUMPS] = (self.filled, start);

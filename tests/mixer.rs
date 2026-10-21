@@ -1686,3 +1686,397 @@ fn positions_wrap_into_the_loop_at_high_speed() {
     // 768 source frames: the first pass reaches 700, then 68 more from 200.
     assert_eq!(h.voice_status(id).unwrap().position, 268);
 }
+
+#[test]
+fn a_bus_pause_holds_an_unfinished_pause_fade() {
+    let (mut m, mut h) = mixer(1, &["game"], 4);
+    let game = h.bus("game").unwrap();
+    let id = h
+        .play(
+            mono(vec![1.0; 96_000], RATE),
+            &Play {
+                bus: game,
+                ..Play::default()
+            },
+        )
+        .unwrap();
+    // A 1000-frame pause fade starts at 1000; the bus pauses halfway through it.
+    h.at(1000)
+        .pause(id, Fade::linear(1000.0 / RATE as f64))
+        .unwrap();
+    h.at(1500).pause_bus(game, Fade::NONE).unwrap();
+    h.at(5000).resume_bus(game, Fade::NONE).unwrap();
+    let out = render(&mut m, 6000, 256);
+    assert!(close(out[1499], 0.501, 1e-6));
+    assert!(out[1500..5000].iter().all(|&s| s == 0.0));
+    // The fade resumes where it was, not finished.
+    assert!(close(out[5000], 0.5, 1e-6), "{}", out[5000]);
+    assert!(close(out[5250], 0.25, 1e-6));
+    assert!(out[5500..].iter().all(|&s| s == 0.0));
+}
+
+#[test]
+fn panned_stereo_audio_is_a_new_sound() {
+    let stereo = Audio::new(vec![vec![0.5; 10], vec![0.5; 10]], RATE).unwrap();
+    let panned = stereo.pan(-0.5).unwrap();
+    assert_ne!(Instances::of(&stereo), Instances::of(&panned));
+    let mono_sound = Audio::new(vec![vec![0.5; 10]], RATE).unwrap();
+    assert_ne!(
+        Instances::of(&mono_sound),
+        Instances::of(&mono_sound.pan(0.5).unwrap())
+    );
+}
+
+#[test]
+fn replacing_many_voices_at_once_loses_no_event() {
+    let coin = mono(vec![0.1; 48_000], RATE);
+    let (mut m, mut h) = Mixer::new(MixerConfig {
+        sample_rate: RATE,
+        channels: 1,
+        max_voices: 32,
+        queue: 1,
+        buses: vec!["game".into()],
+        ..MixerConfig::default()
+    })
+    .unwrap();
+    let game = h.bus("game").unwrap();
+    let key = Instances::of(&coin);
+    for _ in 0..32 {
+        h.play(
+            coin.clone(),
+            &Play {
+                bus: game,
+                instances: Some(key),
+                ..Play::default()
+            },
+        )
+        .unwrap();
+        render(&mut m, 1, 1);
+    }
+    h.pause_bus(game, Fade::NONE).unwrap();
+    render(&mut m, 1, 1);
+    let only = Play {
+        bus: game,
+        instances: Some(key.max(1).policy(OverLimit::StopOldest)),
+        ..Play::default()
+    };
+    h.play(coin.clone(), &only).unwrap();
+    render(&mut m, 1, 1);
+    let got = events(&mut h);
+    let stolen = got
+        .iter()
+        .filter(|e| matches!(e, MixerEvent::Stolen(_)))
+        .count();
+    let ended = got
+        .iter()
+        .filter(|e| matches!(e, MixerEvent::Ended(_)))
+        .count();
+    assert_eq!((stolen, ended), (32, 32), "{got:?}");
+}
+
+#[test]
+fn a_stopping_voice_that_becomes_paused_ends() {
+    for by_bus in [false, true] {
+        let (mut m, mut h) = mixer(1, &["game"], 4);
+        let game = h.bus("game").unwrap();
+        let id = h
+            .play(
+                mono(vec![1.0; 96_000], RATE),
+                &Play {
+                    bus: game,
+                    ..Play::default()
+                },
+            )
+            .unwrap();
+        if by_bus {
+            h.at(100).pause_bus(game, Fade::linear(0.01)).unwrap();
+        } else {
+            h.at(100).pause(id, Fade::linear(0.01)).unwrap();
+        }
+        h.at(200).stop(id, Fade::linear(0.05)).unwrap();
+        render(&mut m, 2000, 256);
+        assert_eq!(
+            events(&mut h),
+            [MixerEvent::Ended(id)],
+            "paused by bus: {by_bus}"
+        );
+        if by_bus {
+            h.resume_bus(game, Fade::NONE).unwrap();
+        } else {
+            h.resume(id, Fade::NONE).unwrap();
+        }
+        assert!(render(&mut m, 1000, 256).iter().all(|&s| s == 0.0));
+    }
+}
+
+#[test]
+fn the_limiter_bounds_overflowing_sums() {
+    let (mut m, mut h) = limited_mixer(MasterLimiter::default());
+    let tone = mono(sine(4800, RATE, 300.0, 1.0), RATE);
+    for _ in 0..2 {
+        h.play(
+            tone.clone(),
+            &Play {
+                gain: f32::MAX,
+                ..Play::default()
+            },
+        )
+        .unwrap();
+    }
+    let out = render(&mut m, 4800, 512);
+    let ceiling = 10f32.powf(-1.0 / 20.0);
+    assert!(
+        out.iter()
+            .all(|s| s.is_finite() && s.abs() <= ceiling + 1e-6)
+    );
+}
+
+#[test]
+fn pitch_variation_is_not_clipped_at_the_extremes() {
+    // 10 Hz at rate 8 and pitch 48 is 128 times faster: 84 semitones up. Variation of
+    // 24 semitones may take it as far as 108 semitones, 512 times.
+    let mut above = false;
+    for seed in 0..6 {
+        let (mut m, mut h) = Mixer::new(MixerConfig {
+            sample_rate: RATE,
+            channels: 1,
+            seed,
+            ..MixerConfig::default()
+        })
+        .unwrap();
+        let play = Play {
+            rate: 8.0,
+            pitch: 48.0,
+            variation: Variation {
+                pitch: 24.0,
+                gain_db: 0.0,
+            },
+            ..Play::default()
+        };
+        h.play(mono(sine(480_000, RATE, 10.0, 0.5), RATE), &play)
+            .unwrap();
+        let out = render(&mut m, 900, 900);
+        let semitones = 12.0 * (frequency(&out, 20, 880) / 10.0).log2();
+        assert!(
+            (60.0 - 0.05..=108.0 + 0.05).contains(&semitones),
+            "seed {seed}: {semitones}"
+        );
+        above |= semitones > 84.1;
+    }
+    assert!(above, "positive draws play above 128 times");
+}
+
+/// A looping stream that does not report its length.
+struct Counting {
+    at: u64,
+    len: u64,
+}
+impl Stream for Counting {
+    fn sample_rate(&self) -> u32 {
+        RATE
+    }
+    fn channels(&self) -> usize {
+        1
+    }
+    fn read(&mut self, out: &mut [f32]) -> audiobox::Result<usize> {
+        let n = out.len().min((self.len - self.at) as usize);
+        for (i, s) in out[..n].iter_mut().enumerate() {
+            *s = (self.at + i as u64) as f32 / 100.0;
+        }
+        self.at += n as u64;
+        Ok(n)
+    }
+    fn seek(&mut self, frame: u64) -> audiobox::Result<()> {
+        self.at = frame.min(self.len);
+        Ok(())
+    }
+}
+
+#[test]
+fn positions_wrap_for_loops_of_unknown_length() {
+    let (mut m, mut h) = mixer(1, &[], 4);
+    let play = Play {
+        looping: Loop::Whole,
+        rate: 8.0,
+        pitch: 48.0,
+        ..Play::default()
+    };
+    let id = h
+        .play(Sound::stream(Counting { at: 0, len: 10 }), &play)
+        .unwrap();
+    render(&mut m, 1, 1);
+    assert_eq!(
+        h.voice_status(id).unwrap().position,
+        8,
+        "128 frames into a 10-frame loop"
+    );
+    render(&mut m, 2, 2);
+    assert_eq!(h.voice_status(id).unwrap().position, (3 * 128) % 10);
+}
+
+#[test]
+fn instance_limits_respect_priorities() {
+    let coin = mono(vec![0.5; 48_000], RATE);
+    let (mut m, mut h) = mixer(1, &[], 1);
+    let limit = Instances::of(&coin).max(1).policy(OverLimit::StopOldest);
+    let high = h
+        .play(
+            coin.clone(),
+            &Play {
+                priority: 255,
+                instances: Some(limit),
+                ..Play::default()
+            },
+        )
+        .unwrap();
+    let low = h
+        .at(100)
+        .play(
+            coin.clone(),
+            &Play {
+                priority: 0,
+                instances: Some(limit),
+                ..Play::default()
+            },
+        )
+        .unwrap();
+    render(&mut m, 500, 100);
+    assert_eq!(events(&mut h), [MixerEvent::Limited(low)]);
+    assert_eq!(h.voice_status(high).unwrap().state, VoiceState::Playing);
+}
+
+#[test]
+fn a_sound_that_has_ended_leaves_room_for_the_next_instance() {
+    let tick = mono(vec![0.5; 100], RATE);
+    for block in [500, 100] {
+        let (mut m, mut h) = mixer(1, &[], 1);
+        let limit = Instances::of(&tick).max(1).policy(OverLimit::Refuse);
+        let play = Play {
+            instances: Some(limit),
+            ..Play::default()
+        };
+        let first = h.play(tick.clone(), &play).unwrap();
+        let second = h.at(100).play(tick.clone(), &play).unwrap();
+        let out = render(&mut m, 500, block);
+        assert_eq!(
+            events(&mut h),
+            [MixerEvent::Ended(first), MixerEvent::Ended(second)],
+            "blocks of {block}"
+        );
+        assert!(out[100..200].iter().all(|&s| s != 0.0), "blocks of {block}");
+    }
+}
+
+#[test]
+fn a_stop_overtaken_by_a_pause_ends_the_voice_whatever_the_blocks() {
+    let mut outs = Vec::new();
+    for block in [1500, 1] {
+        let (mut m, mut h) = mixer(2, &[], 1);
+        let id = h
+            .play(mono(vec![1.0; 48_000], RATE), &Play::default())
+            .unwrap();
+        h.at(10)
+            .pause(id, Fade::linear(100.0 / RATE as f64))
+            .unwrap();
+        h.at(20)
+            .stop(id, Fade::linear(1000.0 / RATE as f64))
+            .unwrap();
+        h.at(150).resume(id, Fade::NONE).unwrap();
+        let out = render(&mut m, 1500, block);
+        assert!(
+            out[2 * 150..].iter().all(|&s| s == 0.0),
+            "blocks of {block}"
+        );
+        assert_eq!(events(&mut h), [MixerEvent::Ended(id)], "blocks of {block}");
+        outs.push(out);
+    }
+    assert_eq!(outs[0], outs[1]);
+}
+
+#[test]
+fn a_speed_change_where_a_sound_ends_does_not_depend_on_the_blocks() {
+    let mut outs = Vec::new();
+    for block in [300, 100] {
+        let (mut m, mut h) = mixer(1, &[], 1);
+        let id = h
+            .play(mono(vec![0.5; 100], RATE), &Play::default())
+            .unwrap();
+        h.at(100).set_rate(id, 0.5, Fade::NONE).unwrap();
+        outs.push(render(&mut m, 300, block));
+        assert_eq!(events(&mut h), [MixerEvent::Ended(id)], "blocks of {block}");
+    }
+    assert_eq!(outs[0], outs[1]);
+}
+
+#[test]
+fn a_fast_sound_past_its_end_leaves_room_for_the_next_instance() {
+    let tick = mono(vec![0.5; 110], RATE);
+    let limit = Instances::of(&tick).max(1);
+    let (mut m, mut h) = mixer(1, &[], 1);
+    let first = h
+        .play(
+            tick.clone(),
+            &Play {
+                rate: 8.0,
+                pitch: 24.0,
+                instances: Some(limit),
+                ..Play::default()
+            },
+        )
+        .unwrap();
+    let second = h
+        .at(4)
+        .play(
+            tick.clone(),
+            &Play {
+                instances: Some(limit),
+                ..Play::default()
+            },
+        )
+        .unwrap();
+    render(&mut m, 500, 500);
+    assert_eq!(
+        events(&mut h),
+        [MixerEvent::Ended(first), MixerEvent::Ended(second)]
+    );
+}
+
+/// A stream that gives `frames` frames, then fails.
+struct Failing {
+    frames: usize,
+}
+impl Stream for Failing {
+    fn sample_rate(&self) -> u32 {
+        RATE
+    }
+    fn channels(&self) -> usize {
+        1
+    }
+    fn read(&mut self, out: &mut [f32]) -> audiobox::Result<usize> {
+        if self.frames == 0 {
+            return Err(audiobox::Error::new(ErrorCode::DecodeError, "broken"));
+        }
+        let n = out.len().min(self.frames);
+        out[..n].fill(0.25);
+        self.frames -= n;
+        Ok(n)
+    }
+    fn seek(&mut self, _frame: u64) -> audiobox::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_stream_failing_while_publishing_is_reported_at_once() {
+    let (mut m, mut h) = mixer(1, &[], 4);
+    let id = h
+        .play(Sound::stream(Failing { frames: 256 }), &Play::default())
+        .unwrap();
+    render(&mut m, 248, 248);
+    assert_eq!(
+        events(&mut h),
+        [MixerEvent::Failed(id, ErrorCode::DecodeError)]
+    );
+    assert_eq!(h.voice_status(id).unwrap().state, VoiceState::Finished);
+    assert_eq!(m.active_voices(), 0);
+}

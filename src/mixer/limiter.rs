@@ -38,11 +38,16 @@ pub(super) struct Limiter {
     channels: usize,
     /// Frames of look-ahead plus the current one.
     window: usize,
-    /// The last `window` input frames, and their peaks, in a ring.
+    /// The last `window` input frames, in a ring.
     delay: Vec<f32>,
-    peaks: Vec<f64>,
     at: usize,
     gain: f64,
+    /// A monotonic queue of (frame, peak) over the window, as `Audio::limit` keeps:
+    /// peaks decrease from front to back, so the front is the window's maximum.
+    queue: Vec<(u64, f64)>,
+    queue_head: usize,
+    queue_len: usize,
+    frames: u64,
 }
 
 impl Limiter {
@@ -69,23 +74,55 @@ impl Limiter {
             channels,
             window: lookahead + 1,
             delay: vec![0.0; (lookahead + 1) * channels],
-            peaks: vec![0.0; lookahead + 1],
             at: 0,
             gain: 1.0,
+            queue: vec![(0, 0.0); lookahead + 1],
+            queue_head: 0,
+            queue_len: 0,
+            frames: 0,
         })
     }
     /// Frames by which the limiter delays the output.
     pub fn latency(&self) -> usize {
         self.window - 1
     }
+    /// Adds the current frame's peak and returns the loudest peak in the window, in
+    /// constant amortized time.
+    fn push_peak(&mut self, peak: f64) -> f64 {
+        let w = self.window;
+        // Expire peaks that leave the window first, so at most `w - 1` remain and the
+        // new one always fits.
+        while self.queue_len > 0 && self.queue[self.queue_head].0 + w as u64 <= self.frames {
+            self.queue_head = (self.queue_head + 1) % w;
+            self.queue_len -= 1;
+        }
+        while self.queue_len > 0 && self.queue[(self.queue_head + self.queue_len - 1) % w].1 <= peak
+        {
+            self.queue_len -= 1;
+        }
+        self.queue[(self.queue_head + self.queue_len) % w] = (self.frames, peak);
+        self.queue_len += 1;
+        self.frames += 1;
+        self.queue[self.queue_head].1
+    }
     /// Limits interleaved `out` in place and returns the lowest gain applied.
     pub fn process(&mut self, out: &mut [f32]) -> f64 {
         let ch = self.channels;
         let mut lowest = 1.0f64;
+        let ceiling = self.ceiling as f32;
         for frame in out.chunks_exact_mut(ch) {
+            // A sum can overflow f32 with extreme gains: hold an infinite sample at full
+            // scale and silence a NaN, so the output stays bounded whatever comes in.
+            for s in frame.iter_mut() {
+                if s.is_nan() {
+                    *s = 0.0;
+                } else if s.is_infinite() {
+                    *s = f32::MAX.copysign(*s);
+                }
+            }
             let peak = frame.iter().map(|s| s.abs() as f64).fold(0.0, f64::max);
             let slot = self.at;
-            self.peaks[slot] = peak;
+            let loudest = self.push_peak(peak);
             // The frame that leaves the delay is the oldest in the window: it sits
             // where the new frame goes. With no look-ahead it is the new frame itself.
             let next = (slot + 1) % self.window;
@@ -96,7 +133,6 @@ impl Limiter {
                 delayed[..ch].copy_from_slice(&self.delay[next * ch..next * ch + ch]);
                 self.delay[slot * ch..slot * ch + ch].copy_from_slice(frame);
             }
-            let loudest = self.peaks.iter().copied().fold(0.0, f64::max);
             let target = if loudest > self.ceiling {
                 self.ceiling / loudest
             } else {
@@ -108,7 +144,6 @@ impl Limiter {
                 target + (self.gain - target) * self.release
             };
             lowest = lowest.min(self.gain);
-            let ceiling = self.ceiling as f32;
             for (o, &d) in frame.iter_mut().zip(&delayed[..ch]) {
                 // Rounding can leave a sample a hair above the ceiling; hold it there.
                 *o = ((d as f64 * self.gain) as f32).clamp(-ceiling, ceiling);
@@ -116,5 +151,60 @@ impl Limiter {
             self.at = next;
         }
         lowest
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_queue_tracks_the_window_maximum() {
+        let mut limiter = Limiter::new(
+            MasterLimiter {
+                lookahead_ms: 1.0,
+                ..MasterLimiter::default()
+            },
+            48_000,
+            1,
+        )
+        .unwrap();
+        let window = limiter.window;
+        let mut seed = 0x9e37_79b9u32;
+        let mut peaks: Vec<f64> = (0..5000)
+            .map(|_| {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (seed >> 8) as f64 / (1u32 << 24) as f64 * 2.0
+            })
+            .collect();
+        // Long decreasing ramps and plateaus fill the queue; random peaks rarely do.
+        peaks.extend((0..3 * window).map(|i| 2.0 - i as f64 / (3 * window) as f64));
+        peaks.extend(std::iter::repeat_n(0.5, 2 * window));
+        peaks.extend((0..window).map(|i| 0.5 + i as f64 * 0.01));
+        peaks.extend((0..4 * window).rev().map(|i| i as f64));
+        for (n, &peak) in peaks.iter().enumerate() {
+            let expected = peaks[n.saturating_sub(window - 1)..=n]
+                .iter()
+                .copied()
+                .fold(0.0, f64::max);
+            assert_eq!(limiter.push_peak(peak), expected, "frame {n}");
+            assert!(limiter.queue_len <= window);
+        }
+    }
+
+    #[test]
+    fn decreasing_peaks_keep_the_window_maximum() {
+        // A two-frame window: 1 ms of look-ahead at 1 kHz.
+        let settings = MasterLimiter {
+            lookahead_ms: 1.0,
+            ..MasterLimiter::default()
+        };
+        let mut limiter = Limiter::new(settings, 1000, 1).unwrap();
+        assert_eq!(limiter.window, 2);
+        let got: Vec<f64> = [3.0, 2.0, 1.0, 0.5, 4.0, 0.0]
+            .iter()
+            .map(|&peak| limiter.push_peak(peak))
+            .collect();
+        assert_eq!(got, [3.0, 3.0, 2.0, 1.0, 4.0, 4.0]);
     }
 }

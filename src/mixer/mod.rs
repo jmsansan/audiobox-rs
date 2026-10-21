@@ -300,8 +300,8 @@ pub struct Play {
     /// and an octave higher. 1/16..=8. Default 1.
     pub rate: f32,
     /// Pitch offset in semitones on top of the rate; fractions are cents, so 0.01 is
-    /// one cent. -48..=48, so rate and pitch together span 1/256..=128 times the
-    /// speed. Default 0.
+    /// one cent. -48..=48. Rate, pitch and [`Variation::pitch`] together span
+    /// 1/1024..=512 times the speed. Default 0.
     pub pitch: f32,
     /// Random variation of pitch and gain, drawn from the mixer's seed.
     pub variation: Variation,
@@ -401,7 +401,8 @@ pub enum Distance {
 /// [`MixerEvent::Limited`]; a start within the gap is always refused. Limits are
 /// judged with the mixer's bound on voices and its priorities when the start is
 /// applied, so scheduled starts are judged at their own frame, and a start refused for
-/// any reason stops no voice and does not begin a gap. Each start is checked against
+/// any reason stops no voice and does not begin a gap. Only instances of no higher
+/// priority than the new voice give way to it. Each start is checked against
 /// its own gap, from the sound's last start. The mixer remembers the last starts of up
 /// to 1024 limited sounds within any 60 seconds; a limited start beyond that is refused.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -689,7 +690,10 @@ impl Mixer {
         let limiter_gain = Arc::new(AtomicU32::new(1f32.to_bits()));
         let slots = max_voices + TAILS;
         let (command_tx, command_rx) = queue::queue(queue);
-        let (return_tx, return_rx) = queue::queue(slots + queue);
+        // Per render, at most `slots + queue` voices end or are refused, and as many
+        // are stolen, so the way back holds every event and voice of a render.
+        let returns = 2 * (slots + queue);
+        let (return_tx, return_rx) = queue::queue(returns);
         let clock = Arc::new(AtomicU64::new(0));
         let status = Arc::new(status::Table::new(slots));
         let mixer = Mixer {
@@ -711,7 +715,7 @@ impl Mixer {
             pending: Vec::with_capacity(queue),
             commands: command_rx,
             returns: return_tx,
-            retired: Vec::with_capacity(slots + queue),
+            retired: Vec::with_capacity(returns),
             clock: clock.clone(),
             status: status.clone(),
             steal_fade: (STEAL_FADE * sample_rate as f64).round() as u64,
@@ -797,6 +801,12 @@ impl Mixer {
                 .store((lowest as f32).to_bits(), Ordering::Relaxed);
         }
         self.frame = end;
+        // Read each voice up to its position before publishing it, and retire any
+        // stream that fails doing so, also on renders of no frames.
+        for v in self.voices.iter_mut().flatten() {
+            v.settle();
+        }
+        self.retire_done();
         self.publish();
         self.send_returns();
         self.clock.store(end, Ordering::Release);
@@ -881,12 +891,12 @@ impl Mixer {
             }
             Action::Pause(id, len, curve) => {
                 if let Some(v) = self.voice_mut(id) {
-                    v.pause(frame, len, curve);
+                    v.pause(v.time(frame), len, curve);
                 }
             }
             Action::Resume(id, len, curve) => {
                 if let Some(v) = self.voice_mut(id) {
-                    v.resume(frame, len, curve);
+                    v.resume(v.time(frame), len, curve);
                 }
             }
             Action::PauseBus(b, len, curve) => {
@@ -935,6 +945,12 @@ impl Mixer {
     }
 
     fn start(&mut self, frame: u64, mut voice: Box<Voice>) {
+        // Voices that played all their source no longer count against any limit. At
+        // high speeds a voice can pass its source's end before reading it: read up to
+        // the position, as its next frame would, to find out.
+        for v in self.voices.iter_mut().flatten() {
+            v.settle();
+        }
         // Decide everything first, so that a refused voice changes nothing.
         let mut start_entry = None;
         if let Some(limit) = voice.instances {
@@ -975,12 +991,15 @@ impl Mixer {
                     if limit.policy == OverLimit::Refuse {
                         return self.refuse(voice, MixerEvent::Limited);
                     }
+                    // Only instances of no higher priority may give way, as with the
+                    // mixer's bound; without enough of them, the start is refused.
+                    let priority = voice.priority;
                     for _ in 0..playing + 1 - limit.max as usize {
                         let voices = &self.voices;
                         let unmarked = || {
                             voices.iter().enumerate().filter_map(|(i, v)| {
                                 v.as_deref()
-                                    .filter(|v| same(v) && !v.marked)
+                                    .filter(|v| same(v) && !v.marked && v.priority <= priority)
                                     .map(|v| (i, v))
                             })
                         };
@@ -993,8 +1012,14 @@ impl Mixer {
                             _ => unmarked().min_by_key(|(_, v)| v.order),
                         }
                         .map(|(i, _)| i);
-                        if let Some(v) = pick.and_then(|i| self.voices[i].as_mut()) {
-                            v.marked = true;
+                        match pick.and_then(|i| self.voices[i].as_mut()) {
+                            Some(v) => v.marked = true,
+                            None => {
+                                for v in self.voices.iter_mut().flatten() {
+                                    v.marked = false;
+                                }
+                                return self.refuse(voice, MixerEvent::Limited);
+                            }
                         }
                     }
                 }
@@ -1087,7 +1112,13 @@ impl Mixer {
         for v in self.voices.iter_mut().flatten() {
             // A voice paused by itself, by its bus or by the master bus keeps still.
             if v.paused() || self.buses[v.bus].paused || master_paused {
-                v.freeze(frames as u64);
+                // A stopping voice that becomes frozen cannot finish its fade: end it,
+                // as a stop that arrives during a pause does.
+                if v.state == State::Stopping {
+                    v.state = State::Finished;
+                } else {
+                    v.freeze(frames as u64);
+                }
                 continue;
             }
             let buffer = &mut self.buses[v.bus].buffer[..frames * ch];
