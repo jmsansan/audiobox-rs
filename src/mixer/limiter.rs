@@ -82,7 +82,17 @@ impl Limiter {
     pub fn process(&mut self, out: &mut [f32]) -> f64 {
         let ch = self.channels;
         let mut lowest = 1.0f64;
+        let ceiling = self.ceiling as f32;
         for frame in out.chunks_exact_mut(ch) {
+            // A sum can overflow f32 with extreme gains: hold an infinite sample at full
+            // scale and silence a NaN, so the output stays bounded whatever comes in.
+            for s in frame.iter_mut() {
+                if s.is_nan() {
+                    *s = 0.0;
+                } else if s.is_infinite() {
+                    *s = f32::MAX.copysign(*s);
+                }
+            }
             let peak = frame.iter().map(|s| s.abs() as f64).fold(0.0, f64::max);
             let slot = self.at;
             self.peaks[slot] = peak;
@@ -108,7 +118,6 @@ impl Limiter {
                 target + (self.gain - target) * self.release
             };
             lowest = lowest.min(self.gain);
-            let ceiling = self.ceiling as f32;
             for (o, &d) in frame.iter_mut().zip(&delayed[..ch]) {
                 // Rounding can leave a sample a hair above the ceiling; hold it there.
                 *o = ((d as f64 * self.gain) as f32).clamp(-ceiling, ceiling);

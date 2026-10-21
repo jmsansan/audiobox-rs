@@ -1773,3 +1773,60 @@ fn replacing_many_voices_at_once_loses_no_event() {
         .count();
     assert_eq!((stolen, ended), (32, 32), "{got:?}");
 }
+
+#[test]
+fn a_stopping_voice_that_becomes_paused_ends() {
+    for by_bus in [false, true] {
+        let (mut m, mut h) = mixer(1, &["game"], 4);
+        let game = h.bus("game").unwrap();
+        let id = h
+            .play(
+                mono(vec![1.0; 96_000], RATE),
+                &Play {
+                    bus: game,
+                    ..Play::default()
+                },
+            )
+            .unwrap();
+        if by_bus {
+            h.at(100).pause_bus(game, Fade::linear(0.01)).unwrap();
+        } else {
+            h.at(100).pause(id, Fade::linear(0.01)).unwrap();
+        }
+        h.at(200).stop(id, Fade::linear(0.05)).unwrap();
+        render(&mut m, 2000, 256);
+        assert_eq!(
+            events(&mut h),
+            [MixerEvent::Ended(id)],
+            "paused by bus: {by_bus}"
+        );
+        if by_bus {
+            h.resume_bus(game, Fade::NONE).unwrap();
+        } else {
+            h.resume(id, Fade::NONE).unwrap();
+        }
+        assert!(render(&mut m, 1000, 256).iter().all(|&s| s == 0.0));
+    }
+}
+
+#[test]
+fn the_limiter_bounds_overflowing_sums() {
+    let (mut m, mut h) = limited_mixer(MasterLimiter::default());
+    let tone = mono(sine(4800, RATE, 300.0, 1.0), RATE);
+    for _ in 0..2 {
+        h.play(
+            tone.clone(),
+            &Play {
+                gain: f32::MAX,
+                ..Play::default()
+            },
+        )
+        .unwrap();
+    }
+    let out = render(&mut m, 4800, 512);
+    let ceiling = 10f32.powf(-1.0 / 20.0);
+    assert!(
+        out.iter()
+            .all(|s| s.is_finite() && s.abs() <= ceiling + 1e-6)
+    );
+}

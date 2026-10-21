@@ -1090,7 +1090,13 @@ impl Mixer {
         for v in self.voices.iter_mut().flatten() {
             // A voice paused by itself, by its bus or by the master bus keeps still.
             if v.paused() || self.buses[v.bus].paused || master_paused {
-                v.freeze(frames as u64);
+                // A stopping voice that becomes frozen cannot finish its fade: end it,
+                // as a stop that arrives during a pause does.
+                if v.state == State::Stopping {
+                    v.state = State::Finished;
+                } else {
+                    v.freeze(frames as u64);
+                }
                 continue;
             }
             let buffer = &mut self.buses[v.bus].buffer[..frames * ch];
