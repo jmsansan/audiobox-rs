@@ -8,6 +8,10 @@
   changed while they play with a ramp (`Play::rate`, `Play::pitch`,
   `MixerHandle::set_rate`, `set_pitch`), and seeded random variation of pitch and
   gain for repeated sounds (`Variation`, `MixerConfig::seed`, `MixerHandle::reseed`).
+- Pause and resume mixer voices and buses, with optional fades (`pause`, `resume`,
+  `pause_bus`, `resume_bus`); voices on a paused bus keep still, and others play on.
+- Start a voice partway through its sound (`Play::start`), and read a voice's state
+  and position without blocking (`MixerHandle::voice_status`).
 
 ### Changed
 

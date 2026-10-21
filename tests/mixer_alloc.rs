@@ -166,6 +166,11 @@ fn rendering_allocates_and_frees_nothing() {
             .at(i * 3000 + 1200)
             .set_rate(id, 1.5, Fade::NONE)
             .unwrap();
+        handle
+            .at(i * 3000 + 1400)
+            .pause(id, Fade::linear(0.005))
+            .unwrap();
+        handle.at(i * 3000 + 1700).resume(id, Fade::NONE).unwrap();
         if i % 3 == 0 {
             handle
                 .at(i * 3000 + 900)
@@ -182,6 +187,14 @@ fn rendering_allocates_and_frees_nothing() {
         .set_bus_gain(BusId::MASTER, 0.8, Fade::linear(0.1))
         .unwrap();
     handle.at(60_000).stop(song, Fade::linear(0.2)).unwrap();
+    handle
+        .at(40_000)
+        .pause_bus(music, Fade::linear(0.05))
+        .unwrap();
+    handle
+        .at(50_000)
+        .resume_bus(music, Fade::linear(0.05))
+        .unwrap();
 
     let mut buffer = vec![0.0f32; 2 * 480];
     let mut loudest = 0.0f32;

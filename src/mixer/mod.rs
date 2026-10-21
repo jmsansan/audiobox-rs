@@ -41,7 +41,13 @@
 //! A voice also has a playback rate, which changes speed and pitch together, and a
 //! pitch offset in semitones on top of it. Both can change while the voice plays, with
 //! a ramp. [`Variation`] draws a random pitch and gain for each start of a repeated
-//! sound, such as a footstep, from a generator seeded by [`MixerConfig::seed`]. A loop of a
+//! sound, such as a footstep, from a generator seeded by [`MixerConfig::seed`].
+//!
+//! A voice can start partway through its sound ([`Play::start`]), and be paused and
+//! resumed, optionally with a fade; it keeps its position, its fades and its loop.
+//! Pausing a bus pauses every voice routed through it and no others, so a pause menu
+//! can stop the game's sounds and keep its own. [`MixerHandle::voice_status`] reads a
+//! voice's state and position as of the last render, without blocking the audio side. A loop of a
 //! stream seeks it back, so a stream that loops must support seeking to the loop start.
 //!
 //! # Voices and buses
@@ -99,15 +105,17 @@
 //! on every platform: resampling, panning and fades use only basic IEEE arithmetic and
 //! the crate's own sine series.
 mod queue;
+mod status;
 mod voice;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use queue::{Consumer, Producer, PushError};
+pub use status::{VoiceState, VoiceStatus};
 use voice::{Feed, ONE, Ramp, Resampling, SincBank, SincTable, State, Voice};
 
-use crate::{Audio, Error, ErrorCode, FadeCurve, Limits, Result};
+use crate::{Audio, Error, ErrorCode, FadeCurve, Limits, Result, TimePosition};
 
 /// Most frames rendered between changes of the voices' gains.
 const BLOCK: usize = 256;
@@ -281,6 +289,10 @@ pub struct Play {
     pub pitch: f32,
     /// Random variation of pitch and gain, drawn from the mixer's seed.
     pub variation: Variation,
+    /// Where in the sound to start, in seconds or source frames; a negative position
+    /// counts from the end of a sound of known length. A stream seeks there before the
+    /// voice is sent. Default the start.
+    pub start: TimePosition,
 }
 impl Default for Play {
     fn default() -> Self {
@@ -294,6 +306,7 @@ impl Default for Play {
             rate: 1.0,
             pitch: 0.0,
             variation: Variation::NONE,
+            start: TimePosition::Frames(0),
         }
     }
 }
@@ -366,6 +379,10 @@ enum Action {
     Pan(VoiceId, f64, u64, FadeCurve),
     Rate(VoiceId, f64, u64, FadeCurve),
     Pitch(VoiceId, f64, u64, FadeCurve),
+    Pause(VoiceId, u64, FadeCurve),
+    Resume(VoiceId, u64, FadeCurve),
+    PauseBus(usize, u64, FadeCurve),
+    ResumeBus(usize, u64, FadeCurve),
     BusGain(usize, f64, u64, FadeCurve),
     StopAll(u64, FadeCurve),
 }
@@ -381,6 +398,10 @@ struct Returned {
 
 struct Bus {
     gain: Ramp,
+    /// Gain of pause and resume fades.
+    pause: Ramp,
+    pausing: bool,
+    paused: bool,
     buffer: Vec<f32>,
 }
 
@@ -398,6 +419,7 @@ pub struct Mixer {
     returns: Producer<Returned>,
     retired: Vec<Returned>,
     clock: Arc<AtomicU64>,
+    status: Arc<status::Table>,
     steal_fade: u64,
 }
 
@@ -409,6 +431,7 @@ pub struct MixerHandle {
     commands: Producer<Command>,
     returns: Consumer<Returned>,
     clock: Arc<AtomicU64>,
+    status: Arc<status::Table>,
     next_voice: u64,
     next_sequence: u64,
     tables: Vec<(u32, Arc<SincTable>)>,
@@ -465,6 +488,7 @@ impl Mixer {
         let (command_tx, command_rx) = queue::queue(queue);
         let (return_tx, return_rx) = queue::queue(slots + queue);
         let clock = Arc::new(AtomicU64::new(0));
+        let status = Arc::new(status::Table::new(slots));
         let mixer = Mixer {
             rate: sample_rate,
             channels,
@@ -475,6 +499,9 @@ impl Mixer {
             buses: (0..=buses.len())
                 .map(|_| Bus {
                     gain: Ramp::constant(1.0),
+                    pause: Ramp::constant(1.0),
+                    pausing: false,
+                    paused: false,
                     buffer: vec![0.0; BLOCK * channels],
                 })
                 .collect(),
@@ -483,6 +510,7 @@ impl Mixer {
             returns: return_tx,
             retired: Vec::with_capacity(slots + queue),
             clock: clock.clone(),
+            status: status.clone(),
             steal_fade: (STEAL_FADE * sample_rate as f64).round() as u64,
         };
         let handle = MixerHandle {
@@ -492,6 +520,7 @@ impl Mixer {
             commands: command_tx,
             returns: return_rx,
             clock,
+            status,
             next_voice: 0,
             next_sequence: 0,
             tables: Vec::new(),
@@ -530,10 +559,18 @@ impl Mixer {
             if cursor >= end {
                 break;
             }
+            // Segments also end where a bus's pause fade does, so its voices freeze
+            // on that frame.
+            let pause_ends = self
+                .buses
+                .iter()
+                .filter(|b| b.pausing)
+                .map(|b| b.pause.end());
             let next = self
                 .pending
                 .iter()
                 .filter_map(|c| c.frame)
+                .chain(pause_ends)
                 .filter(|&f| f > cursor)
                 .min()
                 .unwrap_or(end);
@@ -544,6 +581,7 @@ impl Mixer {
             cursor = stop;
         }
         self.frame = end;
+        self.publish();
         self.send_returns();
         self.clock.store(end, Ordering::Release);
     }
@@ -588,28 +626,54 @@ impl Mixer {
             Action::Play(voice) => self.start(frame, voice),
             Action::Stop(id, len, curve) => {
                 if let Some(v) = self.voice_mut(id) {
-                    v.stop(frame, len, curve);
+                    v.stop(v.time(frame), len, curve);
                 }
                 self.retire_done();
             }
             Action::Gain(id, gain, len, curve) => {
                 if let Some(v) = self.voice_mut(id) {
-                    v.gain.retarget(frame, gain, len, curve);
+                    v.gain.retarget(v.time(frame), gain, len, curve);
                 }
             }
             Action::Pan(id, pan, len, curve) => {
                 if let Some(v) = self.voice_mut(id) {
-                    v.pan.retarget(frame, pan, len, curve);
+                    v.pan.retarget(v.time(frame), pan, len, curve);
                 }
             }
             Action::Rate(id, rate, len, curve) => {
                 if let Some(v) = self.voice_mut(id) {
-                    v.rate.retarget(frame, rate, len, curve);
+                    v.rate.retarget(v.time(frame), rate, len, curve);
                 }
             }
             Action::Pitch(id, pitch, len, curve) => {
                 if let Some(v) = self.voice_mut(id) {
-                    v.pitch.retarget(frame, pitch, len, curve);
+                    v.pitch.retarget(v.time(frame), pitch, len, curve);
+                }
+            }
+            Action::Pause(id, len, curve) => {
+                if let Some(v) = self.voice_mut(id) {
+                    v.pause(frame, len, curve);
+                }
+            }
+            Action::Resume(id, len, curve) => {
+                if let Some(v) = self.voice_mut(id) {
+                    v.resume(frame, len, curve);
+                }
+            }
+            Action::PauseBus(b, len, curve) => {
+                let bus = &mut self.buses[b];
+                if !bus.paused {
+                    bus.pause.retarget(frame, 0.0, len, curve);
+                    bus.pausing = len > 0;
+                    bus.paused = len == 0;
+                }
+            }
+            Action::ResumeBus(b, len, curve) => {
+                let bus = &mut self.buses[b];
+                if bus.paused || bus.pausing {
+                    bus.paused = false;
+                    bus.pausing = false;
+                    bus.pause.retarget(frame, 1.0, len, curve);
                 }
             }
             Action::BusGain(bus, gain, len, curve) => {
@@ -617,7 +681,7 @@ impl Mixer {
             }
             Action::StopAll(len, curve) => {
                 for v in self.voices.iter_mut().flatten() {
-                    v.stop(frame, len, curve);
+                    v.stop(v.time(frame), len, curve);
                 }
                 self.retire_done();
             }
@@ -638,7 +702,7 @@ impl Mixer {
                 .min_by_key(|v| (v.priority, v.order));
             match victim {
                 Some(v) if v.priority <= voice.priority => {
-                    v.stop(frame, self.steal_fade, FadeCurve::Linear);
+                    v.stop(v.time(frame), self.steal_fade, FadeCurve::Linear);
                     let id = v.id;
                     self.event(MixerEvent::Stolen(id));
                 }
@@ -668,6 +732,15 @@ impl Mixer {
                 };
                 let old = self.voices[slot].take().expect("slot is occupied");
                 let id = old.id;
+                let position = old.source_position();
+                self.status.publish(
+                    slot,
+                    id,
+                    VoiceStatus {
+                        state: VoiceState::Finished,
+                        position,
+                    },
+                );
                 self.retire(old, Some(MixerEvent::Ended(id)));
                 slot
             }
@@ -681,24 +754,68 @@ impl Mixer {
         for bus in &mut self.buses {
             bus.buffer[..frames * ch].fill(0.0);
         }
+        let master_paused = self.buses[0].paused;
         for v in self.voices.iter_mut().flatten() {
+            // A voice paused by itself, by its bus or by the master bus keeps still.
+            if v.paused() || self.buses[v.bus].paused || master_paused {
+                v.freeze(frames as u64);
+                continue;
+            }
             let buffer = &mut self.buses[v.bus].buffer[..frames * ch];
             v.render(first, frames, buffer, ch);
         }
         self.retire_done();
-        let master = self.buses[0].gain;
+        let end = first + frames as u64;
+        let (master, master_pause) = (self.buses[0].gain, self.buses[0].pause);
         for (b, bus) in self.buses.iter().enumerate() {
-            let constant = !bus.gain.changing(first) && !master.changing(first);
-            let fixed = bus_gain(b, &bus.gain, &master, first);
+            let constant = !bus.gain.changing(first)
+                && !bus.pause.changing(first)
+                && !master.changing(first)
+                && !master_pause.changing(first);
+            let gain_at = |frame| {
+                let pause = if b == 0 {
+                    master_pause.value(frame)
+                } else {
+                    bus.pause.value(frame) * master_pause.value(frame)
+                };
+                bus_gain(b, &bus.gain, &master, frame) * pause
+            };
+            let fixed = gain_at(first);
             for j in 0..frames {
                 let g = if constant {
                     fixed
                 } else {
-                    bus_gain(b, &bus.gain, &master, first + j as u64)
+                    gain_at(first + j as u64)
                 };
                 for c in 0..ch {
                     out[j * ch + c] += (bus.buffer[j * ch + c] as f64 * g) as f32;
                 }
+            }
+        }
+        // Segments end where pause fades do, so a bus's voices freeze from here.
+        for bus in &mut self.buses {
+            if bus.pausing && bus.pause.end() <= end {
+                bus.pausing = false;
+                bus.paused = true;
+            }
+        }
+    }
+
+    /// Publishes every voice's state for [`MixerHandle::voice_status`].
+    fn publish(&self) {
+        let master_paused = self.buses[0].paused;
+        for (slot, voice) in self.voices.iter().enumerate() {
+            if let Some(v) = voice {
+                let state = if v.state == State::Stopping {
+                    VoiceState::Stopping
+                } else if v.paused() || self.buses[v.bus].paused || master_paused {
+                    VoiceState::Paused
+                } else {
+                    VoiceState::Playing
+                };
+                let position = v.source_position();
+                self.status
+                    .publish(slot, v.id, VoiceStatus { state, position });
             }
         }
     }
@@ -707,6 +824,15 @@ impl Mixer {
         for slot in 0..self.voices.len() {
             if self.voices[slot].as_ref().is_some_and(|v| v.done()) {
                 let voice = self.voices[slot].take().expect("slot is occupied");
+                let position = voice.source_position();
+                self.status.publish(
+                    slot,
+                    voice.id,
+                    VoiceStatus {
+                        state: VoiceState::Finished,
+                        position,
+                    },
+                );
                 let event = match voice.state {
                     State::Failed(code) => MixerEvent::Failed(voice.id, code),
                     _ => MixerEvent::Ended(voice.id),
@@ -784,6 +910,28 @@ impl MixerHandle {
     /// Frames the mixer had rendered when it last finished a render.
     pub fn frame(&self) -> u64 {
         self.clock.load(Ordering::Acquire)
+    }
+    /// A voice's state and position as of the mixer's last render, read without
+    /// blocking. `None` if the mixer has not started the voice yet, or if it ended and
+    /// its slot went to another voice; [`MixerHandle::poll_event`] reports endings.
+    pub fn voice_status(&self, voice: VoiceId) -> Option<VoiceStatus> {
+        self.status.read(voice)
+    }
+    /// Pauses a voice, fading it out first. It keeps its position, fades and loop.
+    pub fn pause(&mut self, voice: VoiceId, fade: Fade) -> Result<()> {
+        self.now().pause(voice, fade)
+    }
+    /// Resumes a paused voice, fading it in.
+    pub fn resume(&mut self, voice: VoiceId, fade: Fade) -> Result<()> {
+        self.now().resume(voice, fade)
+    }
+    /// Pauses every voice routed through a bus, and only those; [`BusId::MASTER`]
+    /// pauses every voice. Voices started on a paused bus wait for it to resume.
+    pub fn pause_bus(&mut self, bus: BusId, fade: Fade) -> Result<()> {
+        self.now().pause_bus(bus, fade)
+    }
+    pub fn resume_bus(&mut self, bus: BusId, fade: Fade) -> Result<()> {
+        self.now().resume_bus(bus, fade)
     }
     /// Commands that apply at the start of the next render.
     pub fn now(&mut self) -> Commands<'_> {
@@ -917,6 +1065,7 @@ impl Commands<'_> {
             }
         }
         let fade_in = handle.frames(play.fade_in)?;
+        let start = start_frame(play.start, rate, frames)?;
         let step = (((rate as u128) << 32) + handle.rate as u128 / 2) / handle.rate as u128;
         let step = step as u64;
         let table = (step != ONE).then(|| handle.table(rate));
@@ -951,6 +1100,7 @@ impl Commands<'_> {
         voice.pitch = Ramp::constant(pitch);
         voice.pan = Ramp::constant(play.pan.clamp(-1.0, 1.0) as f64);
         voice.fade_in = fade_in;
+        voice.set_start(start)?;
         handle.send(self.frame, Action::Play(voice))?;
         Ok(id)
     }
@@ -1000,6 +1150,32 @@ impl Commands<'_> {
             Action::Pitch(voice, semitones as f64, len, curve),
         )
     }
+    pub fn pause(self, voice: VoiceId, fade: Fade) -> Result<()> {
+        let (len, curve) = self.handle.frames(fade)?;
+        self.handle
+            .send(self.frame, Action::Pause(voice, len, curve))
+    }
+    pub fn resume(self, voice: VoiceId, fade: Fade) -> Result<()> {
+        let (len, curve) = self.handle.frames(fade)?;
+        self.handle
+            .send(self.frame, Action::Resume(voice, len, curve))
+    }
+    pub fn pause_bus(self, bus: BusId, fade: Fade) -> Result<()> {
+        if bus.0 > self.handle.buses.len() {
+            return Err(Error::invalid("Unknown bus"));
+        }
+        let (len, curve) = self.handle.frames(fade)?;
+        self.handle
+            .send(self.frame, Action::PauseBus(bus.0, len, curve))
+    }
+    pub fn resume_bus(self, bus: BusId, fade: Fade) -> Result<()> {
+        if bus.0 > self.handle.buses.len() {
+            return Err(Error::invalid("Unknown bus"));
+        }
+        let (len, curve) = self.handle.frames(fade)?;
+        self.handle
+            .send(self.frame, Action::ResumeBus(bus.0, len, curve))
+    }
     /// Sets a bus's gain; [`BusId::MASTER`] sets the master gain.
     pub fn set_bus_gain(self, bus: BusId, gain: f32, fade: Fade) -> Result<()> {
         if !gain.is_finite() || gain < 0.0 {
@@ -1027,4 +1203,28 @@ fn check_pitch(semitones: f32) -> Result<()> {
     } else {
         Err(Error::invalid("Pitch must be -48..=48 semitones"))
     }
+}
+
+/// The source frame where a voice starts.
+fn start_frame(start: TimePosition, rate: u32, frames: Option<u64>) -> Result<u64> {
+    let position = match start {
+        TimePosition::Frames(n) => n as f64,
+        TimePosition::Seconds(seconds) => seconds * rate as f64,
+    };
+    if !position.is_finite() {
+        return Err(Error::invalid("The start must be finite"));
+    }
+    let position = position.round();
+    let frame = if position < 0.0 {
+        let total = frames.ok_or_else(|| {
+            Error::invalid("A start counted from the end needs a sound of known length")
+        })?;
+        (total as f64 + position).max(0.0)
+    } else {
+        position
+    };
+    if frames.is_some_and(|total| frame > total as f64) {
+        return Err(Error::invalid("The start is past the end of the sound"));
+    }
+    Ok(frame as u64)
 }

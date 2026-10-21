@@ -489,6 +489,9 @@ fn start(music: &'static [u8], jump: Arc<audiobox::Audio>) -> audiobox::Result<(
       Ok(())
   }
   ```
+- **Pause and position:** pause and resume a voice or a whole bus, with optional fades,
+  so a pause menu stops the game's sounds and keeps its own; start a voice partway
+  through; read a voice's state and position without blocking the audio thread.
 - **Buses:** a master bus and named buses, each with a gain that can fade.
 - **Rendering:** `render(&mut [f32])` fills interleaved mono or stereo at the output
   rate, resampling sources at other rates with a 16-tap windowed-sinc filter. It writes
