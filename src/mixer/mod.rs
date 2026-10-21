@@ -407,7 +407,8 @@ pub enum Distance {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Instances {
     /// Voices with the same key share the limits. [`Instances::of`] keys a sound by
-    /// its `Arc`, so every voice of that `Arc<Audio>` counts.
+    /// its identity, so every voice of that audio counts, also through clones and
+    /// `Arc`s. Keys you pick yourself should be below 2^63, where those identities are.
     pub key: u64,
     /// Most voices playing at once; 0 for no limit.
     pub max: u16,
@@ -425,9 +426,10 @@ impl Instances {
             policy: OverLimit::Refuse,
         }
     }
-    /// Limits keyed by a decoded sound's `Arc`.
-    pub fn of(sound: &Arc<Audio>) -> Self {
-        Self::new(Arc::as_ptr(sound) as usize as u64)
+    /// Limits keyed by a decoded sound's identity, which no other audio value shares,
+    /// even after this one is freed.
+    pub fn of(sound: &Audio) -> Self {
+        Self::new(sound.id())
     }
     pub const fn max(self, max: u16) -> Self {
         Self { max, ..self }
@@ -935,7 +937,6 @@ impl Mixer {
     fn start(&mut self, frame: u64, mut voice: Box<Voice>) {
         // Decide everything first, so that a refused voice changes nothing.
         let mut start_entry = None;
-        let mut instance_victim = None;
         if let Some(limit) = voice.instances {
             // The incoming start's own gap, measured from the sound's last start.
             let own = self
@@ -967,28 +968,44 @@ impl Mixer {
                         .enumerate()
                         .filter_map(|(i, v)| v.as_deref().filter(|v| same(v)).map(|v| (i, v)))
                 };
-                if candidates().count() >= limit.max as usize {
-                    instance_victim = match limit.policy {
-                        OverLimit::Refuse => None,
-                        OverLimit::StopOldest => candidates().min_by_key(|(_, v)| v.order),
-                        OverLimit::StopQuietest => candidates().min_by(|(_, a), (_, b)| {
-                            a.level(frame)
-                                .total_cmp(&b.level(frame))
-                                .then(a.order.cmp(&b.order))
-                        }),
-                    }
-                    .map(|(i, _)| i);
-                    if instance_victim.is_none() {
+                // Each start carries its own maximum, which may be lower than the
+                // voices already playing: mark enough of them to fit.
+                let playing = candidates().count();
+                if playing >= limit.max as usize {
+                    if limit.policy == OverLimit::Refuse {
                         return self.refuse(voice, MixerEvent::Limited);
+                    }
+                    for _ in 0..playing + 1 - limit.max as usize {
+                        let voices = &self.voices;
+                        let unmarked = || {
+                            voices.iter().enumerate().filter_map(|(i, v)| {
+                                v.as_deref()
+                                    .filter(|v| same(v) && !v.marked)
+                                    .map(|v| (i, v))
+                            })
+                        };
+                        let pick = match limit.policy {
+                            OverLimit::StopQuietest => unmarked().min_by(|(_, a), (_, b)| {
+                                a.level(frame)
+                                    .total_cmp(&b.level(frame))
+                                    .then(a.order.cmp(&b.order))
+                            }),
+                            _ => unmarked().min_by_key(|(_, v)| v.order),
+                        }
+                        .map(|(i, _)| i);
+                        if let Some(v) = pick.and_then(|i| self.voices[i].as_mut()) {
+                            v.marked = true;
+                        }
                     }
                 }
             }
         }
-        // The mixer's bound on voices, counting the instance victim as already gone.
+        // The mixer's bound on voices, counting the marked voices as already gone.
         let others = || {
-            self.voices.iter().enumerate().filter(|&(i, v)| {
-                Some(i) != instance_victim && v.as_ref().is_some_and(|v| v.live())
-            })
+            self.voices
+                .iter()
+                .enumerate()
+                .filter(|(_, v)| v.as_ref().is_some_and(|v| v.live() && !v.marked))
         };
         let mut global_victim = None;
         if others().count() >= self.max_voices {
@@ -997,14 +1014,26 @@ impl Mixer {
                 .min_by_key(|(_, v)| (v.priority, v.order));
             match victim {
                 Some((i, v)) if v.priority <= voice.priority => global_victim = Some(i),
-                _ => return self.refuse(voice, MixerEvent::Rejected),
+                _ => {
+                    for v in self.voices.iter_mut().flatten() {
+                        v.marked = false;
+                    }
+                    return self.refuse(voice, MixerEvent::Rejected);
+                }
             }
         }
+        if let Some(v) = global_victim.and_then(|i| self.voices[i].as_mut()) {
+            v.marked = true;
+        }
         // Admitted: stop the voices it replaces and record its start.
-        for slot in [instance_victim, global_victim].into_iter().flatten() {
-            self.stop_slot(slot, frame, self.steal_fade, FadeCurve::Linear);
-            if let Some(id) = self.voices[slot].as_ref().map(|v| v.id) {
-                self.event(MixerEvent::Stolen(id));
+        for slot in 0..self.voices.len() {
+            if self.voices[slot].as_ref().is_some_and(|v| v.marked) {
+                self.stop_slot(slot, frame, self.steal_fade, FadeCurve::Linear);
+                if let Some(v) = self.voices[slot].as_mut() {
+                    v.marked = false;
+                    let id = v.id;
+                    self.event(MixerEvent::Stolen(id));
+                }
             }
         }
         if let (Some(entry), Some(limit)) = (start_entry, voice.instances) {

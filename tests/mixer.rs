@@ -1570,3 +1570,119 @@ fn each_start_is_checked_against_its_own_gap() {
     );
     assert!(!got.contains(&MixerEvent::Limited(late)), "{got:?}");
 }
+
+#[test]
+fn instance_keys_stay_unique_after_a_sound_is_freed() {
+    let (mut m, mut h) = mixer(1, &[], 4);
+    let first = mono(vec![0.5; 10], RATE);
+    assert_eq!(
+        Instances::of(&first),
+        Instances::of(&(*first).clone()),
+        "clones share a key"
+    );
+    let twin = mono(vec![0.5; 10], RATE);
+    assert_ne!(
+        Instances::of(&first),
+        Instances::of(&twin),
+        "equal content, distinct sounds"
+    );
+    h.play(
+        first.clone(),
+        &Play {
+            instances: Some(Instances::of(&first).min_gap(1.0)),
+            ..Play::default()
+        },
+    )
+    .unwrap();
+    render(&mut m, 100, 100);
+    drop(first);
+    while h.poll_event().is_some() {}
+    // A new sound, possibly at the freed address, does not inherit the old gap.
+    for _ in 0..20 {
+        let next = mono(vec![0.25; 10], RATE);
+        let id = h
+            .play(
+                next.clone(),
+                &Play {
+                    instances: Some(Instances::of(&next).min_gap(1.0)),
+                    ..Play::default()
+                },
+            )
+            .unwrap();
+        render(&mut m, 50, 50);
+        assert!(!events(&mut h).contains(&MixerEvent::Limited(id)));
+    }
+}
+
+#[test]
+fn a_lower_maximum_stops_enough_instances() {
+    let coin = mono(vec![0.25; 48_000], RATE);
+    let (mut m, mut h) = mixer(1, &[], 16);
+    let key = Instances::of(&coin);
+    let ids: Vec<VoiceId> = (0..3)
+        .map(|i| {
+            h.at(i * 10)
+                .play(
+                    coin.clone(),
+                    &Play {
+                        instances: Some(key),
+                        ..Play::default()
+                    },
+                )
+                .unwrap()
+        })
+        .collect();
+    let only = Play {
+        instances: Some(key.max(1).policy(OverLimit::StopOldest)),
+        ..Play::default()
+    };
+    let newest = h.at(100).play(coin.clone(), &only).unwrap();
+    let out = render(&mut m, 1000, 256);
+    let got = events(&mut h);
+    for id in &ids {
+        assert!(
+            got.contains(&MixerEvent::Stolen(*id)) && got.contains(&MixerEvent::Ended(*id)),
+            "{got:?}"
+        );
+    }
+    assert_eq!(m.active_voices(), 1);
+    assert_eq!(h.voice_status(newest).unwrap().state, VoiceState::Playing);
+    assert!(close(out[999], 0.25, 1e-6));
+}
+
+#[test]
+fn positions_wrap_into_the_loop_at_high_speed() {
+    let (mut m, mut h) = mixer(1, &[], 4);
+    let id = h
+        .play(
+            mono(counting(1000), RATE),
+            &Play {
+                looping: Loop::Whole,
+                rate: 8.0,
+                pitch: 48.0,
+                ..Play::default()
+            },
+        )
+        .unwrap();
+    render(&mut m, 8, 8);
+    assert_eq!(h.voice_status(id).unwrap().position, 24);
+    let looping = Loop::Region {
+        start: 200,
+        end: 700,
+    };
+    let (mut m, mut h) = mixer(1, &[], 4);
+    let id = h
+        .play(
+            mono(counting(1000), RATE),
+            &Play {
+                looping,
+                rate: 8.0,
+                pitch: 48.0,
+                ..Play::default()
+            },
+        )
+        .unwrap();
+    render(&mut m, 6, 6);
+    // 768 source frames: the first pass reaches 700, then 68 more from 200.
+    assert_eq!(h.voice_status(id).unwrap().position, 268);
+}
