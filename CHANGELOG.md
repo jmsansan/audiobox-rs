@@ -30,6 +30,12 @@
 
 ### Changed
 
+- The offline transforms that render audio give the same samples on every platform,
+  WebAssembly included: `pan`, `gain_db`, equal-power `fade`, `crossfade_to`,
+  `filter`, `limit`, `resample`, `tempo`, `pitch`, `trim_silence`, peak `normalize`
+  and `analyze::from_db` use the crate's own math. Results match the previous ones
+  within about 1e-14 before rounding to `f32`. CI pins them with checksums on Linux,
+  macOS, Windows and WebAssembly.
 - The mixer's commands and finished voices travel through a bounded
   single-producer, single-consumer queue of the crate's own instead of std's
   channel, so `render`'s real-time guarantees rest only on documented std behavior.

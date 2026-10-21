@@ -44,6 +44,21 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.85.0
       - run: cargo test --locked --offline --all-features
 
+  webassembly:
+    # The checksum tests of deterministic rendering, run as WebAssembly under Node's WASI.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: cargo test --locked --offline --release --target wasm32-wasip1 --all-features --test deterministic --test synth --test sfx
+        env:
+          CARGO_TARGET_WASM32_WASIP1_RUNNER: node --no-warnings scripts/wasi-run.mjs
+
   interoperability:
     runs-on: ubuntu-latest
     steps:

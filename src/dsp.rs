@@ -1,5 +1,5 @@
+use crate::math::{cos_turns, db_to_gain, exp, exp2, sin_turns};
 use crate::{Audio, Error, Limits, Result};
-use std::f64::consts::PI;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub enum FadeCurve {
@@ -141,7 +141,7 @@ fn sinc_table() -> &'static Vec<f64> {
                 let sinc = if d == 0.0 {
                     1.0
                 } else {
-                    (PI * d).sin() / (PI * d)
+                    sin_turns(d / 2.0) / (std::f64::consts::PI * d)
                 };
                 sinc * i0(10.0 * (1.0 - t * t).max(0.0).sqrt()) / norm
             })
@@ -202,7 +202,7 @@ impl Audio {
         if !db.is_finite() {
             return Err(Error::invalid("Gain must be finite"));
         }
-        self.gain(10f64.powf(db / 20.0))
+        self.gain(db_to_gain(db))
     }
     pub fn normalize(&self, options: NormalizeOptions) -> Result<Self> {
         self.normalize_with_report(options).map(|(a, _)| a)
@@ -238,7 +238,13 @@ impl Audio {
                 limited = true;
             }
         }
-        let audio = self.gain_db(gain)?;
+        // Peak normalization scales by a ratio, so it renders the same samples on
+        // every platform; the other units depend on the platform's analysis math.
+        let audio = if matches!(options.unit, NormalizeUnit::Peak) {
+            self.gain(db_to_gain(options.to) / self.peak())?
+        } else {
+            self.gain_db(gain)?
+        };
         Ok((
             audio,
             NormalizeReport {
@@ -266,7 +272,7 @@ impl Audio {
             .min(self.frames() as f64) as usize;
         let shape = |t: f64| match curve {
             FadeCurve::Linear => t,
-            FadeCurve::EqualPower => (t * PI / 2.0).sin(),
+            FadeCurve::EqualPower => sin_turns(t / 4.0),
             FadeCurve::Exponential => t * t,
         };
         let mut data = self.data.clone();
@@ -332,11 +338,11 @@ impl Audio {
         {
             return Err(Error::invalid("Invalid filter frequency, Q or gain"));
         }
-        let w = 2.0 * PI * frequency / self.rate as f64;
-        let s = w.sin();
-        let c = w.cos();
+        let turns = frequency / self.rate as f64;
+        let s = sin_turns(turns);
+        let c = cos_turns(turns);
         let alpha = s / (2.0 * q);
-        let a = 10f64.powf(gain_db / 40.0);
+        let a = db_to_gain(gain_db / 2.0);
         let beta = 2.0 * a.sqrt() * alpha;
         let (b0, b1, b2, a0, a1, a2) = match kind {
             FilterType::Lowpass => (
@@ -409,14 +415,14 @@ impl Audio {
         {
             return Err(Error::invalid("Invalid limiter settings"));
         }
-        let ceiling = 10f64.powf(options.ceiling_db / 20.0);
+        let ceiling = db_to_gain(options.ceiling_db);
         if !ceiling.is_finite() || ceiling <= 0.0 {
             return Err(Error::invalid("Invalid limiter ceiling"));
         }
         let look = (options.lookahead_ms * self.rate as f64 / 1000.0)
             .round()
             .min(self.frames() as f64) as usize;
-        let release = (-1.0 / (options.release_ms * self.rate as f64 / 1000.0)).exp();
+        let release = exp(-1.0 / (options.release_ms * self.rate as f64 / 1000.0));
         let mut data = self.data.clone();
         let mut gain = 1.0;
         let mut deque = std::collections::VecDeque::<(usize, f64)>::new();
@@ -466,7 +472,7 @@ impl Audio {
             .max(1.0)
             .min(self.frames().max(1) as f64) as usize;
         let min = (options.min_duration_ms * self.rate as f64 / 1000.0).round() as usize;
-        let threshold = 10f64.powf(options.threshold_db / 10.0);
+        let threshold = db_to_gain(options.threshold_db * 2.0);
         let mut ranges = Vec::new();
         let mut start = None;
         for i in (0..self.frames()).step_by(window) {
@@ -578,7 +584,7 @@ impl Audio {
             }
             let count = window.min(frames - pos).min(self.frames() - chosen);
             for i in 0..count {
-                let w = (0.5 - 0.5 * (2.0 * PI * (i as f64 + 0.5) / window as f64).cos()) as f32;
+                let w = (0.5 - 0.5 * cos_turns((i as f64 + 0.5) / window as f64)) as f32;
                 weights[pos + i] += w;
                 for (c, dst) in out.iter_mut().enumerate() {
                     dst[pos + i] += self.data[c][chosen + i] * w;
@@ -599,7 +605,7 @@ impl Audio {
         if !semitones.is_finite() {
             return Err(Error::invalid("Pitch must be finite"));
         }
-        let ratio = 2f64.powf(semitones / 12.0);
+        let ratio = exp2(semitones / 12.0);
         if !ratio.is_finite() || ratio == 0.0 {
             return Err(Error::invalid("Pitch out of range"));
         }
@@ -609,5 +615,29 @@ impl Audio {
             c.resize(self.frames(), 0.0);
         }
         Ok(shifted)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_sinc_table_matches_platform_math() {
+        let table = sinc_table();
+        let norm = i0(10.0);
+        let worst = (0..table.len())
+            .map(|i| {
+                let d = i as f64 / 512.0;
+                let t = d / 32.0;
+                let sinc = if d == 0.0 {
+                    1.0
+                } else {
+                    (std::f64::consts::PI * d).sin() / (std::f64::consts::PI * d)
+                };
+                (table[i] - sinc * i0(10.0 * (1.0 - t * t).max(0.0).sqrt()) / norm).abs()
+            })
+            .fold(0.0, f64::max);
+        assert!(worst < 1e-13, "{worst}");
     }
 }

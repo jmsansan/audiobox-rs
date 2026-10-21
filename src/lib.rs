@@ -41,6 +41,20 @@
 //! audiobox = { version = "0.2", features = ["mixer", "synth", "sfx"] }
 //! ```
 //!
+//! # Determinism
+//!
+//! These give the same samples on every platform, including WebAssembly: the
+//! synthesizer, the sound effects and the mixer, and the offline transforms that render
+//! audio — [`Audio::pan`], [`Audio::gain`] and [`Audio::gain_db`], [`Audio::fade`],
+//! [`Audio::crossfade_to`], [`Audio::filter`], [`Audio::limit`], [`Audio::resample`],
+//! [`Audio::tempo`], [`Audio::pitch`], [`Audio::trim_silence`], peak
+//! [`Audio::normalize`], and [`analyze::from_db`]. They compute with the crate's own
+//! sine and `2^x` series instead of the platform's `sin`, `cos`, `exp` and `powf`, whose
+//! last bits can differ between systems; CI pins their output with checksums on Linux,
+//! macOS, Windows and WebAssembly. Analysis that only reports numbers, such as
+//! loudness, true peak and spectra, and normalization to LUFS or true peak, which
+//! depend on it, use the platform's math.
+//!
 //! Errors are [`Error`] values with a stable [`ErrorCode`]. Decoding is bounded by
 //! [`Limits`], checked before allocating. The [website](https://jmsansan.github.io/audiobox-rs/)
 //! has a browser sandbox and a sound-effect and chiptune playground that run this crate
@@ -56,7 +70,6 @@ mod error;
 mod flac;
 mod formats;
 mod io;
-#[cfg(any(feature = "synth", feature = "mixer"))]
 mod math;
 #[cfg(feature = "mixer")]
 #[cfg_attr(docsrs, doc(cfg(feature = "mixer")))]

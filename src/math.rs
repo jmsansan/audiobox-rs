@@ -39,6 +39,16 @@ pub(crate) fn cos_turns(x: f64) -> f64 {
     sin_turns(x + 0.25)
 }
 
+/// `10^(db / 20)`: the linear gain of a level in decibels.
+pub(crate) fn db_to_gain(db: f64) -> f64 {
+    exp2(db * std::f64::consts::LOG2_10 / 20.0)
+}
+
+/// `e^x`.
+pub(crate) fn exp(x: f64) -> f64 {
+    exp2(x * std::f64::consts::LOG2_E)
+}
+
 /// Frequency in Hz of a pitch `cents` above or below A4 (440 Hz).
 pub(crate) fn cents_to_hz(cents: f64) -> f64 {
     440.0 * exp2(cents / 1200.0)
