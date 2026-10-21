@@ -490,8 +490,8 @@ cargo run --example game_audio --features mixer,sfx -- game.wav
 
 ## Development and releases
 
-CI runs only when a release is published (or on demand from the Actions tab), so run
-the checks locally before releasing:
+CI runs these checks on every pull request and on `main`, on Linux, macOS and Windows.
+To run them locally:
 
 ```sh
 cargo fmt --check
@@ -508,9 +508,9 @@ python3 scripts/build-site.py && node --test site/tests/engine.test.mjs
 cargo publish --dry-run
 ```
 
-The interoperability tests use an installed FFmpeg **only in tests**. Publishing a
-GitHub release runs CI on Linux, macOS and Windows, MSRV and FFmpeg interoperability,
-and builds and deploys the website. The `.crate` contains the Rust implementation,
+The interoperability tests use an installed FFmpeg **only in tests**. CI also checks
+the MSRV and FFmpeg interoperability; the website is built on pull requests and
+deployed from `main`. The `.crate` contains the Rust implementation,
 tests, examples, this README, the changelog and the MIT license; it excludes the
 website and build output.
 

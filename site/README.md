@@ -19,8 +19,8 @@ the dark theme; the navigation toggle switches to light and remembers the choice
 compiles every Rust guide example and checks local navigation and API links.
 Do not open the HTML directly with `file://`: workers and WASM need an HTTP origin.
 
-The Pages workflow builds and deploys the site when a GitHub release is published,
-or on demand from the Actions tab. Enable GitHub Pages with **GitHub Actions** as its
+The Pages workflow builds the site on pull requests and deploys it from `main` and
+from published releases. Enable GitHub Pages with **GitHub Actions** as its
 source, and allow `v*` tags in the `github-pages` environment's deployment rules. No API keys, server or audio upload endpoint
 are needed. Files stay in browser memory. The bridge enforces the sandbox's input limits.
 
