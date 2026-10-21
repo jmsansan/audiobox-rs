@@ -15,6 +15,9 @@
 - Instance limits per sound (`Play::instances`, `Instances`, `OverLimit`): a maximum
   number of voices at once with a policy for one more, and a minimum gap between
   starts. Refused starts report `MixerEvent::Limited`.
+- Pan and distance fade from a 2D position relative to the listener
+  (`Play::position`, `MixerHandle::set_position`, `Space2d`, `Distance`,
+  `MixerConfig::space`).
 
 ### Breaking
 

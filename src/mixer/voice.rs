@@ -183,6 +183,8 @@ pub(super) struct Voice {
     pub pan: Ramp,
     /// Fade-in and fade-out envelope.
     pub fade: Ramp,
+    /// Gain from the distance to the listener.
+    pub distance: Ramp,
     /// Frames and curve of the fade-in, applied when the voice starts.
     pub fade_in: (u64, FadeCurve),
     feed: Feed,
@@ -255,6 +257,7 @@ impl Voice {
             gain: Ramp::constant(1.0),
             pan: Ramp::constant(0.0),
             fade: Ramp::constant(1.0),
+            distance: Ramp::constant(1.0),
             fade_in: (0, FadeCurve::Linear),
             feed,
             channels,
@@ -298,7 +301,10 @@ impl Voice {
     /// The voice's gain at output frame `frame`: gain, fades and pause, without pan.
     pub fn level(&self, frame: u64) -> f64 {
         let time = self.time(frame);
-        self.gain.value(time) * self.fade.value(time) * self.pause.value(frame)
+        self.gain.value(time)
+            * self.fade.value(time)
+            * self.distance.value(time)
+            * self.pause.value(frame)
     }
     /// Whether the voice is frozen by its own pause.
     pub fn paused(&self) -> bool {
@@ -392,6 +398,7 @@ impl Voice {
         // Ramps only start at segment boundaries, so one finished at `first` stays put.
         let constant = !self.gain.changing(local)
             && !self.fade.changing(local)
+            && !self.distance.changing(local)
             && !self.pan.changing(local)
             && !self.pause.changing(first);
         let fixed = constant.then(|| self.gains(local, first, out_channels));
@@ -435,7 +442,10 @@ impl Voice {
     /// centre leaves both channels unchanged. Mono output sums mono sources at unit
     /// gain and averages stereo ones.
     fn gains(&self, time: u64, frame: u64, out_channels: usize) -> (f64, f64) {
-        let gain = self.gain.value(time) * self.fade.value(time) * self.pause.value(frame);
+        let gain = self.gain.value(time)
+            * self.fade.value(time)
+            * self.distance.value(time)
+            * self.pause.value(frame);
         if out_channels == 1 {
             return if self.channels == 1 {
                 (gain, 0.0)
