@@ -5,7 +5,6 @@ on:
     branches: [main]
     paths: ['Cargo.toml', 'Cargo.lock', 'src/**', 'tests/**', 'examples/*.rs', 'README.md', '.github/workflows/ci.yml']
   pull_request:
-    paths: ['Cargo.toml', 'Cargo.lock', 'src/**', 'tests/**', 'examples/*.rs', 'README.md', '.github/workflows/ci.yml']
   release:
     types: [published]
   workflow_dispatch:
