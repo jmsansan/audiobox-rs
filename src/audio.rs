@@ -287,6 +287,8 @@ impl Audio {
         let turns = (position.clamp(-1.0, 1.0) + 1.0) / 8.0;
         let (left, right) = (sin_turns(0.25 - turns) as f32, sin_turns(turns) as f32);
         let mut out = self.to_stereo();
+        // Stereo input comes back as a clone; the panned samples are a new sound.
+        out.id = next_id();
         for s in &mut out.data[0] {
             *s *= left;
         }

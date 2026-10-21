@@ -881,12 +881,12 @@ impl Mixer {
             }
             Action::Pause(id, len, curve) => {
                 if let Some(v) = self.voice_mut(id) {
-                    v.pause(frame, len, curve);
+                    v.pause(v.time(frame), len, curve);
                 }
             }
             Action::Resume(id, len, curve) => {
                 if let Some(v) = self.voice_mut(id) {
-                    v.resume(frame, len, curve);
+                    v.resume(v.time(frame), len, curve);
                 }
             }
             Action::PauseBus(b, len, curve) => {

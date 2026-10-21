@@ -1686,3 +1686,43 @@ fn positions_wrap_into_the_loop_at_high_speed() {
     // 768 source frames: the first pass reaches 700, then 68 more from 200.
     assert_eq!(h.voice_status(id).unwrap().position, 268);
 }
+
+#[test]
+fn a_bus_pause_holds_an_unfinished_pause_fade() {
+    let (mut m, mut h) = mixer(1, &["game"], 4);
+    let game = h.bus("game").unwrap();
+    let id = h
+        .play(
+            mono(vec![1.0; 96_000], RATE),
+            &Play {
+                bus: game,
+                ..Play::default()
+            },
+        )
+        .unwrap();
+    // A 1000-frame pause fade starts at 1000; the bus pauses halfway through it.
+    h.at(1000)
+        .pause(id, Fade::linear(1000.0 / RATE as f64))
+        .unwrap();
+    h.at(1500).pause_bus(game, Fade::NONE).unwrap();
+    h.at(5000).resume_bus(game, Fade::NONE).unwrap();
+    let out = render(&mut m, 6000, 256);
+    assert!(close(out[1499], 0.501, 1e-6));
+    assert!(out[1500..5000].iter().all(|&s| s == 0.0));
+    // The fade resumes where it was, not finished.
+    assert!(close(out[5000], 0.5, 1e-6), "{}", out[5000]);
+    assert!(close(out[5250], 0.25, 1e-6));
+    assert!(out[5500..].iter().all(|&s| s == 0.0));
+}
+
+#[test]
+fn panned_stereo_audio_is_a_new_sound() {
+    let stereo = Audio::new(vec![vec![0.5; 10], vec![0.5; 10]], RATE).unwrap();
+    let panned = stereo.pan(-0.5).unwrap();
+    assert_ne!(Instances::of(&stereo), Instances::of(&panned));
+    let mono_sound = Audio::new(vec![vec![0.5; 10]], RATE).unwrap();
+    assert_ne!(
+        Instances::of(&mono_sound),
+        Instances::of(&mono_sound.pan(0.5).unwrap())
+    );
+}

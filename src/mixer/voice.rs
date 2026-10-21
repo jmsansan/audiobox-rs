@@ -217,7 +217,8 @@ pub(super) struct Voice {
     /// Output frames during which the voice was frozen by a pause. The voice's own
     /// time, which its ramps follow, is the output frame minus this.
     offset: u64,
-    /// Gain of pause and resume fades, in output frames.
+    /// Gain of pause and resume fades, in the voice's own time, so a bus pause also
+    /// holds an unfinished fade.
     pause: Ramp,
     /// Fading out towards a pause, or paused.
     pausing: bool,
@@ -309,13 +310,13 @@ impl Voice {
     pub fn time(&self, frame: u64) -> u64 {
         frame - self.offset
     }
-    /// The voice's gain at output frame `frame`: gain, fades and pause, without pan.
+    /// The voice's gain at output frame `frame`: gain, fades, distance and pause, without pan.
     pub fn level(&self, frame: u64) -> f64 {
         let time = self.time(frame);
         self.gain.value(time)
             * self.fade.value(time)
             * self.distance.value(time)
-            * self.pause.value(frame)
+            * self.pause.value(time)
     }
     /// Whether the voice is frozen by its own pause.
     pub fn paused(&self) -> bool {
@@ -422,15 +423,14 @@ impl Voice {
             && !self.fade.changing(local)
             && !self.distance.changing(local)
             && !self.pan.changing(local)
-            && !self.pause.changing(first);
-        let fixed = constant.then(|| self.gains(local, first, out_channels));
+            && !self.pause.changing(local);
+        let fixed = constant.then(|| self.gains(local, out_channels));
         let speeding = self.rate.changing(local) || self.pitch.changing(local);
         self.update_speed(local);
         for j in 0..frames {
             if self.done() {
                 return;
             }
-            let frame = first + j as u64;
             let time = local + j as u64;
             if speeding {
                 self.update_speed(time);
@@ -438,7 +438,7 @@ impl Voice {
             let Some((left, right)) = self.next_frame() else {
                 return;
             };
-            let (gl, gr) = fixed.unwrap_or_else(|| self.gains(time, frame, out_channels));
+            let (gl, gr) = fixed.unwrap_or_else(|| self.gains(time, out_channels));
             if out_channels == 1 {
                 out[j] += (left * gl + right * gr) as f32;
             } else {
@@ -448,7 +448,7 @@ impl Voice {
             if self.state == State::Stopping && self.fade.finished(time + 1) {
                 self.state = State::Finished;
             }
-            if self.pausing && self.pause.finished(frame + 1) {
+            if self.pausing && self.pause.finished(time + 1) {
                 self.pausing = false;
                 self.paused = true;
                 self.freeze((frames - j - 1) as u64);
@@ -463,11 +463,11 @@ impl Voice {
     /// balanced: the far side follows `√2·cos θ` or `√2·sin θ`, limited to 1, so the
     /// centre leaves both channels unchanged. Mono output sums mono sources at unit
     /// gain and averages stereo ones.
-    fn gains(&self, time: u64, frame: u64, out_channels: usize) -> (f64, f64) {
+    fn gains(&self, time: u64, out_channels: usize) -> (f64, f64) {
         let gain = self.gain.value(time)
             * self.fade.value(time)
             * self.distance.value(time)
-            * self.pause.value(frame);
+            * self.pause.value(time);
         if out_channels == 1 {
             return if self.channels == 1 {
                 (gain, 0.0)
