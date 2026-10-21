@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- The mixer's commands and finished voices travel through a bounded
+  single-producer, single-consumer queue of the crate's own instead of std's
+  channel, so `render`'s real-time guarantees rest only on documented std behavior.
+
 ## 0.2.1
 
 ### Changed

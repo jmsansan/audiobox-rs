@@ -73,14 +73,16 @@
 //!
 //! # Real-time safety
 //!
-//! [`Mixer::render`] allocates nothing, takes no lock and does not block. Changes reach
-//! it through a bounded queue, a [`std::sync::mpsc::sync_channel`], which keeps its
-//! messages in a buffer allocated when the mixer is created; the mixer takes them with
-//! `try_recv` at the start of each render, and the handle sends with `try_send`, so
-//! neither side ever waits. Voices and their buffers are built by the handle, on the
-//! game's thread. Finished voices go back to the handle through a second bounded queue
-//! and are freed by [`MixerHandle::poll_event`], so the audio thread frees no memory
-//! either. Poll events regularly, such as once per game frame.
+//! [`Mixer::render`] allocates nothing, takes no lock that can wait and does not block.
+//! Changes reach it through a bounded single-producer, single-consumer queue of the
+//! crate's own, allocated when the mixer is created. The handle and the mixer each own
+//! one end and one counter, so a slot is only ever used by one side at a time; each slot
+//! is taken with `try_lock`, which never blocks and, under this protocol, is never
+//! contended. A full queue is reported to the handle; neither side ever waits. Voices
+//! and their buffers are built by the handle, on the game's thread. Finished voices go
+//! back to the handle through a second such queue and are freed by
+//! [`MixerHandle::poll_event`], so the audio thread frees no memory either. Poll events
+//! regularly, such as once per game frame.
 //!
 //! # Timing and determinism
 //!
@@ -90,12 +92,13 @@
 //! start of the next render. The same changes at the same frames give the same samples
 //! on every platform: resampling, panning and fades use only basic IEEE arithmetic and
 //! the crate's own sine series.
+mod queue;
 mod voice;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel};
 
+use queue::{Consumer, Producer, PushError};
 use voice::{Feed, ONE, Ramp, SincTable, State, Voice};
 
 use crate::{Audio, Error, ErrorCode, FadeCurve, Limits, Result};
@@ -349,8 +352,8 @@ pub struct Mixer {
     voices: Vec<Option<Box<Voice>>>,
     buses: Vec<Bus>,
     pending: Vec<Command>,
-    commands: Receiver<Command>,
-    returns: SyncSender<Returned>,
+    commands: Consumer<Command>,
+    returns: Producer<Returned>,
     retired: Vec<Returned>,
     clock: Arc<AtomicU64>,
     steal_fade: u64,
@@ -361,8 +364,8 @@ pub struct MixerHandle {
     rate: u32,
     channels: usize,
     buses: Vec<String>,
-    commands: SyncSender<Command>,
-    returns: Receiver<Returned>,
+    commands: Producer<Command>,
+    returns: Consumer<Returned>,
     clock: Arc<AtomicU64>,
     next_voice: u64,
     next_sequence: u64,
@@ -398,8 +401,8 @@ impl Mixer {
             return Err(Error::invalid("A mixer has at most 255 named buses"));
         }
         let slots = max_voices + TAILS;
-        let (command_tx, command_rx) = sync_channel(queue);
-        let (return_tx, return_rx) = sync_channel(slots + queue);
+        let (command_tx, command_rx) = queue::queue(queue);
+        let (return_tx, return_rx) = queue::queue(slots + queue);
         let clock = Arc::new(AtomicU64::new(0));
         let mixer = Mixer {
             rate: sample_rate,
@@ -484,9 +487,9 @@ impl Mixer {
 
     fn receive(&mut self) {
         while self.pending.len() < self.pending.capacity() {
-            match self.commands.try_recv() {
-                Ok(command) => self.pending.push(command),
-                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
+            match self.commands.pop() {
+                Some(command) => self.pending.push(command),
+                None => break,
             }
         }
     }
@@ -670,13 +673,13 @@ impl Mixer {
                     voice: None,
                 },
             );
-            match self.returns.try_send(item) {
+            match self.returns.push(item) {
                 Ok(()) => sent += 1,
-                Err(TrySendError::Full(item)) => {
+                Err(PushError::Full(item)) => {
                     self.retired[sent] = item;
                     break;
                 }
-                Err(TrySendError::Disconnected(_)) => sent += 1,
+                Err(PushError::Disconnected(_)) => sent += 1,
             }
         }
         self.retired.drain(..sent);
@@ -744,7 +747,7 @@ impl MixerHandle {
     }
     /// Returns the next event, freeing finished voices on this thread.
     pub fn poll_event(&mut self) -> Option<MixerEvent> {
-        while let Ok(returned) = self.returns.try_recv() {
+        while let Some(returned) = self.returns.pop() {
             drop(returned.voice);
             if returned.event.is_some() {
                 return returned.event;
@@ -775,10 +778,10 @@ impl MixerHandle {
             sequence,
             action,
         };
-        match self.commands.try_send(command) {
+        match self.commands.push(command) {
             Ok(()) => Ok(()),
-            Err(TrySendError::Full(_)) => Err(Error::limit("The mixer's command queue is full")),
-            Err(TrySendError::Disconnected(_)) => Err(Error::invalid("The mixer was dropped")),
+            Err(PushError::Full(_)) => Err(Error::limit("The mixer's command queue is full")),
+            Err(PushError::Disconnected(_)) => Err(Error::invalid("The mixer was dropped")),
         }
     }
 }
