@@ -347,6 +347,17 @@ impl Voice {
         self.pausing = false;
         self.pause.retarget(frame, 1.0, len, curve);
     }
+    /// Reads the source up to the playback position, as the next frame would, so the
+    /// position maps through every loop restart it has passed.
+    pub fn settle(&mut self) {
+        if self.done() {
+            return;
+        }
+        let index = (self.position >> 32) as i64;
+        if let Err(e) = self.fill(index + HALF + 1) {
+            self.state = State::Failed(e.code);
+        }
+    }
     /// The source frame being played, mapped back through loop restarts.
     pub fn source_position(&self) -> u64 {
         let index = (self.position >> 32) as i64;
@@ -375,9 +386,9 @@ impl Voice {
             self.bank_index = None;
             return;
         }
-        // Every accepted rate (1/16..=8) and pitch (±48 semitones) combines to
-        // 1/256..=128, which the fixed-point step represents exactly.
-        let speed = (rate * exp2(pitch / 12.0)).clamp(1.0 / 256.0, 128.0);
+        // Every accepted rate (1/16..=8), pitch (±48 semitones) and pitch variation
+        // (±24 more) combines to 1/1024..=512, which the fixed-point step represents.
+        let speed = (rate * exp2(pitch / 12.0)).clamp(1.0 / 1024.0, 512.0);
         self.step = ((self.base_step as f64 * speed).round() as u64).max(1);
         self.bank_index = Some(SincBank::index(self.base_ratio * speed));
     }
@@ -578,6 +589,10 @@ impl Voice {
                 Some((start, _)) if self.source_pos > start => {
                     if let Feed::Stream(stream) = &mut self.feed {
                         stream.seek(start)?;
+                    }
+                    // A stream of unknown length shows its loop's end at the first restart.
+                    if self.loop_span.is_none() {
+                        self.loop_span = Some((start, self.source_pos));
                     }
                     self.source_pos = start;
                     self.jumps[self.jump_count % JUMPS] = (self.filled, start);

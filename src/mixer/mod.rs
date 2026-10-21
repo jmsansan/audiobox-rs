@@ -300,8 +300,8 @@ pub struct Play {
     /// and an octave higher. 1/16..=8. Default 1.
     pub rate: f32,
     /// Pitch offset in semitones on top of the rate; fractions are cents, so 0.01 is
-    /// one cent. -48..=48, so rate and pitch together span 1/256..=128 times the
-    /// speed. Default 0.
+    /// one cent. -48..=48. Rate, pitch and [`Variation::pitch`] together span
+    /// 1/1024..=512 times the speed. Default 0.
     pub pitch: f32,
     /// Random variation of pitch and gain, drawn from the mixer's seed.
     pub variation: Variation,
@@ -1140,10 +1140,11 @@ impl Mixer {
     }
 
     /// Publishes every voice's state for [`MixerHandle::voice_status`].
-    fn publish(&self) {
+    fn publish(&mut self) {
         let master_paused = self.buses[0].paused;
-        for (slot, voice) in self.voices.iter().enumerate() {
+        for (slot, voice) in self.voices.iter_mut().enumerate() {
             if let Some(v) = voice {
+                v.settle();
                 let state = if v.state == State::Stopping {
                     VoiceState::Stopping
                 } else if v.paused() || self.buses[v.bus].paused || master_paused {

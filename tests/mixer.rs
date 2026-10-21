@@ -1830,3 +1830,86 @@ fn the_limiter_bounds_overflowing_sums() {
             .all(|s| s.is_finite() && s.abs() <= ceiling + 1e-6)
     );
 }
+
+#[test]
+fn pitch_variation_is_not_clipped_at_the_extremes() {
+    // 10 Hz at rate 8 and pitch 48 is 128 times faster: 84 semitones up. Variation of
+    // 24 semitones may take it as far as 108 semitones, 512 times.
+    let mut above = false;
+    for seed in 0..6 {
+        let (mut m, mut h) = Mixer::new(MixerConfig {
+            sample_rate: RATE,
+            channels: 1,
+            seed,
+            ..MixerConfig::default()
+        })
+        .unwrap();
+        let play = Play {
+            rate: 8.0,
+            pitch: 48.0,
+            variation: Variation {
+                pitch: 24.0,
+                gain_db: 0.0,
+            },
+            ..Play::default()
+        };
+        h.play(mono(sine(480_000, RATE, 10.0, 0.5), RATE), &play)
+            .unwrap();
+        let out = render(&mut m, 900, 900);
+        let semitones = 12.0 * (frequency(&out, 20, 880) / 10.0).log2();
+        assert!(
+            (60.0 - 0.05..=108.0 + 0.05).contains(&semitones),
+            "seed {seed}: {semitones}"
+        );
+        above |= semitones > 84.1;
+    }
+    assert!(above, "positive draws play above 128 times");
+}
+
+/// A looping stream that does not report its length.
+struct Counting {
+    at: u64,
+    len: u64,
+}
+impl Stream for Counting {
+    fn sample_rate(&self) -> u32 {
+        RATE
+    }
+    fn channels(&self) -> usize {
+        1
+    }
+    fn read(&mut self, out: &mut [f32]) -> audiobox::Result<usize> {
+        let n = out.len().min((self.len - self.at) as usize);
+        for (i, s) in out[..n].iter_mut().enumerate() {
+            *s = (self.at + i as u64) as f32 / 100.0;
+        }
+        self.at += n as u64;
+        Ok(n)
+    }
+    fn seek(&mut self, frame: u64) -> audiobox::Result<()> {
+        self.at = frame.min(self.len);
+        Ok(())
+    }
+}
+
+#[test]
+fn positions_wrap_for_loops_of_unknown_length() {
+    let (mut m, mut h) = mixer(1, &[], 4);
+    let play = Play {
+        looping: Loop::Whole,
+        rate: 8.0,
+        pitch: 48.0,
+        ..Play::default()
+    };
+    let id = h
+        .play(Sound::stream(Counting { at: 0, len: 10 }), &play)
+        .unwrap();
+    render(&mut m, 1, 1);
+    assert_eq!(
+        h.voice_status(id).unwrap().position,
+        8,
+        "128 frames into a 10-frame loop"
+    );
+    render(&mut m, 2, 2);
+    assert_eq!(h.voice_status(id).unwrap().position, (3 * 128) % 10);
+}
