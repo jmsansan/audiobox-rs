@@ -142,6 +142,12 @@ fn rendering_allocates_and_frees_nothing() {
                     bus: effects,
                     pan: -0.8,
                     fade_in: Fade::linear(0.01),
+                    instances: Some(
+                        Instances::new(i % 2)
+                            .max(2)
+                            .policy(OverLimit::StopQuietest)
+                            .min_gap(0.01),
+                    ),
                     variation: Variation {
                         pitch: 1.0,
                         gain_db: 2.0,

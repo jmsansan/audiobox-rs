@@ -59,6 +59,10 @@
 //! voice does not play and reports [`MixerEvent::Rejected`]. Give music a high
 //! priority so that effects never take its place.
 //!
+//! A sound can also limit its own voices with [`Instances`]: at most so many at once,
+//! with a policy for one more, and a minimum gap between starts. A refused start
+//! reports [`MixerEvent::Limited`].
+//!
 //! Every voice plays through a bus: the master bus, or one of the named buses of
 //! [`MixerConfig::buses`], which play through the master. A voice's samples are scaled
 //! by its gain, its fades, its pan, its bus's gain and the master gain.
@@ -293,7 +297,72 @@ pub struct Play {
     /// counts from the end of a sound of known length. A stream seeks there before the
     /// voice is sent. Default the start.
     pub start: TimePosition,
+    /// Limits on how many voices of this sound play at once and how often it starts.
+    pub instances: Option<Instances>,
 }
+
+/// Limits for one sound: at most `max` voices with the same key play at once, and a
+/// new one starts no sooner than `min_gap` seconds after the last, so that ten coins
+/// collected together do not sum into distortion.
+///
+/// When `max` voices already play, `policy` decides: refuse the new voice, or stop
+/// the oldest or the quietest one with a 5 ms fade. A refused start reports
+/// [`MixerEvent::Limited`]; a start within the gap is always refused. Limits apply
+/// before the mixer's bound on voices and its priorities, when the start is applied,
+/// so scheduled starts are judged at their own frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Instances {
+    /// Voices with the same key share the limits. [`Instances::of`] keys a sound by
+    /// its `Arc`, so every voice of that `Arc<Audio>` counts.
+    pub key: u64,
+    /// Most voices playing at once; 0 for no limit.
+    pub max: u16,
+    /// Seconds from one start to the next, 0..=60.
+    pub min_gap: f64,
+    pub policy: OverLimit,
+}
+impl Instances {
+    /// Limits keyed by `key`, with no limit set yet.
+    pub const fn new(key: u64) -> Self {
+        Self {
+            key,
+            max: 0,
+            min_gap: 0.0,
+            policy: OverLimit::Refuse,
+        }
+    }
+    /// Limits keyed by a decoded sound's `Arc`.
+    pub fn of(sound: &Arc<Audio>) -> Self {
+        Self::new(Arc::as_ptr(sound) as usize as u64)
+    }
+    pub const fn max(self, max: u16) -> Self {
+        Self { max, ..self }
+    }
+    pub const fn min_gap(self, seconds: f64) -> Self {
+        Self {
+            min_gap: seconds,
+            ..self
+        }
+    }
+    pub const fn policy(self, policy: OverLimit) -> Self {
+        Self { policy, ..self }
+    }
+}
+
+/// What happens when a sound already plays its [`Instances::max`] voices.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum OverLimit {
+    /// The new voice does not start.
+    #[default]
+    Refuse,
+    /// The voice that started first fades out and the new one starts.
+    StopOldest,
+    /// The voice with the lowest gain fades out and the new one starts.
+    StopQuietest,
+}
+
+/// Recent starts remembered for the minimum gap between starts of a sound.
+const RECENT_STARTS: usize = 64;
 impl Default for Play {
     fn default() -> Self {
         Self {
@@ -307,6 +376,7 @@ impl Default for Play {
             pitch: 0.0,
             variation: Variation::NONE,
             start: TimePosition::Frames(0),
+            instances: None,
         }
     }
 }
@@ -361,6 +431,7 @@ impl Default for MixerConfig {
 
 /// Something that happened to a voice, reported by [`MixerHandle::poll_event`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum MixerEvent {
     /// The voice finished, was stopped, or finished fading out after being stolen.
     Ended(VoiceId),
@@ -368,6 +439,8 @@ pub enum MixerEvent {
     Stolen(VoiceId),
     /// The voice did not start because too many voices of higher priority play.
     Rejected(VoiceId),
+    /// The voice did not start because of its [`Instances`] limit.
+    Limited(VoiceId),
     /// The voice's stream failed and the voice stopped.
     Failed(VoiceId, ErrorCode),
 }
@@ -421,6 +494,9 @@ pub struct Mixer {
     clock: Arc<AtomicU64>,
     status: Arc<status::Table>,
     steal_fade: u64,
+    /// Keys and frames of the latest limited starts, oldest overwritten first.
+    recent: [(u64, u64); RECENT_STARTS],
+    recent_count: usize,
 }
 
 /// The game's half of the mixer: starts, changes and stops voices.
@@ -512,6 +588,8 @@ impl Mixer {
             clock: clock.clone(),
             status: status.clone(),
             steal_fade: (STEAL_FADE * sample_rate as f64).round() as u64,
+            recent: [(0, 0); RECENT_STARTS],
+            recent_count: 0,
         };
         let handle = MixerHandle {
             rate: sample_rate,
@@ -688,7 +766,65 @@ impl Mixer {
         }
     }
 
-    fn start(&mut self, frame: u64, mut voice: Box<Voice>) {
+    /// Applies a voice's instance limits; returns the voice if it may start.
+    fn limit(&mut self, frame: u64, voice: Box<Voice>) -> Option<Box<Voice>> {
+        let Some(limit) = voice.instances else {
+            return Some(voice);
+        };
+        let latest = (0..self.recent_count.min(RECENT_STARTS))
+            .map(|k| self.recent[(self.recent_count - 1 - k) % RECENT_STARTS])
+            .find(|&(key, _)| key == limit.key);
+        if let Some((_, last)) = latest {
+            if limit.min_gap > 0 && frame < last + limit.min_gap {
+                let id = voice.id;
+                self.retire(voice, Some(MixerEvent::Limited(id)));
+                return None;
+            }
+        }
+        if limit.max > 0 {
+            let same =
+                |v: &&mut Box<Voice>| v.live() && v.instances.is_some_and(|l| l.key == limit.key);
+            let playing = self.voices.iter_mut().flatten().filter(same).count();
+            if playing >= limit.max as usize {
+                let steal_fade = self.steal_fade;
+                let victim = match limit.policy {
+                    OverLimit::Refuse => None,
+                    OverLimit::StopOldest => self
+                        .voices
+                        .iter_mut()
+                        .flatten()
+                        .filter(same)
+                        .min_by_key(|v| v.order),
+                    OverLimit::StopQuietest => self
+                        .voices
+                        .iter_mut()
+                        .flatten()
+                        .filter(same)
+                        .min_by(|a, b| {
+                            a.level(frame)
+                                .total_cmp(&b.level(frame))
+                                .then(a.order.cmp(&b.order))
+                        }),
+                };
+                let Some(v) = victim else {
+                    let id = voice.id;
+                    self.retire(voice, Some(MixerEvent::Limited(id)));
+                    return None;
+                };
+                v.stop(v.time(frame), steal_fade, FadeCurve::Linear);
+                let id = v.id;
+                self.event(MixerEvent::Stolen(id));
+            }
+        }
+        self.recent[self.recent_count % RECENT_STARTS] = (limit.key, frame);
+        self.recent_count += 1;
+        Some(voice)
+    }
+
+    fn start(&mut self, frame: u64, voice: Box<Voice>) {
+        let Some(mut voice) = self.limit(frame, voice) else {
+            return;
+        };
         voice.order = self.order;
         self.order += 1;
         voice.start(frame);
@@ -1101,6 +1237,17 @@ impl Commands<'_> {
         voice.pan = Ramp::constant(play.pan.clamp(-1.0, 1.0) as f64);
         voice.fade_in = fade_in;
         voice.set_start(start)?;
+        if let Some(limit) = play.instances {
+            if !limit.min_gap.is_finite() || !(0.0..=60.0).contains(&limit.min_gap) {
+                return Err(Error::invalid("An instance gap must be 0..=60 seconds"));
+            }
+            voice.instances = Some(voice::InstanceLimit {
+                key: limit.key,
+                max: limit.max,
+                min_gap: (limit.min_gap * handle.rate as f64).round() as u64,
+                policy: limit.policy,
+            });
+        }
         handle.send(self.frame, Action::Play(voice))?;
         Ok(id)
     }

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use super::{Loop, Stream, VoiceId};
+use super::{Loop, OverLimit, Stream, VoiceId};
 use crate::math::{exp2, sin_turns};
 use crate::{Audio, ErrorCode, FadeCurve, Result};
 
@@ -162,8 +162,18 @@ pub(super) enum State {
     Failed(ErrorCode),
 }
 
+/// A voice's instance limits, with the gap in output frames.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct InstanceLimit {
+    pub key: u64,
+    pub max: u16,
+    pub min_gap: u64,
+    pub policy: OverLimit,
+}
+
 pub(super) struct Voice {
     pub id: VoiceId,
+    pub instances: Option<InstanceLimit>,
     pub bus: usize,
     pub priority: u8,
     /// Order of starting, to find the oldest voice.
@@ -237,6 +247,7 @@ impl Voice {
         };
         Self {
             id,
+            instances: None,
             bus: 0,
             priority: 128,
             order: 0,
@@ -283,6 +294,11 @@ impl Voice {
     /// The voice's own time at output frame `frame`, which stops while it is paused.
     pub fn time(&self, frame: u64) -> u64 {
         frame - self.offset
+    }
+    /// The voice's gain at output frame `frame`: gain, fades and pause, without pan.
+    pub fn level(&self, frame: u64) -> f64 {
+        let time = self.time(frame);
+        self.gain.value(time) * self.fade.value(time) * self.pause.value(frame)
     }
     /// Whether the voice is frozen by its own pause.
     pub fn paused(&self) -> bool {
