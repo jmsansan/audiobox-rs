@@ -1993,6 +1993,54 @@ fn a_stop_overtaken_by_a_pause_ends_the_voice_whatever_the_blocks() {
     assert_eq!(outs[0], outs[1]);
 }
 
+#[test]
+fn a_speed_change_where_a_sound_ends_does_not_depend_on_the_blocks() {
+    let mut outs = Vec::new();
+    for block in [300, 100] {
+        let (mut m, mut h) = mixer(1, &[], 1);
+        let id = h
+            .play(mono(vec![0.5; 100], RATE), &Play::default())
+            .unwrap();
+        h.at(100).set_rate(id, 0.5, Fade::NONE).unwrap();
+        outs.push(render(&mut m, 300, block));
+        assert_eq!(events(&mut h), [MixerEvent::Ended(id)], "blocks of {block}");
+    }
+    assert_eq!(outs[0], outs[1]);
+}
+
+#[test]
+fn a_fast_sound_past_its_end_leaves_room_for_the_next_instance() {
+    let tick = mono(vec![0.5; 110], RATE);
+    let limit = Instances::of(&tick).max(1);
+    let (mut m, mut h) = mixer(1, &[], 1);
+    let first = h
+        .play(
+            tick.clone(),
+            &Play {
+                rate: 8.0,
+                pitch: 24.0,
+                instances: Some(limit),
+                ..Play::default()
+            },
+        )
+        .unwrap();
+    let second = h
+        .at(4)
+        .play(
+            tick.clone(),
+            &Play {
+                instances: Some(limit),
+                ..Play::default()
+            },
+        )
+        .unwrap();
+    render(&mut m, 500, 500);
+    assert_eq!(
+        events(&mut h),
+        [MixerEvent::Ended(first), MixerEvent::Ended(second)]
+    );
+}
+
 /// A stream that gives `frames` frames, then fails.
 struct Failing {
     frames: usize,

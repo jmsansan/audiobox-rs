@@ -204,6 +204,9 @@ pub(super) struct Voice {
     /// Fixed-point source frames per output frame, now and at speed 1.
     step: u64,
     base_step: u64,
+    /// The step that brought the voice to its position, which decides whether it has
+    /// played out, so a speed change at that frame cannot revive it.
+    last_step: u64,
     /// Source frames per output frame at speed 1.
     base_ratio: f64,
     /// The exact table for speed 1, or `None` when the source is at the output rate.
@@ -281,6 +284,7 @@ impl Voice {
             position: 0,
             step,
             base_step: step,
+            last_step: step,
             base_ratio,
             table,
             bank,
@@ -360,16 +364,17 @@ impl Voice {
         }
     }
     /// Whether the source ended before the playback position, so the next frame would
-    /// end the voice.
+    /// end the voice. A voice that reached its end frame exactly at speed 1 has played
+    /// out; one that got there resampling still has the interpolation's tail.
     fn exhausted(&self) -> bool {
         let index = (self.position >> 32) as i64;
-        let direct = self.step == ONE && self.position & (ONE - 1) == 0;
+        let direct = self.last_step == ONE && self.position & (ONE - 1) == 0;
         let reach = if direct { 0 } else { HALF };
         self.end.is_some_and(|end| index - reach >= end)
     }
     /// Finishes a voice whose source is exhausted, as its next frame would, so a voice
     /// that has played everything stops counting at once.
-    pub fn finish_if_exhausted(&mut self) {
+    fn finish_if_exhausted(&mut self) {
         if !self.done() && self.exhausted() {
             self.state = State::Finished;
         }
@@ -563,6 +568,7 @@ impl Voice {
             (l, r)
         };
         self.position += self.step;
+        self.last_step = self.step;
         Some(value)
     }
 
