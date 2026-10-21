@@ -71,6 +71,11 @@
 //! [`MixerConfig::buses`], which play through the master. A voice's samples are scaled
 //! by its gain, its fades, its pan, its bus's gain and the master gain.
 //!
+//! Many voices together can go beyond full scale. [`MixerConfig::limiter`] enables a
+//! [`MasterLimiter`] on the master bus, off by default, which keeps the output at or
+//! below its ceiling and passes quieter signals unchanged. Its look-ahead, 0 by
+//! default, delays the output by [`MixerHandle::latency`] frames.
+//!
 //! # Rendering
 //!
 //! [`Mixer::render`] fills an interleaved buffer of the output's channels (1 or 2) at
@@ -112,13 +117,15 @@
 //! start of the next render. The same changes at the same frames give the same samples
 //! on every platform: resampling, panning and fades use only basic IEEE arithmetic and
 //! the crate's own sine series.
+mod limiter;
 mod queue;
 mod status;
 mod voice;
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
+pub use limiter::MasterLimiter;
 use queue::{Consumer, Producer, PushError};
 pub use status::{VoiceState, VoiceStatus};
 use voice::{Feed, ONE, Ramp, Resampling, SincBank, SincTable, State, Voice};
@@ -501,6 +508,9 @@ pub struct MixerConfig {
     pub seed: u64,
     /// How positions of voices become pans and gains.
     pub space: Space2d,
+    /// A peak limiter on the master bus, off by default. Its look-ahead delays the
+    /// output, which [`MixerHandle::latency`] reports.
+    pub limiter: Option<MasterLimiter>,
 }
 impl Default for MixerConfig {
     fn default() -> Self {
@@ -512,6 +522,7 @@ impl Default for MixerConfig {
             queue: 1024,
             seed: 0,
             space: Space2d::default(),
+            limiter: None,
         }
     }
 }
@@ -585,6 +596,8 @@ pub struct Mixer {
     /// Keys and frames of the latest limited starts, oldest overwritten first.
     recent: [(u64, u64); RECENT_STARTS],
     recent_count: usize,
+    limiter: Option<limiter::Limiter>,
+    limiter_gain: Arc<AtomicU32>,
 }
 
 /// The game's half of the mixer: starts, changes and stops voices.
@@ -602,6 +615,9 @@ pub struct MixerHandle {
     bank: Arc<SincBank>,
     random: SplitMix,
     space: Space2d,
+    latency: u64,
+    limited: bool,
+    limiter_gain: Arc<AtomicU32>,
 }
 
 /// SplitMix64: a small, fixed generator, so variations are the same on every platform.
@@ -630,7 +646,14 @@ impl Mixer {
             queue,
             seed,
             space,
+            limiter,
         } = config;
+        let limiter = limiter
+            .map(|settings| limiter::Limiter::new(settings, sample_rate, channels))
+            .transpose()?;
+        let latency = limiter.as_ref().map_or(0, |l| l.latency() as u64);
+        let has_limiter = limiter.is_some();
+        let limiter_gain = Arc::new(AtomicU32::new(1f32.to_bits()));
         space.validate()?;
         Limits::default().check(0, channels, sample_rate)?;
         if !(1..=2).contains(&channels) {
@@ -681,6 +704,8 @@ impl Mixer {
             steal_fade: (STEAL_FADE * sample_rate as f64).round() as u64,
             recent: [(0, 0); RECENT_STARTS],
             recent_count: 0,
+            limiter,
+            limiter_gain: limiter_gain.clone(),
         };
         let handle = MixerHandle {
             rate: sample_rate,
@@ -696,6 +721,9 @@ impl Mixer {
             bank: Arc::new(SincBank::new()),
             random: SplitMix(seed),
             space,
+            latency,
+            limited: has_limiter,
+            limiter_gain,
         };
         Ok((mixer, handle))
     }
@@ -749,6 +777,11 @@ impl Mixer {
             let to = (stop - start) as usize * ch;
             self.mix(cursor, &mut out[from..to]);
             cursor = stop;
+        }
+        if let Some(limiter) = &mut self.limiter {
+            let lowest = limiter.process(&mut out[..frames * ch]);
+            self.limiter_gain
+                .store((lowest as f32).to_bits(), Ordering::Relaxed);
         }
         self.frame = end;
         self.publish();
@@ -1209,6 +1242,17 @@ impl MixerHandle {
     /// one game frame suits positions updated every frame.
     pub fn set_position(&mut self, voice: VoiceId, position: [f32; 2], fade: Fade) -> Result<()> {
         self.now().set_position(voice, position, fade)
+    }
+    /// Output frames by which the master limiter's look-ahead delays the sound: a
+    /// change scheduled at frame `f` is heard at `f + latency()`. 0 without a limiter.
+    pub fn latency(&self) -> u64 {
+        self.latency
+    }
+    /// The lowest gain the master limiter applied during the last render, from 0 to 1
+    /// (1 when it did not reduce), for meters. `None` without a limiter.
+    pub fn limiter_gain(&self) -> Option<f32> {
+        self.limited
+            .then(|| f32::from_bits(self.limiter_gain.load(Ordering::Relaxed)))
     }
     /// The 2D space that positions use.
     pub fn space(&self) -> Space2d {

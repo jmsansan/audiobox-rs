@@ -18,6 +18,10 @@
 - Pan and distance fade from a 2D position relative to the listener
   (`Play::position`, `MixerHandle::set_position`, `Space2d`, `Distance`,
   `MixerConfig::space`).
+- An optional look-ahead peak limiter on the master bus (`MixerConfig::limiter`,
+  `MasterLimiter`), with its latency and gain reduction readable
+  (`MixerHandle::latency`, `limiter_gain`). Off by default, so existing output is
+  unchanged.
 
 ### Breaking
 

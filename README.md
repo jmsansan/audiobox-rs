@@ -499,6 +499,9 @@ fn start(music: &'static [u8], jump: Arc<audiobox::Audio>) -> audiobox::Result<(
   so a pause menu stops the game's sounds and keeps its own; start a voice partway
   through; read a voice's state and position without blocking the audio thread.
 - **Buses:** a master bus and named buses, each with a gain that can fade.
+- **Master limiter:** an optional look-ahead peak limiter on the master bus
+  (`MixerConfig::limiter`) keeps the sum of many voices at or below a ceiling, passes
+  quieter signals unchanged, and reports its gain reduction for meters.
 - **Rendering:** `render(&mut [f32])` fills interleaved mono or stereo at the output
   rate, resampling sources at other rates with a 16-tap windowed-sinc filter. It writes
   whole frames and zeroes any remainder; 0 frames only applies due changes.
