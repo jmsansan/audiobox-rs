@@ -814,3 +814,199 @@ fn invalid_rates_are_rejected() {
     assert!(h.set_rate(id, -1.0, Fade::NONE).is_err());
     assert!(h.set_pitch(id, f32::INFINITY, Fade::NONE).is_err());
 }
+
+/// A sound whose sample at frame `i` is `i / 100_000`, so positions can be read back.
+fn counting(frames: usize) -> Vec<f32> {
+    (0..frames).map(|i| i as f32 / 100_000.0).collect()
+}
+
+#[test]
+fn a_paused_voice_resumes_from_the_same_sample() {
+    let samples = counting(20_000);
+    let (mut m, mut h) = mixer(1, &[], 4);
+    let id = h
+        .play(mono(samples.clone(), RATE), &Play::default())
+        .unwrap();
+    h.at(1000).pause(id, Fade::NONE).unwrap();
+    h.at(3000).resume(id, Fade::NONE).unwrap();
+    let out = render(&mut m, 6000, 256);
+    assert_eq!(&out[..1000], &samples[..1000]);
+    assert!(out[1000..3000].iter().all(|&s| s == 0.0));
+    assert_eq!(&out[3000..6000], &samples[1000..4000]);
+
+    // With fades, the voice fades out over 480 frames, keeps still, and fades back in.
+    let (mut m, mut h) = mixer(1, &[], 4);
+    let id = h
+        .play(mono(samples.clone(), RATE), &Play::default())
+        .unwrap();
+    h.at(1000).pause(id, Fade::linear(0.01)).unwrap();
+    h.at(3000).resume(id, Fade::linear(0.01)).unwrap();
+    let out = render(&mut m, 6000, 300);
+    assert!(
+        (out[1240] as f64 - samples[1240] as f64 * 0.5).abs() < 1e-7,
+        "halfway through the fade"
+    );
+    assert!(out[1480..3000].iter().all(|&s| s == 0.0));
+    assert_eq!(out[3000], 0.0);
+    assert!((out[3240] as f64 - samples[1480 + 240] as f64 * 0.5).abs() < 1e-7);
+    assert_eq!(&out[3480..6000], &samples[1960..4480]);
+    // Stopping a paused voice ends it at once.
+    h.pause(id, Fade::NONE).unwrap();
+    render(&mut m, 10, 10);
+    h.stop(id, Fade::linear(1.0)).unwrap();
+    render(&mut m, 10, 10);
+    assert!(events(&mut h).contains(&MixerEvent::Ended(id)));
+}
+
+#[test]
+fn pausing_a_bus_pauses_its_voices_and_no_others() {
+    let samples = counting(20_000);
+    let (mut m, mut h) = mixer(2, &["game", "menu"], 8);
+    let (game, menu) = (h.bus("game").unwrap(), h.bus("menu").unwrap());
+    let left = Play {
+        bus: game,
+        pan: -1.0,
+        ..Play::default()
+    };
+    let right = Play {
+        bus: menu,
+        pan: 1.0,
+        ..Play::default()
+    };
+    h.play(mono(samples.clone(), RATE), &left).unwrap();
+    h.play(mono(samples.clone(), RATE), &right).unwrap();
+    h.at(1000).pause_bus(game, Fade::NONE).unwrap();
+    // A voice started on the paused bus waits for it.
+    h.at(1500).play(mono(samples.clone(), RATE), &left).unwrap();
+    h.at(3000).resume_bus(game, Fade::NONE).unwrap();
+    let out = render(&mut m, 5000, 128);
+    let (l, r) = (channel(&out, 2, 0), channel(&out, 2, 1));
+    assert_eq!(&r[..5000], &samples[..5000], "the menu keeps playing");
+    assert_eq!(&l[..1000], &samples[..1000]);
+    assert!(l[1000..3000].iter().all(|&s| s == 0.0));
+    for i in 3000..5000 {
+        let expected = samples[i - 2000] + samples[i - 3000];
+        assert!((l[i] - expected).abs() < 1e-6, "frame {i}");
+    }
+    // Pausing the master pauses every voice.
+    h.pause_bus(BusId::MASTER, Fade::NONE).unwrap();
+    let out = render(&mut m, 100, 100);
+    assert!(out.iter().all(|&s| s == 0.0));
+    h.resume_bus(BusId::MASTER, Fade::NONE).unwrap();
+    let out = render(&mut m, 1, 1);
+    assert_eq!(out[1], samples[5000]);
+}
+
+#[test]
+fn a_voice_starts_partway_through() {
+    let samples = counting(48_000);
+    let sound = mono(samples.clone(), RATE);
+    let first = |start: audiobox::TimePosition| {
+        let (mut m, mut h) = mixer(1, &[], 4);
+        h.play(
+            sound.clone(),
+            &Play {
+                start,
+                ..Play::default()
+            },
+        )
+        .unwrap();
+        render(&mut m, 10, 10)
+    };
+    assert_eq!(
+        first(audiobox::TimePosition::Frames(5000))[0],
+        samples[5000]
+    );
+    assert_eq!(
+        first(audiobox::TimePosition::Seconds(0.25))[0],
+        samples[12_000]
+    );
+    assert_eq!(
+        first(audiobox::TimePosition::Seconds(-0.1))[0],
+        samples[43_200]
+    );
+    // A stream seeks to its start.
+    let wav = encode(
+        &Audio::new(vec![samples.clone()], RATE).unwrap(),
+        AudioFormat::Wav,
+    )
+    .unwrap();
+    let decoded = audiobox::decode(&wav).unwrap();
+    let (mut m, mut h) = mixer(1, &[], 4);
+    let start = audiobox::TimePosition::Frames(30_000);
+    h.play(
+        Decoder::new(wav).unwrap(),
+        &Play {
+            start,
+            ..Play::default()
+        },
+    )
+    .unwrap();
+    let out = render(&mut m, 18_100, 1000);
+    assert_eq!(&out[..18_000], &decoded.channel_data(0).unwrap()[30_000..]);
+    assert!(out[18_000..].iter().all(|&s| s == 0.0));
+    let (_m, mut h) = mixer(1, &[], 4);
+    let past = Play {
+        start: audiobox::TimePosition::Frames(48_001),
+        ..Play::default()
+    };
+    assert!(h.play(sound, &past).is_err());
+}
+
+#[test]
+fn the_position_follows_the_frames_rendered() {
+    let (mut m, mut h) = mixer(1, &[], 4);
+    let id = h
+        .play(
+            mono(counting(4800), RATE),
+            &Play {
+                looping: Loop::Whole,
+                ..Play::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        h.voice_status(id),
+        None,
+        "not started before the first render"
+    );
+    render(&mut m, 1000, 333);
+    assert_eq!(
+        h.voice_status(id),
+        Some(VoiceStatus {
+            state: VoiceState::Playing,
+            position: 1000
+        })
+    );
+    // The position wraps with the loop.
+    render(&mut m, 5000, 333);
+    assert_eq!(h.voice_status(id).unwrap().position, 1200);
+    h.pause(id, Fade::NONE).unwrap();
+    render(&mut m, 2000, 500);
+    assert_eq!(
+        h.voice_status(id),
+        Some(VoiceStatus {
+            state: VoiceState::Paused,
+            position: 1200
+        })
+    );
+    h.resume(id, Fade::NONE).unwrap();
+    h.stop(id, Fade::linear(0.1)).unwrap();
+    render(&mut m, 100, 100);
+    assert_eq!(h.voice_status(id).unwrap().state, VoiceState::Stopping);
+    render(&mut m, 5000, 500);
+    assert_eq!(h.voice_status(id).unwrap().state, VoiceState::Finished);
+    // Half speed plays half as many source frames.
+    let (mut m, mut h) = mixer(1, &[], 4);
+    let id = h
+        .play(
+            mono(counting(48_000), RATE),
+            &Play {
+                rate: 0.5,
+                ..Play::default()
+            },
+        )
+        .unwrap();
+    render(&mut m, 2000, 256);
+    assert_eq!(h.voice_status(id).unwrap().position, 1000);
+}
