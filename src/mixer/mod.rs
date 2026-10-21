@@ -945,6 +945,10 @@ impl Mixer {
     }
 
     fn start(&mut self, frame: u64, mut voice: Box<Voice>) {
+        // Voices that played all their source no longer count against any limit.
+        for v in self.voices.iter_mut().flatten() {
+            v.finish_if_exhausted();
+        }
         // Decide everything first, so that a refused voice changes nothing.
         let mut start_entry = None;
         if let Some(limit) = voice.instances {

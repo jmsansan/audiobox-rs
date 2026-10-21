@@ -1945,6 +1945,28 @@ fn instance_limits_respect_priorities() {
     assert_eq!(h.voice_status(high).unwrap().state, VoiceState::Playing);
 }
 
+#[test]
+fn a_sound_that_has_ended_leaves_room_for_the_next_instance() {
+    let tick = mono(vec![0.5; 100], RATE);
+    for block in [500, 100] {
+        let (mut m, mut h) = mixer(1, &[], 1);
+        let limit = Instances::of(&tick).max(1).policy(OverLimit::Refuse);
+        let play = Play {
+            instances: Some(limit),
+            ..Play::default()
+        };
+        let first = h.play(tick.clone(), &play).unwrap();
+        let second = h.at(100).play(tick.clone(), &play).unwrap();
+        let out = render(&mut m, 500, block);
+        assert_eq!(
+            events(&mut h),
+            [MixerEvent::Ended(first), MixerEvent::Ended(second)],
+            "blocks of {block}"
+        );
+        assert!(out[100..200].iter().all(|&s| s != 0.0), "blocks of {block}");
+    }
+}
+
 /// A stream that gives `frames` frames, then fails.
 struct Failing {
     frames: usize,

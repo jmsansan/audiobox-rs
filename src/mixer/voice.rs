@@ -354,8 +354,24 @@ impl Voice {
             return;
         }
         let index = (self.position >> 32) as i64;
-        if let Err(e) = self.fill(index + HALF + 1) {
-            self.state = State::Failed(e.code);
+        match self.fill(index + HALF + 1) {
+            Ok(()) => self.finish_if_exhausted(),
+            Err(e) => self.state = State::Failed(e.code),
+        }
+    }
+    /// Whether the source ended before the playback position, so the next frame would
+    /// end the voice.
+    fn exhausted(&self) -> bool {
+        let index = (self.position >> 32) as i64;
+        let direct = self.step == ONE && self.position & (ONE - 1) == 0;
+        let reach = if direct { 0 } else { HALF };
+        self.end.is_some_and(|end| index - reach >= end)
+    }
+    /// Finishes a voice whose source is exhausted, as its next frame would, so a voice
+    /// that has played everything stops counting at once.
+    pub fn finish_if_exhausted(&mut self) {
+        if !self.done() && self.exhausted() {
+            self.state = State::Finished;
         }
     }
     /// The source frame being played, mapped back through loop restarts.
@@ -501,8 +517,7 @@ impl Voice {
         let index = (self.position >> 32) as i64;
         let frac = self.position & (ONE - 1);
         let direct = self.step == ONE && frac == 0;
-        let reach = if direct { 0 } else { HALF };
-        if self.end.is_some_and(|end| index - reach >= end) {
+        if self.exhausted() {
             self.state = State::Finished;
             return None;
         }
