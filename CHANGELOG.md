@@ -12,6 +12,14 @@
   `pause_bus`, `resume_bus`); voices on a paused bus keep still, and others play on.
 - Start a voice partway through its sound (`Play::start`), and read a voice's state
   and position without blocking (`MixerHandle::voice_status`).
+- Instance limits per sound (`Play::instances`, `Instances`, `OverLimit`): a maximum
+  number of voices at once with a policy for one more, and a minimum gap between
+  starts. Refused starts report `MixerEvent::Limited`.
+
+### Breaking
+
+- `MixerEvent` is `#[non_exhaustive]` and gains `Limited`; a `match` on it needs a
+  wildcard arm.
 
 ### Changed
 

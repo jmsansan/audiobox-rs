@@ -489,6 +489,9 @@ fn start(music: &'static [u8], jump: Arc<audiobox::Audio>) -> audiobox::Result<(
       Ok(())
   }
   ```
+- **Instance limits:** at most so many voices of a sound at once (refuse, stop the
+  oldest or stop the quietest), and a minimum gap between starts, so ten coins at
+  once do not distort: `Play { instances: Some(Instances::of(&coin).max(3).min_gap(0.05)), .. }`.
 - **Pause and position:** pause and resume a voice or a whole bus, with optional fades,
   so a pause menu stops the game's sounds and keeps its own; start a voice partway
   through; read a voice's state and position without blocking the audio thread.

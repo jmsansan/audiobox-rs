@@ -1010,3 +1010,118 @@ fn the_position_follows_the_frames_rendered() {
     render(&mut m, 2000, 256);
     assert_eq!(h.voice_status(id).unwrap().position, 1000);
 }
+
+#[test]
+fn a_fourth_instance_follows_the_policy() {
+    let coin = mono(vec![1.0; 48_000], RATE);
+    for policy in [
+        OverLimit::Refuse,
+        OverLimit::StopOldest,
+        OverLimit::StopQuietest,
+    ] {
+        let (mut m, mut h) = mixer(1, &[], 16);
+        let limit = Instances::of(&coin).max(3).policy(policy);
+        let play = |gain| Play {
+            gain,
+            instances: Some(limit),
+            ..Play::default()
+        };
+        let ids: Vec<VoiceId> = [0.4, 0.1, 0.3]
+            .iter()
+            .enumerate()
+            .map(|(i, &gain)| {
+                h.at(i as u64 * 100)
+                    .play(coin.clone(), &play(gain))
+                    .unwrap()
+            })
+            .collect();
+        let fourth = h.at(1000).play(coin.clone(), &play(0.2)).unwrap();
+        let out = render(&mut m, 2000, 256);
+        let got = events(&mut h);
+        match policy {
+            OverLimit::Refuse => {
+                assert_eq!(got, [MixerEvent::Limited(fourth)]);
+                assert!(close(out[1500], 0.8, 1e-6));
+            }
+            OverLimit::StopOldest => {
+                assert_eq!(got, [MixerEvent::Stolen(ids[0]), MixerEvent::Ended(ids[0])]);
+                assert!(close(out[1500], 0.1 + 0.3 + 0.2, 1e-6));
+            }
+            OverLimit::StopQuietest => {
+                assert_eq!(got, [MixerEvent::Stolen(ids[1]), MixerEvent::Ended(ids[1])]);
+                assert!(close(out[1500], 0.4 + 0.3 + 0.2, 1e-6));
+            }
+        }
+        assert_eq!(m.active_voices(), 3, "{policy:?}");
+    }
+}
+
+#[test]
+fn a_start_within_the_minimum_gap_is_refused() {
+    let coin = mono(vec![0.5; 100], RATE);
+    let (mut m, mut h) = mixer(1, &[], 16);
+    let play = Play {
+        instances: Some(Instances::of(&coin).min_gap(0.05)),
+        ..Play::default()
+    };
+    let first = h.at(0).play(coin.clone(), &play).unwrap();
+    let early = h.at(2000).play(coin.clone(), &play).unwrap();
+    let later = h.at(2400).play(coin.clone(), &play).unwrap();
+    // Another sound is not limited by this one's gap.
+    let other = mono(vec![0.25; 100], RATE);
+    h.at(2401)
+        .play(
+            other.clone(),
+            &Play {
+                instances: Some(Instances::of(&other).min_gap(0.05)),
+                ..Play::default()
+            },
+        )
+        .unwrap();
+    let out = render(&mut m, 3000, 500);
+    let got = events(&mut h);
+    assert!(got.contains(&MixerEvent::Limited(early)), "{got:?}");
+    assert!(got.contains(&MixerEvent::Ended(first)) && got.contains(&MixerEvent::Ended(later)));
+    assert_eq!(out[2000], 0.0);
+    assert!(close(out[2401], 0.75, 1e-6));
+}
+
+#[test]
+fn instance_limits_and_priorities_together() {
+    let coin = mono(vec![1.0; 48_000], RATE);
+    let music = mono(vec![1.0; 48_000], RATE);
+    let (mut m, mut h) = mixer(1, &[], 2);
+    h.play(
+        music,
+        &Play {
+            priority: 255,
+            gain: 0.5,
+            ..Play::default()
+        },
+    )
+    .unwrap();
+    let limit = Instances::of(&coin).max(2).policy(OverLimit::StopOldest);
+    let coins = Play {
+        gain: 0.1,
+        instances: Some(limit),
+        ..Play::default()
+    };
+    let a = h.at(100).play(coin.clone(), &coins).unwrap();
+    // The mixer's bound of two voices: this coin takes the place of the older coin
+    // through its priority rule, and its own limit is not reached.
+    let b = h.at(200).play(coin.clone(), &coins).unwrap();
+    render(&mut m, 1000, 256);
+    assert_eq!(
+        events(&mut h),
+        [MixerEvent::Stolen(a), MixerEvent::Ended(a)]
+    );
+    // Music is never stolen by coins: a lower priority than every playing voice is rejected.
+    let quiet = Play {
+        priority: 10,
+        ..coins
+    };
+    let c = h.at(1200).play(coin.clone(), &quiet).unwrap();
+    render(&mut m, 500, 256);
+    assert_eq!(events(&mut h), [MixerEvent::Rejected(c)]);
+    assert_eq!(h.voice_status(b).unwrap().state, VoiceState::Playing);
+}
