@@ -300,7 +300,8 @@ pub struct Play {
     /// and an octave higher. 1/16..=8. Default 1.
     pub rate: f32,
     /// Pitch offset in semitones on top of the rate; fractions are cents, so 0.01 is
-    /// one cent. -48..=48. Default 0.
+    /// one cent. -48..=48, so rate and pitch together span 1/256..=128 times the
+    /// speed. Default 0.
     pub pitch: f32,
     /// Random variation of pitch and gain, drawn from the mixer's seed.
     pub variation: Variation,
@@ -397,13 +398,17 @@ pub enum Distance {
 ///
 /// When `max` voices already play, `policy` decides: refuse the new voice, or stop
 /// the oldest or the quietest one with a 5 ms fade. A refused start reports
-/// [`MixerEvent::Limited`]; a start within the gap is always refused. Limits apply
-/// before the mixer's bound on voices and its priorities, when the start is applied,
-/// so scheduled starts are judged at their own frame.
+/// [`MixerEvent::Limited`]; a start within the gap is always refused. Limits are
+/// judged with the mixer's bound on voices and its priorities when the start is
+/// applied, so scheduled starts are judged at their own frame, and a start refused for
+/// any reason stops no voice and does not begin a gap. Each start is checked against
+/// its own gap, from the sound's last start. The mixer remembers the last starts of up
+/// to 1024 limited sounds within any 60 seconds; a limited start beyond that is refused.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Instances {
     /// Voices with the same key share the limits. [`Instances::of`] keys a sound by
-    /// its `Arc`, so every voice of that `Arc<Audio>` counts.
+    /// its identity, so every voice of that audio counts, also through clones and
+    /// `Arc`s. Keys you pick yourself should be below 2^63, where those identities are.
     pub key: u64,
     /// Most voices playing at once; 0 for no limit.
     pub max: u16,
@@ -421,9 +426,10 @@ impl Instances {
             policy: OverLimit::Refuse,
         }
     }
-    /// Limits keyed by a decoded sound's `Arc`.
-    pub fn of(sound: &Arc<Audio>) -> Self {
-        Self::new(Arc::as_ptr(sound) as usize as u64)
+    /// Limits keyed by a decoded sound's identity, which no other audio value shares,
+    /// even after this one is freed.
+    pub fn of(sound: &Audio) -> Self {
+        Self::new(sound.id())
     }
     pub const fn max(self, max: u16) -> Self {
         Self { max, ..self }
@@ -451,8 +457,12 @@ pub enum OverLimit {
     StopQuietest,
 }
 
-/// Recent starts remembered for the minimum gap between starts of a sound.
-const RECENT_STARTS: usize = 64;
+/// Sounds with instance limits whose last start the mixer remembers at once. An
+/// entry is kept for [`MAX_GAP`] seconds, the longest gap a start can ask for; a
+/// limited start that finds the table full is refused.
+const STARTS: usize = 1024;
+/// The longest minimum gap between starts, in seconds.
+const MAX_GAP: f64 = 60.0;
 impl Default for Play {
     fn default() -> Self {
         Self {
@@ -593,9 +603,11 @@ pub struct Mixer {
     clock: Arc<AtomicU64>,
     status: Arc<status::Table>,
     steal_fade: u64,
-    /// Keys and frames of the latest limited starts, oldest overwritten first.
-    recent: [(u64, u64); RECENT_STARTS],
-    recent_count: usize,
+    /// Keys of sounds with instance limits and the frame of each one's last start
+    /// (`None` for a free entry).
+    starts: [(u64, Option<u64>); STARTS],
+    /// Frames after which a start can no longer be within any gap.
+    max_gap: u64,
     limiter: Option<limiter::Limiter>,
     limiter_gain: Arc<AtomicU32>,
 }
@@ -648,12 +660,6 @@ impl Mixer {
             space,
             limiter,
         } = config;
-        let limiter = limiter
-            .map(|settings| limiter::Limiter::new(settings, sample_rate, channels))
-            .transpose()?;
-        let latency = limiter.as_ref().map_or(0, |l| l.latency() as u64);
-        let has_limiter = limiter.is_some();
-        let limiter_gain = Arc::new(AtomicU32::new(1f32.to_bits()));
         space.validate()?;
         Limits::default().check(0, channels, sample_rate)?;
         if !(1..=2).contains(&channels) {
@@ -674,6 +680,13 @@ impl Mixer {
         if buses.len() > 255 {
             return Err(Error::invalid("A mixer has at most 255 named buses"));
         }
+        // The limiter's buffers depend on the validated rate and channels.
+        let limiter = limiter
+            .map(|settings| limiter::Limiter::new(settings, sample_rate, channels))
+            .transpose()?;
+        let latency = limiter.as_ref().map_or(0, |l| l.latency() as u64);
+        let has_limiter = limiter.is_some();
+        let limiter_gain = Arc::new(AtomicU32::new(1f32.to_bits()));
         let slots = max_voices + TAILS;
         let (command_tx, command_rx) = queue::queue(queue);
         let (return_tx, return_rx) = queue::queue(slots + queue);
@@ -702,8 +715,8 @@ impl Mixer {
             clock: clock.clone(),
             status: status.clone(),
             steal_fade: (STEAL_FADE * sample_rate as f64).round() as u64,
-            recent: [(0, 0); RECENT_STARTS],
-            recent_count: 0,
+            starts: [(0, None); STARTS],
+            max_gap: (MAX_GAP * sample_rate as f64).round() as u64,
             limiter,
             limiter_gain: limiter_gain.clone(),
         };
@@ -824,12 +837,18 @@ impl Mixer {
             .map(|v| &mut **v)
     }
 
+    fn slot_of(&self, id: VoiceId) -> Option<usize> {
+        self.voices
+            .iter()
+            .position(|v| v.as_ref().is_some_and(|v| v.id == id))
+    }
+
     fn apply(&mut self, frame: u64, action: Action) {
         match action {
             Action::Play(voice) => self.start(frame, voice),
             Action::Stop(id, len, curve) => {
-                if let Some(v) = self.voice_mut(id) {
-                    v.stop(v.time(frame), len, curve);
+                if let Some(slot) = self.slot_of(id) {
+                    self.stop_slot(slot, frame, len, curve);
                 }
                 self.retire_done();
             }
@@ -890,97 +909,139 @@ impl Mixer {
                 self.buses[bus].gain.retarget(frame, gain, len, curve);
             }
             Action::StopAll(len, curve) => {
-                for v in self.voices.iter_mut().flatten() {
-                    v.stop(v.time(frame), len, curve);
+                for slot in 0..self.voices.len() {
+                    self.stop_slot(slot, frame, len, curve);
                 }
                 self.retire_done();
             }
         }
     }
 
-    /// Applies a voice's instance limits; returns the voice if it may start.
-    fn limit(&mut self, frame: u64, voice: Box<Voice>) -> Option<Box<Voice>> {
-        let Some(limit) = voice.instances else {
-            return Some(voice);
-        };
-        let latest = (0..self.recent_count.min(RECENT_STARTS))
-            .map(|k| self.recent[(self.recent_count - 1 - k) % RECENT_STARTS])
-            .find(|&(key, _)| key == limit.key);
-        if let Some((_, last)) = latest {
-            if limit.min_gap > 0 && frame < last + limit.min_gap {
-                let id = voice.id;
-                self.retire(voice, Some(MixerEvent::Limited(id)));
-                return None;
-            }
-        }
-        if limit.max > 0 {
-            let same =
-                |v: &&mut Box<Voice>| v.live() && v.instances.is_some_and(|l| l.key == limit.key);
-            let playing = self.voices.iter_mut().flatten().filter(same).count();
-            if playing >= limit.max as usize {
-                let steal_fade = self.steal_fade;
-                let victim = match limit.policy {
-                    OverLimit::Refuse => None,
-                    OverLimit::StopOldest => self
-                        .voices
-                        .iter_mut()
-                        .flatten()
-                        .filter(same)
-                        .min_by_key(|v| v.order),
-                    OverLimit::StopQuietest => self
-                        .voices
-                        .iter_mut()
-                        .flatten()
-                        .filter(same)
-                        .min_by(|a, b| {
-                            a.level(frame)
-                                .total_cmp(&b.level(frame))
-                                .then(a.order.cmp(&b.order))
-                        }),
-                };
-                let Some(v) = victim else {
-                    let id = voice.id;
-                    self.retire(voice, Some(MixerEvent::Limited(id)));
-                    return None;
-                };
-                v.stop(v.time(frame), steal_fade, FadeCurve::Linear);
-                let id = v.id;
-                self.event(MixerEvent::Stolen(id));
-            }
-        }
-        self.recent[self.recent_count % RECENT_STARTS] = (limit.key, frame);
-        self.recent_count += 1;
-        Some(voice)
+    /// Refuses a voice before it starts.
+    fn refuse(&mut self, voice: Box<Voice>, event: fn(VoiceId) -> MixerEvent) {
+        let id = voice.id;
+        self.retire(voice, Some(event(id)));
     }
 
-    fn start(&mut self, frame: u64, voice: Box<Voice>) {
-        let Some(mut voice) = self.limit(frame, voice) else {
-            return;
+    /// Stops the voice in `slot`. A voice frozen by its own pause, its bus or the
+    /// master bus cannot play out a fade, so it stops at once.
+    fn stop_slot(&mut self, slot: usize, frame: u64, len: u64, curve: FadeCurve) {
+        let master_paused = self.buses[0].paused;
+        let buses = &self.buses;
+        if let Some(v) = self.voices[slot].as_mut() {
+            let frozen = buses[v.bus].paused || master_paused;
+            v.stop(v.time(frame), len, curve, frozen);
+        }
+    }
+
+    fn start(&mut self, frame: u64, mut voice: Box<Voice>) {
+        // Decide everything first, so that a refused voice changes nothing.
+        let mut start_entry = None;
+        if let Some(limit) = voice.instances {
+            // The incoming start's own gap, measured from the sound's last start.
+            let own = self
+                .starts
+                .iter()
+                .position(|&(key, last)| key == limit.key && last.is_some());
+            if let Some(last) = own.and_then(|i| self.starts[i].1) {
+                if limit.min_gap > 0 && frame < last + limit.min_gap {
+                    return self.refuse(voice, MixerEvent::Limited);
+                }
+            }
+            // Its entry, a free one, or one too old to refuse any start. When every
+            // entry is still needed, the start is refused rather than forgetting one.
+            let max_gap = self.max_gap;
+            let entry = own.or_else(|| {
+                self.starts
+                    .iter()
+                    .position(|&(_, last)| last.is_none_or(|last| frame >= last + max_gap))
+            });
+            let Some(entry) = entry else {
+                return self.refuse(voice, MixerEvent::Limited);
+            };
+            start_entry = Some(entry);
+            if limit.max > 0 {
+                let same = |v: &Voice| v.live() && v.instances.is_some_and(|l| l.key == limit.key);
+                let candidates = || {
+                    self.voices
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, v)| v.as_deref().filter(|v| same(v)).map(|v| (i, v)))
+                };
+                // Each start carries its own maximum, which may be lower than the
+                // voices already playing: mark enough of them to fit.
+                let playing = candidates().count();
+                if playing >= limit.max as usize {
+                    if limit.policy == OverLimit::Refuse {
+                        return self.refuse(voice, MixerEvent::Limited);
+                    }
+                    for _ in 0..playing + 1 - limit.max as usize {
+                        let voices = &self.voices;
+                        let unmarked = || {
+                            voices.iter().enumerate().filter_map(|(i, v)| {
+                                v.as_deref()
+                                    .filter(|v| same(v) && !v.marked)
+                                    .map(|v| (i, v))
+                            })
+                        };
+                        let pick = match limit.policy {
+                            OverLimit::StopQuietest => unmarked().min_by(|(_, a), (_, b)| {
+                                a.level(frame)
+                                    .total_cmp(&b.level(frame))
+                                    .then(a.order.cmp(&b.order))
+                            }),
+                            _ => unmarked().min_by_key(|(_, v)| v.order),
+                        }
+                        .map(|(i, _)| i);
+                        if let Some(v) = pick.and_then(|i| self.voices[i].as_mut()) {
+                            v.marked = true;
+                        }
+                    }
+                }
+            }
+        }
+        // The mixer's bound on voices, counting the marked voices as already gone.
+        let others = || {
+            self.voices
+                .iter()
+                .enumerate()
+                .filter(|(_, v)| v.as_ref().is_some_and(|v| v.live() && !v.marked))
         };
-        voice.order = self.order;
-        self.order += 1;
-        voice.start(frame);
-        let live = self.voices.iter().flatten().filter(|v| v.live()).count();
-        if live >= self.max_voices {
-            let victim = self
-                .voices
-                .iter_mut()
-                .flatten()
-                .filter(|v| v.live())
-                .min_by_key(|v| (v.priority, v.order));
+        let mut global_victim = None;
+        if others().count() >= self.max_voices {
+            let victim = others()
+                .filter_map(|(i, v)| v.as_deref().map(|v| (i, v)))
+                .min_by_key(|(_, v)| (v.priority, v.order));
             match victim {
-                Some(v) if v.priority <= voice.priority => {
-                    v.stop(v.time(frame), self.steal_fade, FadeCurve::Linear);
+                Some((i, v)) if v.priority <= voice.priority => global_victim = Some(i),
+                _ => {
+                    for v in self.voices.iter_mut().flatten() {
+                        v.marked = false;
+                    }
+                    return self.refuse(voice, MixerEvent::Rejected);
+                }
+            }
+        }
+        if let Some(v) = global_victim.and_then(|i| self.voices[i].as_mut()) {
+            v.marked = true;
+        }
+        // Admitted: stop the voices it replaces and record its start.
+        for slot in 0..self.voices.len() {
+            if self.voices[slot].as_ref().is_some_and(|v| v.marked) {
+                self.stop_slot(slot, frame, self.steal_fade, FadeCurve::Linear);
+                if let Some(v) = self.voices[slot].as_mut() {
+                    v.marked = false;
                     let id = v.id;
                     self.event(MixerEvent::Stolen(id));
                 }
-                _ => {
-                    let id = voice.id;
-                    self.retire(voice, Some(MixerEvent::Rejected(id)));
-                    return;
-                }
             }
         }
+        if let (Some(entry), Some(limit)) = (start_entry, voice.instances) {
+            self.starts[entry] = (limit.key, Some(frame));
+        }
+        voice.order = self.order;
+        self.order += 1;
+        voice.start(frame);
         self.retire_done();
         let slot = match self.voices.iter().position(Option::is_none) {
             Some(slot) => slot,
@@ -1403,7 +1464,7 @@ impl Commands<'_> {
         voice.fade_in = fade_in;
         voice.set_start(start)?;
         if let Some(limit) = play.instances {
-            if !limit.min_gap.is_finite() || !(0.0..=60.0).contains(&limit.min_gap) {
+            if !limit.min_gap.is_finite() || !(0.0..=MAX_GAP).contains(&limit.min_gap) {
                 return Err(Error::invalid("An instance gap must be 0..=60 seconds"));
             }
             voice.instances = Some(voice::InstanceLimit {

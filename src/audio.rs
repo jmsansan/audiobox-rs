@@ -9,8 +9,22 @@ pub struct Audio {
     pub(crate) data: Vec<Vec<f32>>,
     pub(crate) rate: u32,
     pub(crate) info: DecodeInfo,
+    /// Unique for the life of the process; clones share it, since audio never changes.
+    #[cfg_attr(not(feature = "mixer"), allow(dead_code))]
+    id: u64,
+}
+/// Identities of audio values, from 2^63 up, so they cannot meet keys a caller picks.
+fn next_id() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1 << 63);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 impl Audio {
+    /// This audio's identity: unique among the audio values made by the process, and
+    /// shared by clones.
+    #[cfg_attr(not(feature = "mixer"), allow(dead_code))]
+    pub(crate) fn id(&self) -> u64 {
+        self.id
+    }
     pub fn new(data: Vec<Vec<f32>>, sample_rate: u32) -> Result<Self> {
         let frames = data.first().map_or(0, Vec::len);
         Limits::default().check(frames, data.len(), sample_rate)?;
@@ -26,6 +40,7 @@ impl Audio {
             data,
             rate: sample_rate,
             info: DecodeInfo::default(),
+            id: next_id(),
         })
     }
     pub(crate) fn decoded(data: Vec<Vec<f32>>, rate: u32, info: DecodeInfo) -> Result<Self> {
@@ -37,13 +52,19 @@ impl Audio {
         {
             return Err(Error::decode("Invalid decoded PCM"));
         }
-        Ok(Self { data, rate, info })
+        Ok(Self {
+            data,
+            rate,
+            info,
+            id: next_id(),
+        })
     }
     pub(crate) fn with_data(&self, data: Vec<Vec<f32>>) -> Self {
         Self {
             data,
             rate: self.rate,
             info: self.info.clone(),
+            id: next_id(),
         }
     }
     pub fn sample_rate(&self) -> u32 {

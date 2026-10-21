@@ -1380,3 +1380,309 @@ fn limited_renders_do_not_depend_on_buffer_sizes() {
         .is_err()
     );
 }
+
+// Regressions found in the 0.3 review.
+
+#[test]
+fn stopping_a_voice_on_a_paused_bus_ends_it() {
+    let (mut m, mut h) = mixer(1, &["game"], 4);
+    let game = h.bus("game").unwrap();
+    let id = h
+        .play(
+            mono(vec![1.0; 48_000], RATE),
+            &Play {
+                bus: game,
+                ..Play::default()
+            },
+        )
+        .unwrap();
+    render(&mut m, 100, 100);
+    h.pause_bus(game, Fade::NONE).unwrap();
+    render(&mut m, 100, 100);
+    h.stop(id, Fade::linear(0.5)).unwrap();
+    render(&mut m, 100, 100);
+    assert_eq!(events(&mut h), [MixerEvent::Ended(id)]);
+    h.resume_bus(game, Fade::NONE).unwrap();
+    let out = render(&mut m, 1000, 100);
+    assert!(
+        out.iter().all(|&s| s == 0.0),
+        "the stopped sound is not heard on resume"
+    );
+    // The same through the master bus.
+    let id = h
+        .play(mono(vec![1.0; 48_000], RATE), &Play::default())
+        .unwrap();
+    render(&mut m, 10, 10);
+    h.pause_bus(BusId::MASTER, Fade::NONE).unwrap();
+    h.stop_all(Fade::linear(0.5)).unwrap();
+    render(&mut m, 10, 10);
+    assert_eq!(events(&mut h), [MixerEvent::Ended(id)]);
+}
+
+#[test]
+fn a_gap_outlasts_many_other_limited_starts() {
+    let coin = mono(vec![0.5; 10], RATE);
+    let blip = mono(vec![0.1; 10], RATE);
+    let (mut m, mut h) = Mixer::new(MixerConfig {
+        sample_rate: RATE,
+        queue: 4096,
+        ..MixerConfig::default()
+    })
+    .unwrap();
+    let coin_play = Play {
+        instances: Some(Instances::of(&coin).min_gap(1.0)),
+        ..Play::default()
+    };
+    let blip_play = Play {
+        instances: Some(Instances::of(&blip)),
+        ..Play::default()
+    };
+    h.at(0).play(coin.clone(), &coin_play).unwrap();
+    for i in 0..200 {
+        h.at(10 + i).play(blip.clone(), &blip_play).unwrap();
+    }
+    let early = h.at(1000).play(coin.clone(), &coin_play).unwrap();
+    render(&mut m, 2000, 256);
+    assert!(
+        events(&mut h).contains(&MixerEvent::Limited(early)),
+        "the coin's gap still holds"
+    );
+}
+
+#[test]
+fn a_rejected_start_does_not_begin_a_gap_or_stop_instances() {
+    let music = mono(vec![1.0; 96_000], RATE);
+    let coin = mono(vec![0.5; 48_000], RATE);
+    let (mut m, mut h) = mixer(1, &[], 1);
+    let song = h
+        .play(
+            music,
+            &Play {
+                priority: 255,
+                ..Play::default()
+            },
+        )
+        .unwrap();
+    let limit = Instances::of(&coin).min_gap(0.5);
+    let low = Play {
+        priority: 10,
+        instances: Some(limit),
+        ..Play::default()
+    };
+    let rejected = h.at(100).play(coin.clone(), &low).unwrap();
+    render(&mut m, 200, 100);
+    assert_eq!(events(&mut h), [MixerEvent::Rejected(rejected)]);
+    h.at(300).stop(song, Fade::NONE).unwrap();
+    let played = h.at(400).play(coin.clone(), &low).unwrap();
+    render(&mut m, 500, 100);
+    assert_eq!(events(&mut h), [MixerEvent::Ended(song)]);
+    assert_eq!(
+        h.voice_status(played).unwrap().state,
+        VoiceState::Playing,
+        "the earlier refusal began no gap"
+    );
+}
+
+#[test]
+fn every_accepted_rate_and_pitch_combination_plays_at_its_speed() {
+    // 10 Hz at 128 times is 1280 Hz; 12.8 kHz at 1/256 is 50 Hz. At 128 times, the
+    // 96,000-frame source lasts 750 output frames.
+    let cases = [
+        (10.0, 8.0, 48.0, 1280.0, 50..700),
+        (12_800.0, 0.0625, -48.0, 50.0, 2000..28_000),
+    ];
+    for (hz, rate, pitch, expected, window) in cases {
+        let (mut m, mut h) = mixer(1, &[], 4);
+        h.play(
+            mono(sine(96_000, RATE, hz, 0.5), RATE),
+            &Play {
+                rate,
+                pitch,
+                ..Play::default()
+            },
+        )
+        .unwrap();
+        let out = render(&mut m, 30_000, 1000);
+        let got = frequency(&out, window.start, window.end);
+        assert!(
+            (got / expected - 1.0).abs() < 2e-3,
+            "rate {rate}, pitch {pitch}: {got} Hz, expected {expected}"
+        );
+    }
+}
+
+#[test]
+fn invalid_dimensions_are_errors_with_a_limiter() {
+    let limiter = Some(MasterLimiter {
+        lookahead_ms: 5.0,
+        ..MasterLimiter::default()
+    });
+    for config in [
+        MixerConfig {
+            channels: usize::MAX,
+            limiter,
+            ..MixerConfig::default()
+        },
+        MixerConfig {
+            sample_rate: 0,
+            limiter,
+            ..MixerConfig::default()
+        },
+        MixerConfig {
+            sample_rate: u32::MAX,
+            limiter,
+            ..MixerConfig::default()
+        },
+    ] {
+        assert!(Mixer::new(config).is_err());
+    }
+}
+
+#[test]
+fn each_start_is_checked_against_its_own_gap() {
+    let coin = mono(vec![0.5; 10], RATE);
+    let (mut m, mut h) = mixer(1, &[], 8);
+    let short = Play {
+        instances: Some(Instances::of(&coin).min_gap(0.01)),
+        ..Play::default()
+    };
+    let long = Play {
+        instances: Some(Instances::of(&coin).min_gap(1.0)),
+        ..Play::default()
+    };
+    let unlimited = Play {
+        instances: Some(Instances::of(&coin)),
+        ..Play::default()
+    };
+    h.at(0).play(coin.clone(), &short).unwrap();
+    // 20 ms later: the first start's 10 ms gap has passed, but this start asks for 1 s.
+    let refused = h.at(960).play(coin.clone(), &long).unwrap();
+    // A start without a gap plays, and becomes the sound's last start.
+    h.at(1000).play(coin.clone(), &unlimited).unwrap();
+    let after_unlimited = h.at(1200).play(coin.clone(), &short).unwrap();
+    let late = h.at(49_000).play(coin.clone(), &long).unwrap();
+    render(&mut m, 50_000, 1000);
+    let got = events(&mut h);
+    assert!(got.contains(&MixerEvent::Limited(refused)), "{got:?}");
+    assert!(
+        got.contains(&MixerEvent::Limited(after_unlimited)),
+        "{got:?}"
+    );
+    assert!(!got.contains(&MixerEvent::Limited(late)), "{got:?}");
+}
+
+#[test]
+fn instance_keys_stay_unique_after_a_sound_is_freed() {
+    let (mut m, mut h) = mixer(1, &[], 4);
+    let first = mono(vec![0.5; 10], RATE);
+    assert_eq!(
+        Instances::of(&first),
+        Instances::of(&(*first).clone()),
+        "clones share a key"
+    );
+    let twin = mono(vec![0.5; 10], RATE);
+    assert_ne!(
+        Instances::of(&first),
+        Instances::of(&twin),
+        "equal content, distinct sounds"
+    );
+    h.play(
+        first.clone(),
+        &Play {
+            instances: Some(Instances::of(&first).min_gap(1.0)),
+            ..Play::default()
+        },
+    )
+    .unwrap();
+    render(&mut m, 100, 100);
+    drop(first);
+    while h.poll_event().is_some() {}
+    // A new sound, possibly at the freed address, does not inherit the old gap.
+    for _ in 0..20 {
+        let next = mono(vec![0.25; 10], RATE);
+        let id = h
+            .play(
+                next.clone(),
+                &Play {
+                    instances: Some(Instances::of(&next).min_gap(1.0)),
+                    ..Play::default()
+                },
+            )
+            .unwrap();
+        render(&mut m, 50, 50);
+        assert!(!events(&mut h).contains(&MixerEvent::Limited(id)));
+    }
+}
+
+#[test]
+fn a_lower_maximum_stops_enough_instances() {
+    let coin = mono(vec![0.25; 48_000], RATE);
+    let (mut m, mut h) = mixer(1, &[], 16);
+    let key = Instances::of(&coin);
+    let ids: Vec<VoiceId> = (0..3)
+        .map(|i| {
+            h.at(i * 10)
+                .play(
+                    coin.clone(),
+                    &Play {
+                        instances: Some(key),
+                        ..Play::default()
+                    },
+                )
+                .unwrap()
+        })
+        .collect();
+    let only = Play {
+        instances: Some(key.max(1).policy(OverLimit::StopOldest)),
+        ..Play::default()
+    };
+    let newest = h.at(100).play(coin.clone(), &only).unwrap();
+    let out = render(&mut m, 1000, 256);
+    let got = events(&mut h);
+    for id in &ids {
+        assert!(
+            got.contains(&MixerEvent::Stolen(*id)) && got.contains(&MixerEvent::Ended(*id)),
+            "{got:?}"
+        );
+    }
+    assert_eq!(m.active_voices(), 1);
+    assert_eq!(h.voice_status(newest).unwrap().state, VoiceState::Playing);
+    assert!(close(out[999], 0.25, 1e-6));
+}
+
+#[test]
+fn positions_wrap_into_the_loop_at_high_speed() {
+    let (mut m, mut h) = mixer(1, &[], 4);
+    let id = h
+        .play(
+            mono(counting(1000), RATE),
+            &Play {
+                looping: Loop::Whole,
+                rate: 8.0,
+                pitch: 48.0,
+                ..Play::default()
+            },
+        )
+        .unwrap();
+    render(&mut m, 8, 8);
+    assert_eq!(h.voice_status(id).unwrap().position, 24);
+    let looping = Loop::Region {
+        start: 200,
+        end: 700,
+    };
+    let (mut m, mut h) = mixer(1, &[], 4);
+    let id = h
+        .play(
+            mono(counting(1000), RATE),
+            &Play {
+                looping,
+                rate: 8.0,
+                pitch: 48.0,
+                ..Play::default()
+            },
+        )
+        .unwrap();
+    render(&mut m, 6, 6);
+    // 768 source frames: the first pass reaches 700, then 68 more from 200.
+    assert_eq!(h.voice_status(id).unwrap().position, 268);
+}

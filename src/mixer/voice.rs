@@ -173,6 +173,8 @@ pub(super) struct InstanceLimit {
 
 pub(super) struct Voice {
     pub id: VoiceId,
+    /// Chosen to give way to a starting voice, while its start is decided.
+    pub marked: bool,
     pub instances: Option<InstanceLimit>,
     pub bus: usize,
     pub priority: u8,
@@ -190,6 +192,8 @@ pub(super) struct Voice {
     feed: Feed,
     channels: usize,
     looping: Option<(u64, Option<u64>)>,
+    /// The loop's first and end source frames, when the end is known.
+    loop_span: Option<(u64, u64)>,
     /// Next source frame the feed reads.
     source_pos: u64,
     ring: Vec<f32>,
@@ -247,7 +251,14 @@ impl Voice {
             Loop::Whole => Some((0, None)),
             Loop::Region { start, end } => Some((start, Some(end))),
         };
+        let length = match &feed {
+            Feed::Memory(audio) => Some(audio.frames() as u64),
+            Feed::Stream(stream) => stream.frames(),
+        };
+        let loop_span = looping.and_then(|(start, end)| end.or(length).map(|end| (start, end)));
         Self {
+            marked: false,
+            loop_span,
             id,
             instances: None,
             bus: 0,
@@ -343,7 +354,15 @@ impl Voice {
             .map(|k| self.jumps[(self.jump_count - 1 - k) % JUMPS])
             .find(|&(at, _)| at <= index)
             .unwrap_or(self.jumps[(self.jump_count - count) % JUMPS]);
-        latest.1 + index.saturating_sub(latest.0).max(0) as u64
+        let position = latest.1 + index.saturating_sub(latest.0).max(0) as u64;
+        // At high speeds the position can pass the loop's end before the reader has
+        // recorded the restart: wrap it into the loop as the reader will.
+        match self.loop_span {
+            Some((start, end)) if end > start && position >= end => {
+                start + (position - end) % (end - start)
+            }
+            _ => position,
+        }
     }
     /// Sets the step and table for the playback speed at `frame`. At speed 1 the voice
     /// uses its exact step and table, so unpitched voices render as before.
@@ -355,7 +374,9 @@ impl Voice {
             self.bank_index = None;
             return;
         }
-        let speed = (rate * exp2(pitch / 12.0)).clamp(1.0 / 64.0, 64.0);
+        // Every accepted rate (1/16..=8) and pitch (±48 semitones) combines to
+        // 1/256..=128, which the fixed-point step represents exactly.
+        let speed = (rate * exp2(pitch / 12.0)).clamp(1.0 / 256.0, 128.0);
         self.step = ((self.base_step as f64 * speed).round() as u64).max(1);
         self.bank_index = Some(SincBank::index(self.base_ratio * speed));
     }
@@ -378,12 +399,13 @@ impl Voice {
             };
         }
     }
-    pub fn stop(&mut self, frame: u64, len: u64, curve: FadeCurve) {
+    /// Stops the voice, fading out over `len` frames. A voice paused by itself, or
+    /// `frozen` by its bus, is silent and still, so it stops at once.
+    pub fn stop(&mut self, frame: u64, len: u64, curve: FadeCurve, frozen: bool) {
         if self.done() {
             return;
         }
-        // A paused voice is silent and frozen, so it stops at once.
-        if len == 0 || self.paused {
+        if len == 0 || self.paused || frozen {
             self.state = State::Finished;
         } else {
             self.fade.retarget(frame, 0.0, len, curve);
