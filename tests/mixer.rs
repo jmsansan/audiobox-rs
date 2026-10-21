@@ -1262,3 +1262,121 @@ fn a_moving_sound_changes_smoothly() {
         "ends on the right at its distance gain"
     );
 }
+
+fn limited_mixer(limiter: MasterLimiter) -> (Mixer, MixerHandle) {
+    Mixer::new(MixerConfig {
+        sample_rate: RATE,
+        channels: 1,
+        limiter: Some(limiter),
+        ..MixerConfig::default()
+    })
+    .unwrap()
+}
+
+#[test]
+fn the_limiter_holds_a_loud_sum_at_the_ceiling() {
+    let ceiling = 10f64.powf(-1.0 / 20.0);
+    let tone = mono(sine(48_000, RATE, 220.0, 1.0), RATE);
+    for lookahead_ms in [0.0, 5.0] {
+        let (mut m, mut h) = limited_mixer(MasterLimiter {
+            lookahead_ms,
+            ..MasterLimiter::default()
+        });
+        // Two voices of the same full-scale sine: +6 dBFS without the limiter.
+        h.play(tone.clone(), &Play::default()).unwrap();
+        h.play(tone.clone(), &Play::default()).unwrap();
+        let out = render(&mut m, 48_000, 512);
+        let peak = out.iter().fold(0.0f32, |p, s| p.max(s.abs())) as f64;
+        assert!(peak <= ceiling + 1e-7, "{lookahead_ms} ms: peak {peak}");
+        assert!(
+            peak > ceiling * 0.99,
+            "the limiter reduces gain, it does not silence"
+        );
+        // Gain does the work: only a handful of samples sit exactly at the ceiling.
+        let held = out
+            .iter()
+            .filter(|s| (s.abs() as f64 - ceiling).abs() < 1e-9)
+            .count();
+        assert!(held < 400, "{held} samples at the ceiling");
+        assert!(h.limiter_gain().unwrap() < 0.5);
+    }
+}
+
+#[test]
+fn the_limiter_passes_quieter_signals_unchanged() {
+    let samples = sine(9600, RATE, 330.0, 0.8);
+    let (mut m, mut h) = limited_mixer(MasterLimiter::default());
+    h.play(mono(samples.clone(), RATE), &Play::default())
+        .unwrap();
+    assert_eq!(render(&mut m, 9600, 500), samples);
+    assert_eq!((h.latency(), h.limiter_gain()), (0, Some(1.0)));
+    // A look-ahead delays the output and changes nothing else.
+    let (mut m, mut h) = limited_mixer(MasterLimiter {
+        lookahead_ms: 5.0,
+        ..MasterLimiter::default()
+    });
+    h.play(mono(samples.clone(), RATE), &Play::default())
+        .unwrap();
+    let out = render(&mut m, 9600 + 240, 333);
+    assert_eq!(h.latency(), 240);
+    assert!(out[..240].iter().all(|&s| s == 0.0));
+    assert_eq!(&out[240..], samples.as_slice());
+}
+
+#[test]
+fn the_limiter_releases_as_stated() {
+    // A loud burst of 2.0 for 0.1 s, then a steady 0.5, below the ceiling.
+    let mut samples = vec![2.0f32; 4800];
+    samples.extend(vec![0.5f32; 24_000]);
+    let (mut m, mut h) = limited_mixer(MasterLimiter {
+        release_ms: 50.0,
+        ..MasterLimiter::default()
+    });
+    h.play(mono(samples, RATE), &Play::default()).unwrap();
+    let out = render(&mut m, 28_800, 1000);
+    let ceiling = 10f64.powf(-1.0 / 20.0);
+    let floor = ceiling / 2.0;
+    assert!((out[4799] as f64 - ceiling).abs() < 1e-6);
+    // The gain recovers as 1 - (1 - floor)·exp(-k / 2400) for the k-th quiet frame.
+    for k in [1usize, 2400, 4800, 12_000] {
+        let gain = 1.0 - (1.0 - floor) * (-(k as f64) / 2400.0).exp();
+        let got = out[4799 + k] as f64 / 0.5;
+        assert!((got - gain).abs() < 1e-5, "frame {k}: {got} vs {gain}");
+    }
+}
+
+#[test]
+fn limited_renders_do_not_depend_on_buffer_sizes() {
+    let run = |chunk: usize| {
+        let (mut m, mut h) = limited_mixer(MasterLimiter {
+            lookahead_ms: 2.0,
+            ..MasterLimiter::default()
+        });
+        let tone = mono(sine(20_000, RATE, 440.0, 0.9), RATE);
+        for i in 0..5 {
+            h.at(i * 3000).play(tone.clone(), &Play::default()).unwrap();
+        }
+        render(&mut m, 30_000, chunk)
+    };
+    let reference = run(30_000);
+    for chunk in [1, 100, 777] {
+        assert!(
+            run(chunk)
+                .iter()
+                .zip(&reference)
+                .all(|(a, b)| a.to_bits() == b.to_bits()),
+            "{chunk}"
+        );
+    }
+    let bad = MasterLimiter {
+        lookahead_ms: 20.0,
+        ..MasterLimiter::default()
+    };
+    assert!(
+        Mixer::new(MixerConfig {
+            limiter: Some(bad),
+            ..MixerConfig::default()
+        })
+        .is_err()
+    );
+}

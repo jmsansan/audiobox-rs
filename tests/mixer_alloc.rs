@@ -57,6 +57,10 @@ fn tone(frames: usize, rate: u32, hz: f32) -> Vec<f32> {
 fn rendering_allocates_and_frees_nothing() {
     let (mut mixer, mut handle) = Mixer::new(MixerConfig {
         max_voices: 3,
+        limiter: Some(MasterLimiter {
+            lookahead_ms: 3.0,
+            ..MasterLimiter::default()
+        }),
         buses: vec!["music".into(), "effects".into()],
         ..MixerConfig::default()
     })
