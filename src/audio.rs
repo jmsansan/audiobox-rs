@@ -14,12 +14,9 @@ pub struct Audio {
     #[cfg(feature = "mixer")]
     id: u64,
 }
-/// Identities of audio values, from 2^63 up, so they cannot meet keys a caller picks.
+// Audio and event identities share the upper half of the mixer instance key space.
 #[cfg(feature = "mixer")]
-fn next_id() -> u64 {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1 << 63);
-    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-}
+use crate::identity::next as next_id;
 impl Audio {
     /// This audio's identity: unique among the audio values made by the process, and
     /// shared by clones.

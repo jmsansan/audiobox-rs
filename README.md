@@ -47,6 +47,7 @@ only what you use:
 | `sfx` | [`audiobox::sfx`](https://docs.rs/audiobox/latest/audiobox/sfx/) | Parametric sound effects with seeded presets (enables `synth`) |
 | `assets` | `audiobox::assets` | Background loading on native targets and a budgeted cache of decoded sounds |
 | `music` | `audiobox::music` | Beat/bar transitions, crossfades, cues and intensity layers (enables `mixer`) |
+| `events` | `audiobox::events` | Named text events, seeded choices and variation, instance/repeat limits (enables `mixer`) |
 
 ```toml
 [dependencies]
@@ -862,6 +863,86 @@ Render a short scene with music and effects to a WAV file:
 ```sh
 cargo run --example game_audio --features mixer,sfx -- game.wav
 ```
+
+### Named sound events (`events` feature)
+
+Let gameplay ask for `footstep` and keep its variations and playback rules in a
+designer-editable text bank. Register recorded audio (for example an `Arc<Audio>`
+from the asset loader), effects or finite scores before preparing the bank:
+
+```rust
+use audiobox::events::{EventBank, Sources};
+use audiobox::mixer::{Mixer, MixerConfig};
+use audiobox::Audio;
+
+let (mut mixer, mut handle) = Mixer::new(MixerConfig {
+    buses: vec!["effects".into()],
+    ..Default::default()
+})?;
+let mut sources = Sources::default();
+sources.insert("step-a", audiobox::read_audio_file("step-a.wav")?)?;
+sources.insert("step-b", audiobox::read_audio_file("step-b.wav")?)?;
+let text = "
+# Each line defines one event; source names refer to the registry above.
+event footstep sources=step-a,step-b choice=shuffle gain=0.8,1 pitch=-1,1 bus=effects priority=128 max-instances=2 min-gap=0.08 policy=oldest
+event ambient sources=step-a loop=whole emitter=0,0,-4 velocity=0,0,0 attenuation=inverse,1,100,1
+";
+let bank = EventBank::parse(text)?.prepare(&handle, &sources)?;
+let mut player = bank.player(42);
+let request = player.play(&mut handle, "footstep")?;
+// request.voice supports the normal mixer stop/gain/movement commands.
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+`Sources::insert_effect(name, &effect, rate)` requires `sfx`;
+`insert_score(name, &score, rate, &options)` requires `synth`. These helpers render
+and cache PCM once on the control thread. Event playback shares its samples through
+`Arc`; parsing, loading and synthesis stay outside the callback. Events currently
+use resident PCM; incremental/disk streams remain available through the mixer.
+
+Names are case-sensitive, 1..=64 ASCII letters/digits/`_`/`-`/`.`. Properties are
+space-separated `key=value` tokens, with no whitespace inside values. `sources` is
+required; unknown/repeated keys and duplicate event names are errors. A bank allows
+1 MiB of UTF-8 text, 1024 events and 64 source entries per event. Empty/comment-only
+banks are valid. Parse and preparation errors have a stable `ErrorCode`, one-based
+line and character column pointing to the offending token; every source, bus and
+candidate's loop region is checked during preparation.
+
+| Property | Meaning and default |
+| --- | --- |
+| `choice` | `random` with replacement (default), `sequence` in wrapping text order, or `shuffle` |
+| `gain`, `pitch` | Fixed value or ordered `min,max`; linear gain >=0 (default 1), pitch -48..=48 semitones (default 0) |
+| `bus`, `priority` | `master` or named mixer bus; priority 0..=255 (default 128) |
+| `max-instances`, `min-gap` | All variants share a concurrent limit (0 unlimited) and minimum seconds between admitted starts (0..=60, default 0) |
+| `policy` | `refuse` (default), `oldest` or `quietest` when the concurrent limit is reached; the gap always refuses |
+| `loop` | `off` (default), `whole`, or `start,end` source frames, end exclusive |
+| `pan`, `rate`, `fade-in` | Pan -1..=1 (default 0), rate 1/16..=8 (default 1), linear fade seconds 0..=60 (default 0) |
+| `position` | `x,y` relative 2D position, using the mixer's `Space2d` |
+| `emitter`, `velocity` | `x,y,z` world position and optional velocity (default zero); cannot combine emitter and 2D position |
+| `attenuation` | `model,min,max,rolloff`; model is `linear`, `inverse` or `exponential`; requires an emitter and follows `Attenuation` bounds/defaults |
+
+Shuffle visits every entry once per cycle and avoids the previous entry across cycle
+boundaries when there are at least two entries. Duplicate references are allowed as
+weights: different entries can still play the same sound consecutively.
+
+`play_with` accepts a `Trigger { frame: Some(output_frame), placement: ... }` for
+scheduling and an optional `Placement::Position([x,y])` / `Placement::Emitter(...)`
+override per entity, or `Placement::Pan` to use the event's pan. It returns the voice
+ID, source-list index and chosen gain/pitch. The same seed and event name reproduce
+choices and parameters independently of other events and the mixer's RNG. This is
+covered by a native/WASI checksum. Queue/validation errors preserve selection state;
+once submitted, audio-side `Limited`/`Rejected` consumes the selection. Admission and
+voice IDs depend on mixer activity. Poll its events regularly, as for ordinary voices.
+
+Prepared banks belong to one mixer. Players made from the same bank (or a clone)
+share event instance keys but have independent selection state. Preparing the text
+again creates separate groups. Event keys cannot collide with audio-identity keys
+or caller-chosen keys below 2^63. Repeat gaps use the mixer's output-frame clock and
+its existing 1024-group/60-second admission history; pausing a bus does not freeze
+that clock.
+
+Run `cargo run --example sound_events --features events,sfx -- target/sound-events.wav`
+for eight seeded, alternating footsteps rendered to stereo WAV.
 
 ### 3D emitters and surround output
 

@@ -24,6 +24,8 @@ sfx = ["synth"]
 mixer = []
 # Beat/bar-aligned music transitions, cues and intensity layers.
 music = ["mixer"]
+# Designer-editable named sound events, resolved before playback.
+events = ["mixer"]
 # Background loading and a budgeted cache of decoded sounds (`audiobox::assets`).
 assets = []
 # Native background disk streaming with bounded buffers (`stream::FileStream`).
@@ -78,3 +80,7 @@ required-features = ["file-stream", "mixer"]
 [[example]]
 name = "spatial_audio"
 required-features = ["mixer"]
+
+[[example]]
+name = "sound_events"
+required-features = ["events", "sfx"]

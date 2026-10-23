@@ -36,6 +36,7 @@
 //! | Game mixer | [`mixer`]: voices, buses, fades, loops and an allocation-free `render` | `mixer` |
 //! | Sound assets | [`assets`]: background loading and a budgeted decoded-audio cache | `assets` |
 //! | Adaptive music | [`music`]: beat/bar transitions, crossfades, cues and intensity layers | `music` |
+//! | Sound events | [`events`]: named text events with seeded choices, variation and limits | `events` |
 //!
 //! Enable the optional modules you use:
 //!
@@ -75,12 +76,17 @@ mod dsp;
 mod error;
 mod flac;
 mod formats;
+#[cfg(feature = "mixer")]
+mod identity;
 mod io;
 mod math;
 pub mod metadata;
 #[cfg(feature = "mixer")]
 #[cfg_attr(docsrs, doc(cfg(feature = "mixer")))]
 pub mod mixer;
+#[cfg(feature = "events")]
+#[cfg_attr(docsrs, doc(cfg(feature = "events")))]
+pub use mixer::events;
 #[cfg(feature = "music")]
 #[cfg_attr(docsrs, doc(cfg(feature = "music")))]
 pub use mixer::music;

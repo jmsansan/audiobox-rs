@@ -29,6 +29,7 @@ jobs:
       - run: cargo clippy --locked --offline --all-targets --features synth -- -D warnings
       - run: cargo clippy --locked --offline --all-targets --features mixer -- -D warnings
       - run: cargo clippy --locked --offline --all-targets --features music -- -D warnings
+      - run: cargo clippy --locked --offline --all-targets --features events -- -D warnings
       - run: cargo clippy --locked --offline --all-targets --features file-stream -- -D warnings
       - run: cargo test --locked --offline
       - run: cargo test --locked --offline --all-features
@@ -56,7 +57,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: cargo test --locked --offline --release --target wasm32-wasip1 --all-features --test deterministic --test synth --test sfx --test assets --test music --test metadata --test effects --test colour_effects --test drums --test chip --test spatial
+      - run: cargo test --locked --offline --release --target wasm32-wasip1 --all-features --test deterministic --test synth --test sfx --test assets --test music --test metadata --test effects --test colour_effects --test drums --test chip --test spatial --test events
         env:
           CARGO_TARGET_WASM32_WASIP1_RUNNER: node --no-warnings scripts/wasi-run.mjs
 

@@ -4,6 +4,12 @@
 
 ### Added
 
+- Optional `events` module: designer-editable named sounds, recorded/SFX/score
+  source registration, seeded random/shuffle/sequence selection, gain/pitch ranges,
+  bus/priority/loop/instance/repeat controls and per-trigger 2D/3D placement.
+- Bounded event parsing with stable codes and line/character columns, preparation
+  of every reference, transactional selection on queue errors, shared event limits,
+  native/WASI replay hashes, and a `sound_events` WAV example.
 - 3D point emitters and oriented/moving listeners, clamped inverse/linear/exponential
   distance models, bounded radial Doppler and scheduled, normalized movement ramps.
 - Quad, 5.1 and 7.1 mixer output, all-channel bus effects/linked limiting, explicit
