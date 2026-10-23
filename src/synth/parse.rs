@@ -8,6 +8,7 @@ use super::score::{
 use super::wave::{Duty, NoiseMode, Waveform};
 use crate::{Error, ErrorCode};
 mod chip;
+mod synthwave;
 
 /// An error in score text, with the 1-based line and column (in characters) where it was found.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -173,6 +174,7 @@ struct LengthSpec {
 #[derive(Clone, Debug)]
 enum Token {
     Note(char, i8, LengthSpec, Option<u8>),
+    Chord(Vec<(char, i8, i8)>, LengthSpec, Option<u8>),
     Rest(LengthSpec),
     Extend(LengthSpec),
     TieNext,
@@ -249,6 +251,59 @@ fn lex_body(cursor: &mut Cursor, out: &mut Vec<(Token, Pos)>) -> Parsed<()> {
                 Token::Note(c, accidental, length, velocity)
             }
             'r' => Token::Rest(length_spec(cursor)?),
+            '{' => {
+                let mut members = Vec::new();
+                let mut octave = 0i8;
+                loop {
+                    cursor.skip_space();
+                    match cursor.bump() {
+                        Some('}') => break,
+                        Some('>') => {
+                            octave = octave.saturating_add(1);
+                        }
+                        Some('<') => {
+                            octave = octave.saturating_sub(1);
+                        }
+                        Some(letter @ 'a'..='g') => {
+                            if members.len() == 16 {
+                                return Err(pos.error(
+                                    ErrorCode::LimitExceeded,
+                                    "At most 16 notes in a chord",
+                                ));
+                            }
+                            let mut accidental = 0i8;
+                            loop {
+                                if cursor.eat('+') || cursor.eat('#') {
+                                    accidental = accidental.saturating_add(1);
+                                } else if cursor.eat('-') {
+                                    accidental = accidental.saturating_sub(1);
+                                } else {
+                                    break;
+                                }
+                            }
+                            members.push((letter, accidental, octave));
+                        }
+                        _ => {
+                            return Err(
+                                pos.syntax("Chord needs notes/octave shifts and a closing '}'")
+                            );
+                        }
+                    }
+                    if !(-9..=9).contains(&octave) {
+                        return Err(pos.invalid("Chord octave shift out of range"));
+                    }
+                }
+                if members.is_empty() {
+                    return Err(pos.invalid("Chord is empty"));
+                }
+                let length = length_spec(cursor)?;
+                let velocity = if cursor.eat('!') {
+                    Some(ranged(pos, cursor.required("velocity")?, 0..=127, "Velocity")? as u8)
+                } else {
+                    None
+                };
+                Token::Chord(members, length, velocity)
+            }
             '^' => Token::Extend(length_spec(cursor)?),
             '&' => Token::TieNext,
             'o' => Token::Octave(
@@ -342,6 +397,7 @@ fn parse_instrument(cursor: &mut Cursor) -> Parsed<(String, Instrument, Pos)> {
     let mut drum_options = Vec::new();
     let mut melodic_key = None;
     let mut chip_options = Vec::new();
+    let mut wide_options = Vec::new();
     let mut chip_wave_key = None;
     loop {
         let (pos, word) = cursor.word();
@@ -376,6 +432,9 @@ fn parse_instrument(cursor: &mut Cursor) -> Parsed<(String, Instrument, Pos)> {
             chip_wave_key = Some(pos);
         }
         match key {
+            key if synthwave::is_key(key) => {
+                wide_options.push((key.to_owned(), value.to_owned(), value_pos))
+            }
             key if chip::is_key(key) => {
                 chip_options.push((key.to_owned(), value.to_owned(), value_pos))
             }
@@ -531,6 +590,9 @@ fn parse_instrument(cursor: &mut Cursor) -> Parsed<(String, Instrument, Pos)> {
     if !chip_options.is_empty() {
         chip::apply(chip_options, &mut instrument, chip_wave_key)?;
     }
+    if !wide_options.is_empty() {
+        synthwave::apply(wide_options, &mut instrument)?;
+    }
     instrument.validate().map_err(|e| name_pos.wrap(e))?;
     Ok((name, instrument, name_pos))
 }
@@ -623,6 +685,19 @@ impl<'a> Expander<'a> {
         };
         let wrap = |e| pos.wrap(e);
         match token {
+            Token::Chord(members, spec, velocity) => {
+                let pitches = members
+                    .iter()
+                    .map(|&(letter, accidental, shift)| {
+                        Pitch::from_name(letter, accidental, state.octave + shift).map_err(wrap)
+                    })
+                    .collect::<Parsed<Vec<_>>>()?;
+                writer
+                    .chord_with_velocity(&pitches, length(spec, state), velocity.unwrap_or(127))
+                    .map_err(wrap)?;
+                // '&' is deliberately limited to single notes; '^' extends a chord group.
+                state.last_pitch = None;
+            }
             Token::Note(letter, accidental, spec, velocity) => {
                 let pitch = Pitch::from_name(*letter, *accidental, state.octave).map_err(wrap)?;
                 let len = length(spec, state);

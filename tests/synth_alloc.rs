@@ -97,16 +97,41 @@ fn fill_does_not_allocate() {
         },
     )
     .unwrap();
+    let wide_score=Score::parse("tempo 240\ninstrument pad wave=saw unison=3 detune=15 spread=100 voices=3 filter=lowpass cutoff=1500 resonance=200 filter-env=2400 filter-adsr=10,30,50,20 lfo-cutoff=beats,1,2,600 adsr=2,30,70,600\ninstrument lead voices=1 legato=on glide=80 lfo-pan=2000,50\nchannel p=@pad l16 {c e g} L [{c f a} {d f a} {e g b}]2\nchannel l=@lead l16 c L l8 [e g c]2").unwrap();
+    let mut wide_synth = Synth::new_stereo(
+        &wide_score,
+        48000,
+        &RenderOptions {
+            loops: None,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let mut wide_mono = Synth::new(
+        &wide_score,
+        48000,
+        &RenderOptions {
+            loops: None,
+            ..Default::default()
+        },
+    )
+    .unwrap();
     let mut buffer = vec![0.0f32; 480];
     COUNTING.set(true);
     for _ in 0..500 {
         synth.fill(&mut buffer);
         chip_synth.fill(&mut buffer);
+        wide_synth.fill(&mut buffer);
+        wide_mono.fill(&mut buffer);
     }
     synth.reset();
     synth.fill(&mut buffer);
     chip_synth.reset();
     chip_synth.fill(&mut buffer);
+    wide_synth.reset();
+    wide_synth.fill(&mut buffer);
+    wide_mono.reset();
+    wide_mono.fill(&mut buffer);
     COUNTING.set(false);
     assert_eq!(ALLOCATIONS.load(Ordering::SeqCst), 0);
     assert_eq!(FREES.load(Ordering::SeqCst), 0);

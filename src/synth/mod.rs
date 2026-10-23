@@ -1,10 +1,13 @@
 //! An 8-bit style synthesizer that renders text scores. Requires the `synth` feature.
 //!
-//! A [`Score`] holds up to eight channels. Each plays one note at a time with an
+//! A [`Score`] holds up to eight channels. Legacy channels play one note at a time with an
 //! [`Instrument`]: a pulse, triangle, sawtooth or noise [`Waveform`], an ADSR
 //! [`Envelope`], a volume, and slide, vibrato, arpeggio and duty-sweep effects.
 //! Render it offline with [`Score::render`], or chunk by chunk with [`Synth`].
 //! [`Instrument::drum`] selects finite synthesized percussion in two [`DrumKit`]s.
+//! [`Instrument::synthwave`] adds bounded polyphony, unison, stereo spread, resonant
+//! filters, LFOs and glide. [`Synth::new_stereo`] / [`Score::render_stereo`] preserve
+//! stereo; existing constructors remain mono and legacy instruments retain their bits.
 //!
 //! ```
 //! use audiobox::synth::Score;
@@ -139,6 +142,55 @@
 //! # Ok::<(), audiobox::Error>(())
 //! ```
 //!
+//! ## Synthwave instruments (opt-in)
+//!
+//! Any synthwave key, or `synthwave=on`, enables [`Synthwave`]. Sources are saw,
+//! pulse/square and triangle, always band-limited, independently of legacy aliasing.
+//! Use `unison` (1..=8), `detune` (0..=100 cents), `spread` (0..=100 percent),
+//! `pan` (-100..=100 percent), `voices` (1..=16, default 8), `glide` (0..=60000 ms)
+//! and `legato=on|off`. Glide/legato require `voices=1`.
+//!
+//! `filter=lowpass|highpass|bandpass` selects a per-note [`VoiceFilter`]; `cutoff`
+//! is Hz, `resonance` is Q*100, `keytrack` is percent relative to C4, `filter-adsr`
+//! is a separate ADSR, and `filter-env` its peak cutoff offset in cents. See the
+//! type's fields for bounds/defaults. Modulated cutoff clamps to 1..=0.45*sample-rate
+//! Hz. LP/HP slopes are 12 dB/octave; band-pass peak is normalized to 1. Resonance
+//! may exceed full scale; the amplitude ADSR follows the filter to bound its tail.
+//!
+//! `lfo-pitch`, `lfo-cutoff`, `lfo-amplitude` and `lfo-pan` accept `millihertz,depth`
+//! or `beats,numerator,denominator,depth`. [`Lfo`] documents units/bounds. These sine
+//! LFOs follow total output frames (including loops) and reset only with the synth.
+//! Chip/drum sources cannot combine with synthwave. Each note normalizes its unison
+//! oscillators by count and uses fixed initial phases and linear stereo panning.
+//!
+//! Chords use `{c e g}4!90`, sharing length/gate/velocity. Only notes, accidentals
+//! and local `>`/`<` shifts are allowed inside braces. Members must be distinct,
+//! at most 16 and within the instrument's voice limit; each counts against the
+//! score's note bound. `^` extends the entire group; `&` joins single notes only.
+//! The typed equivalent is [`ChannelWriter::chord`].
+//!
+//! Idle slots are reused first, then oldest releasing, then oldest held voices,
+//! ties by slot index. Stealing is immediate and can click. Lowering the limit on an
+//! instrument change retires higher slots immediately. Legacy/synthwave switches
+//! release the other path's held notes. Chord carries retrigger every held member
+//! at the loop point. Mono legato preserves phase, filter state and both envelopes
+//! across adjacent full-gate notes of the same instrument. Gaps/short gates retrigger;
+//! glide moves between active-note pitches in cents over its prepared duration.
+//!
+//! ```
+//! use audiobox::synth::Score;
+//! let score = Score::parse("tempo 110
+//! instrument bass wave=saw voices=1 glide=80 legato=on filter=lowpass cutoff=500
+//! instrument pad wave=saw unison=5 detune=18 spread=90 adsr=120,150,70,300
+//! instrument lead voices=1 glide=60 legato=on lfo-pitch=5000,12
+//! channel bass=@bass o2 l8 [c c >c< g]2
+//! channel pad=@pad {c e g}1
+//! channel lead=@lead o5 l8 [c e g >c<]2")?;
+//! let stereo = score.render_stereo(48_000)?;
+//! assert_eq!(stereo.channels(), 2);
+//! # Ok::<(), audiobox::Error>(())
+//! ```
+//!
 //! ## Commands
 //!
 //! Commands are written one after another; spaces between them are optional.
@@ -226,7 +278,9 @@ pub use drum::{Drum, DrumKind, DrumKit};
 mod parse;
 mod render;
 mod score;
+mod synthwave;
 mod wave;
+pub use synthwave::{FilterMode, Lfo, LfoRate, Synthwave, VoiceFilter};
 
 pub use parse::ParseError;
 pub use render::{RenderOptions, Synth};
