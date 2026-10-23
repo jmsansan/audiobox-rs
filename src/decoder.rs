@@ -5,6 +5,9 @@ use crate::mp3::{self, Header, Mp3State, Vbr};
 use crate::pcm::{decode_ima_block, read_sample};
 use crate::{Audio, AudioFormat, DecodeInfo, Endian, Error, ErrorCode, Limits, Result};
 
+#[cfg(all(feature = "file-stream", not(target_family = "wasm")))]
+pub(crate) mod file;
+
 /// Options for [`Decoder`].
 #[derive(Clone, Debug)]
 pub struct DecoderOptions {

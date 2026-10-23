@@ -3,8 +3,21 @@
 //! [`Decoder`] decodes WAV, FLAC or MP3 bytes held in memory a chunk at a time, with
 //! seeking. [`PcmDecoder`] and [`PcmEncoder`] convert raw PCM whose input chunks may
 //! end in the middle of a frame, and [`Resampler`] resamples across chunks.
+//!
+//! With `file-stream` on native targets, `FileStream` reads WAV/FLAC/MP3 through a
+//! dedicated reader thread and bounded encoded/PCM buffers. Its `read` and `seek`
+//! never wait or allocate. `ErrorCode::Underrun` means retry; only `Ok(0)` means EOF
+//! for a destination holding at least one frame. Keep `FileStreamHandle` off the
+//! callback: it owns cancellation and joins the worker on destruction. Mixer
+//! integration is enabled by `mixer`; underruns produce silence while source
+//! position holds and output-time fades continue. Disk availability can change
+//! the timing of these silent gaps; delivered PCM itself matches memory decoding.
 pub use crate::decoder::{Decoder, DecoderOptions};
+#[cfg(all(feature = "file-stream", not(target_family = "wasm")))]
+mod file;
 use crate::{Audio, Endian, Error, Limits, Result, SampleFormat};
+#[cfg(all(feature = "file-stream", not(target_family = "wasm")))]
+pub use file::{FileStream, FileStreamHandle, FileStreamOptions, FileStreamStatus};
 
 #[derive(Debug)]
 pub struct PcmDecoder {

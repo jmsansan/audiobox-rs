@@ -43,6 +43,7 @@ only what you use:
 | --- | --- | --- |
 | `mixer` | [`audiobox::mixer`](https://docs.rs/audiobox/latest/audiobox/mixer/) | Real-time game mixer: voices, buses, fades, loops and resampling |
 | `synth` | [`audiobox::synth`](https://docs.rs/audiobox/latest/audiobox/synth/) | 8-bit style synthesizer and text score format |
+| `file-stream` | `audiobox::stream::FileStream` (native) | Bounded disk streaming on a reader thread; mixer optional |
 | `sfx` | [`audiobox::sfx`](https://docs.rs/audiobox/latest/audiobox/sfx/) | Parametric sound effects with seeded presets (enables `synth`) |
 | `assets` | `audiobox::assets` | Background loading on native targets and a budgeted cache of decoded sounds |
 | `music` | `audiobox::music` | Beat/bar transitions, crossfades, cues and intensity layers (enables `mixer`) |
@@ -437,6 +438,74 @@ fn play(bytes: &'static [u8]) -> audiobox::Result<()> {
   After an error, reads return it again until a seek or rewind.
 
 AIFF, CAF and AU, and Ogg Vorbis and Opus, are not decoded incrementally.
+
+### Streaming from disk (`file-stream` feature)
+
+`stream::FileStream` keeps the file and codec on a dedicated reader thread. It
+supports WAV (PCM, float, G.711 and IMA), FLAC and MP3 through a fixed encoded
+window and a fixed PCM ring. Opening scans headers and prefills the ring on the
+loading thread. It never retains the full encoded file or full decoded song.
+
+```rust,no_run
+use audiobox::stream::FileStream;
+use audiobox::ErrorCode;
+
+let (mut source, reader) = FileStream::open("music.flac")?;
+let mut buffer = vec![0.0; 1024 * source.channels()]; // Prepare off the callback.
+match source.read(&mut buffer) {
+    Ok(0) => { /* End of file. */ }
+    Ok(frames) => { /* Consume buffer[..frames * source.channels()]. */ }
+    Err(e) if e.code == ErrorCode::Underrun => { /* Emit silence; retry later. */ }
+    Err(e) => return Err(e),
+}
+source.seek(48_000)?; // Publishes a request; no file access or waiting here.
+let status = reader.status(); // Buffered frames and underrun count, no allocation.
+# Ok::<(), audiobox::Error>(())
+```
+
+Reads return any available complete frames before reporting a pending/error state;
+they leave the unwritten destination untouched. Error messages after opening are
+empty to keep **all read/seek paths allocation-free**; match on the stable code.
+Seeks discard old queued audio by generation. WAV seeks directly; FLAC/MP3 replay
+from the start on the worker for exact decoder state. Compressed seeks can take
+time on long files. Metadata is skipped and files must stay unchanged while open.
+
+With `mixer`, pass the source to `Sound::stream`. The mixer holds source position
+on `Underrun`, emits silence and retries on the next render segment. Output-time
+fades and stops continue. Normal voice whole/region loops queue their seeks on the
+worker; restarts can underrun, so gapless disk loops are not guaranteed. Delivered
+PCM matches memory decoding, while silent-gap timing depends on disk availability.
+
+Retain the returned `FileStreamHandle` on a control thread until playback is over.
+Dropping the stream requests cancellation; dropping the handle cancels and **joins**
+the reader, so it belongs off the audio thread. The mixer's `poll_event` frees
+returned streams on the control thread. Final stream/mixer destruction also belongs
+there. The host supplies its own audio device.
+
+`FileStreamOptions` separates output admission (`decoder.limits`) from resident
+memory: a 1 MiB encoded window, a 16384-frame ring, a 32 MiB PCM ring/scratch budget,
+a conservative 16 MiB codec budget and at most 4096 RIFF/FLAC header chunks by
+default. Actual retained buffers use their prepared sizes, not the entire budgets.
+The codec budget admits a fixed 128 KiB plus 20 bytes per block sample; the bounded
+WAV range index needs at most twice `max_header_chunks` ranges (32 bytes per chunk
+on 64-bit hosts). Add the encoded window, PCM/codec budgets and that index when
+setting an application memory ceiling. Shared MP3 transform tables and thread
+stacks are process/runtime costs outside these per-stream data budgets.
+
+FLAC frames must fit the encoded window: an oversized declared maximum fails with
+`LimitExceeded`; an oversized undeclared frame fails decoding. The default encoded
+file admission limit is 8 GiB. The normal `Limits` still bound duration and total
+decoded output, even though that output is not retained; raise them explicitly for
+trusted long files while keeping resident budgets small. Native targets only;
+enabling `file-stream` on WebAssembly does not expose the file API.
+
+The example creates a FLAC when no input is supplied, streams it through the mixer
+with looping, and exports a five-second WAV plus underrun diagnostics:
+
+```sh
+cargo run --example stream_from_disk --features file-stream,mixer
+cargo run --example stream_from_disk --features file-stream,mixer -- music.mp3 target/disk.wav
+```
 
 ## Streaming PCM
 

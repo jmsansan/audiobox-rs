@@ -232,6 +232,8 @@ pub(super) struct Voice {
     /// at, to map the playback position back to source frames across loops.
     jumps: [(i64, u64); JUMPS],
     jump_count: usize,
+    /// Temporary starvation: retry only at the next render segment.
+    starved: bool,
 }
 
 /// Loop restarts remembered for mapping positions; enough for loops longer than the
@@ -301,6 +303,7 @@ impl Voice {
             paused: false,
             jumps: [(0, 0); JUMPS],
             jump_count: 1,
+            starved: false,
         }
     }
     /// Starts the source at `frame`. Runs on the game's thread, where a stream may seek.
@@ -363,7 +366,7 @@ impl Voice {
         }
         let index = (self.position >> 32) as i64;
         match self.fill(index + HALF + 1) {
-            Ok(()) => self.finish_if_exhausted(),
+            Ok(_) => self.finish_if_exhausted(),
             Err(e) => self.state = State::Failed(e.code),
         }
     }
@@ -453,6 +456,7 @@ impl Voice {
     /// Adds `frames` frames from output frame `first` into `out`, interleaved with
     /// `out_channels` channels. A pause that completes freezes the rest of the block.
     pub fn render(&mut self, first: u64, frames: usize, out: &mut [f32], out_channels: usize) {
+        self.starved = false;
         let local = self.time(first);
         // Ramps only start at segment boundaries, so one finished at `first` stays put.
         let constant = !self.gain.changing(local)
@@ -529,6 +533,9 @@ impl Voice {
 
     /// Returns the next interpolated source frame, or `None` once the voice ended.
     fn next_frame(&mut self) -> Option<(f64, f64)> {
+        if self.starved {
+            return Some((0.0, 0.0));
+        }
         let index = (self.position >> 32) as i64;
         let frac = self.position & (ONE - 1);
         let direct = self.step == ONE && frac == 0;
@@ -536,9 +543,16 @@ impl Voice {
             self.state = State::Finished;
             return None;
         }
-        if let Err(e) = self.fill(index + HALF + 1) {
-            self.state = State::Failed(e.code);
-            return None;
+        match self.fill(index + HALF + 1) {
+            Ok(true) => (),
+            Ok(false) => {
+                self.starved = true;
+                return Some((0.0, 0.0));
+            }
+            Err(e) => {
+                self.state = State::Failed(e.code);
+                return None;
+            }
         }
         let ch = self.channels;
         let sample = |i: i64, c: usize| -> f64 {
@@ -577,7 +591,7 @@ impl Voice {
     }
 
     /// Buffers virtual frames up to `until`, applying the loop and reading ahead.
-    fn fill(&mut self, until: i64) -> Result<()> {
+    fn fill(&mut self, until: i64) -> Result<bool> {
         let ch = self.channels;
         while self.filled < until {
             let at = self.filled as usize % RING;
@@ -607,7 +621,11 @@ impl Voice {
                         }
                         n
                     }
-                    Feed::Stream(stream) => stream.read(&mut slot[..limit * ch])?,
+                    Feed::Stream(stream) => match stream.read(&mut slot[..limit * ch]) {
+                        Ok(n) => n,
+                        Err(e) if e.code == ErrorCode::Underrun => return Ok(false),
+                        Err(e) => return Err(e),
+                    },
                 }
             };
             if read > 0 {
@@ -632,6 +650,6 @@ impl Voice {
                 _ => self.end = Some(self.filled),
             }
         }
-        Ok(())
+        Ok(true)
     }
 }

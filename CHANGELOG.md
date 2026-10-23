@@ -4,6 +4,14 @@
 
 ### Added
 
+- Optional native `file-stream` feature: WAV/FLAC/MP3 reader threads with fixed
+  encoded windows and PCM rings, prefill, generation-tagged asynchronous seeks,
+  cancellation/lifetime handles, independent resident budgets and diagnostics.
+- Recoverable `ErrorCode::Underrun` for mixer streams: silence with held source
+  position, while output-time fades/stops continue. Disk loops run seeks on the
+  reader and may have gaps. Callback read/seek paths allocate/free nothing.
+- Disk/memory equality, seeking, loops, concurrency, malformed/late errors,
+  unknown-length output limits and allocation tests, plus `stream_from_disk`.
 - Opt-in tracker instruments: four-bit wavetables, volume/duty/arpeggio/fine-pitch
   macros with rational frame/tick clocks, hold/loop endings, NTSC period noise,
   low-rate unsigned PCM with text hex data, and optional four-bit gain/period pitch.

@@ -29,6 +29,7 @@ jobs:
       - run: cargo clippy --locked --offline --all-targets --features synth -- -D warnings
       - run: cargo clippy --locked --offline --all-targets --features mixer -- -D warnings
       - run: cargo clippy --locked --offline --all-targets --features music -- -D warnings
+      - run: cargo clippy --locked --offline --all-targets --features file-stream -- -D warnings
       - run: cargo test --locked --offline
       - run: cargo test --locked --offline --all-features
       - run: cargo test --locked --offline --release --all-features
