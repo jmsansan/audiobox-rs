@@ -267,47 +267,48 @@ impl Saturation {
 
 pub(super) enum Processor {
     ModDelay {
-        ring: Vec<[f64; 2]>,
+        ring: Vec<f64>,
         at: usize,
         phase: f64,
         chorus: bool,
     },
     Phaser {
-        memory: [[f64; 4]; 2],
-        feedback: [f64; 2],
+        memory: Box<[[f64; 4]]>,
+        feedback: [f64; 8],
         phase: f64,
     },
     Crusher {
-        held: [f64; 2],
+        held: [f64; 8],
         phase: f64,
     },
     Saturation,
 }
 impl Processor {
-    pub(super) fn new(kind: u8, rate: u32) -> Self {
+    pub(super) fn new(kind: u8, rate: u32, channels: usize) -> Self {
         match kind {
             5 | 6 => Self::ModDelay {
                 ring: vec![
-                    [0.0; 2];
-                    (rate as f64 * if kind == 5 { 0.08 } else { 0.02 }).ceil() as usize + 2
+                    0.0;
+                    ((rate as f64 * if kind == 5 { 0.08 } else { 0.02 }).ceil() as usize + 2)
+                        * channels
                 ],
                 at: 0,
                 phase: 0.0,
                 chorus: kind == 5,
             },
             7 => Self::Phaser {
-                memory: [[0.0; 4]; 2],
-                feedback: [0.0; 2],
+                memory: vec![[0.0; 4]; channels].into_boxed_slice(),
+                feedback: [0.0; 8],
                 phase: 0.0,
             },
             8 => Self::Crusher {
-                held: [0.0; 2],
+                held: [0.0; 8],
                 phase: 1.0,
             },
             _ => Self::Saturation,
         }
     }
-    pub(super) fn process(&mut self, x: &mut [f64; 2], p: [f64; 6], rate: u32, channels: usize) {
+    pub(super) fn process(&mut self, x: &mut [f64; 8], p: [f64; 6], rate: u32, channels: usize) {
         match self {
             Self::ModDelay {
                 ring,
@@ -320,15 +321,15 @@ impl Processor {
                 for c in 0..channels {
                     let phase = *phase + c as f64 * p[4];
                     let delay = (p[1] + p[2] * sin_turns(phase)).clamp(1.0, max);
-                    let mut wet = read(ring, *at, delay, c);
+                    let mut wet = read(ring, *at, delay, c, channels);
                     if *chorus {
                         let delay = (p[1] + p[2] * sin_turns(phase + 0.25)).clamp(1.0, max);
-                        wet = (wet + read(ring, *at, delay, c)) * 0.5;
+                        wet = (wet + read(ring, *at, delay, c, channels)) * 0.5;
                     }
-                    ring[*at][c] = finite(x[c] + wet * p[3]);
+                    ring[*at * channels + c] = finite(x[c] + wet * p[3]);
                     x[c] = x[c] * (1.0 - p[5]) + wet * p[5];
                 }
-                *at = (*at + 1) % ring.len();
+                *at = (*at + 1) % (ring.len() / channels);
                 advance(phase, p[0] / rate as f64);
             }
             Self::Phaser {
@@ -384,14 +385,16 @@ impl Processor {
         }
     }
 }
-fn read(ring: &[[f64; 2]], at: usize, delay: f64, channel: usize) -> f64 {
+fn read(ring: &[f64], at: usize, delay: f64, channel: usize, channels: usize) -> f64 {
+    let frames = ring.len() / channels;
     let mut pos = at as f64 - delay;
     if pos < 0.0 {
-        pos += ring.len() as f64;
+        pos += frames as f64;
     }
     let a = pos.floor() as usize;
     let fraction = pos - a as f64;
-    ring[a][channel] * (1.0 - fraction) + ring[(a + 1) % ring.len()][channel] * fraction
+    ring[a * channels + channel] * (1.0 - fraction)
+        + ring[((a + 1) % frames) * channels + channel] * fraction
 }
 fn advance(phase: &mut f64, step: f64) {
     *phase += step;

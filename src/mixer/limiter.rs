@@ -126,7 +126,7 @@ impl Limiter {
             // The frame that leaves the delay is the oldest in the window: it sits
             // where the new frame goes. With no look-ahead it is the new frame itself.
             let next = (slot + 1) % self.window;
-            let mut delayed = [0.0f32; 2];
+            let mut delayed = [0.0f32; 8];
             if self.window == 1 {
                 delayed[..ch].copy_from_slice(frame);
             } else {

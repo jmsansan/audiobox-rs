@@ -80,7 +80,7 @@
 //!
 //! # Rendering
 //!
-//! [`Mixer::render`] fills an interleaved buffer of the output's channels (1 or 2) at
+//! [`Mixer::render`] fills an interleaved buffer of the output's channels (1/2/4/6/8) at
 //! the output's sample rate. It writes `out.len() / channels` whole frames and sets any
 //! remaining samples to 0; a buffer shorter than a frame renders nothing, but still
 //! applies the changes that are due.
@@ -125,8 +125,12 @@ mod limiter;
 #[cfg_attr(docsrs, doc(cfg(feature = "music")))]
 pub mod music;
 mod queue;
+pub mod spatial;
 mod status;
 mod voice;
+pub use spatial::{
+    Attenuation, DistanceModel, Emitter, Listener, OutputLayout, Placement, SpatialConfig,
+};
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -323,6 +327,8 @@ pub struct Play {
     /// the units of [`MixerConfig::space`]. It sets the voice's pan, replacing
     /// [`Play::pan`], and a distance gain on top of [`Play::gain`]. Default none.
     pub position: Option<[f32; 2]>,
+    /// Optional 3D point emitter. Takes precedence over pan; cannot combine with position.
+    pub emitter: Option<Emitter>,
 }
 
 /// How a 2D position relative to the listener becomes a pan and a gain.
@@ -487,6 +493,7 @@ impl Default for Play {
             start: TimePosition::Frames(0),
             instances: None,
             position: None,
+            emitter: None,
         }
     }
 }
@@ -515,7 +522,7 @@ impl Variation {
 pub struct MixerConfig {
     /// The output's sample rate. Default 48000.
     pub sample_rate: u32,
-    /// The output's channels: 1 or 2. Default 2.
+    /// Output layout: 1 mono, 2 stereo, 4 quad, 6 5.1, 8 7.1. Default 2.
     pub channels: usize,
     /// Most voices that play at once, 1..=1024. Default 32.
     pub max_voices: usize,
@@ -527,6 +534,8 @@ pub struct MixerConfig {
     pub seed: u64,
     /// How positions of voices become pans and gains.
     pub space: Space2d,
+    pub listener: Listener,
+    pub spatial: SpatialConfig,
     /// A peak limiter on the master bus, off by default. Its look-ahead delays the
     /// output, which [`MixerHandle::latency`] reports.
     pub limiter: Option<MasterLimiter>,
@@ -541,6 +550,8 @@ impl Default for MixerConfig {
             queue: 1024,
             seed: 0,
             space: Space2d::default(),
+            listener: Listener::default(),
+            spatial: SpatialConfig::default(),
             limiter: None,
         }
     }
@@ -584,6 +595,8 @@ enum Action {
     Rate(VoiceId, f64, u64, FadeCurve),
     Pitch(VoiceId, f64, u64, FadeCurve),
     Position(VoiceId, f64, f64, u64, FadeCurve),
+    Emitter(VoiceId, Emitter, u64, FadeCurve),
+    Listener(Listener, u64, FadeCurve),
     Pause(VoiceId, u64, FadeCurve),
     Resume(VoiceId, u64, FadeCurve),
     PauseBus(usize, u64, FadeCurve),
@@ -619,6 +632,8 @@ pub struct Mixer {
     effects: effects::AudioEffects,
     rate: u32,
     channels: usize,
+    listener: Listener,
+    spatial: SpatialConfig,
     max_voices: usize,
     frame: u64,
     order: u64,
@@ -687,13 +702,15 @@ impl Mixer {
             queue,
             seed,
             space,
+            listener,
+            spatial,
             limiter,
         } = config;
         space.validate()?;
+        listener.validate()?;
+        spatial.validate()?;
         Limits::default().check(0, channels, sample_rate)?;
-        if !(1..=2).contains(&channels) {
-            return Err(Error::invalid("The mixer's output has 1 or 2 channels"));
-        }
+        OutputLayout::from_channels(channels)?;
         if !(1..=1024).contains(&max_voices) || !(1..=65536).contains(&queue) {
             return Err(Error::invalid(
                 "max_voices must be 1..=1024 and queue 1..=65536",
@@ -739,6 +756,8 @@ impl Mixer {
             effects: audio_effects,
             rate: sample_rate,
             channels,
+            listener,
+            spatial,
             max_voices,
             frame: 0,
             order: 0,
@@ -943,9 +962,33 @@ impl Mixer {
             }
             Action::Position(id, pan, gain, len, curve) => {
                 if let Some(v) = self.voice_mut(id) {
-                    let time = v.time(frame);
-                    v.pan.retarget(time, pan, len, curve);
-                    v.distance.retarget(time, gain, len, curve);
+                    if v.emitter.is_none() {
+                        let time = v.time(frame);
+                        v.pan.retarget(time, pan, len, curve);
+                        v.distance.retarget(time, gain, len, curve);
+                    }
+                }
+            }
+            Action::Emitter(id, emitter, len, curve) => {
+                let channels = self.channels;
+                let placement = self.spatial.place_validated(
+                    &self.listener,
+                    &emitter,
+                    OutputLayout::from_channels(self.channels).unwrap(),
+                );
+                if let Some(v) = self.voice_mut(id) {
+                    v.emitter = Some(emitter);
+                    v.update_spatial(placement, frame, len, curve, channels);
+                }
+            }
+            Action::Listener(listener, len, curve) => {
+                self.listener = listener;
+                let layout = OutputLayout::from_channels(self.channels).unwrap();
+                for v in self.voices.iter_mut().flatten() {
+                    if let Some(emitter) = v.emitter {
+                        let placement = self.spatial.place_validated(&listener, &emitter, layout);
+                        v.update_spatial(placement, frame, len, curve, layout.channels());
+                    }
                 }
             }
             Action::Pause(id, len, curve) => {
@@ -1004,6 +1047,14 @@ impl Mixer {
     }
 
     fn start(&mut self, frame: u64, mut voice: Box<Voice>) {
+        if let Some(emitter) = voice.emitter {
+            let placement = self.spatial.place_validated(
+                &self.listener,
+                &emitter,
+                OutputLayout::from_channels(self.channels).unwrap(),
+            );
+            voice.update_spatial(placement, frame, 0, FadeCurve::Linear, self.channels);
+        }
         // Voices that played all their source no longer count against any limit. At
         // high speeds a voice can pass its source's end before reading it: read up to
         // the position, as its next frame would, to find out.
@@ -1389,6 +1440,7 @@ impl MixerHandle {
     pub fn set_gain(&mut self, voice: VoiceId, gain: f32, fade: Fade) -> Result<()> {
         self.now().set_gain(voice, gain, fade)
     }
+    /// Set legacy pan. A point emitter uses its direction instead.
     pub fn set_pan(&mut self, voice: VoiceId, pan: f32, fade: Fade) -> Result<()> {
         self.now().set_pan(voice, pan, fade)
     }
@@ -1401,8 +1453,18 @@ impl MixerHandle {
     /// Moves a voice to `position` relative to the listener, ramping its pan and
     /// distance gain over the fade so a moving sound does not zipper. A fade of about
     /// one game frame suits positions updated every frame.
+    /// A 3D emitter ignores 2D pan/position commands; update it with `set_emitter`.
     pub fn set_position(&mut self, voice: VoiceId, position: [f32; 2], fade: Fade) -> Result<()> {
         self.now().set_position(voice, position, fade)
+    }
+    /// Enable/update permanent point-source mode. Stereo collapses immediately to
+    /// (L+R)/2; fade ramps direction, attenuation and Doppler, not that conversion.
+    pub fn set_emitter(&mut self, voice: VoiceId, emitter: Emitter, fade: Fade) -> Result<()> {
+        self.now().set_emitter(voice, emitter, fade)
+    }
+    /// Schedule a global listener update; placement is recomputed on application.
+    pub fn set_listener(&mut self, listener: Listener, fade: Fade) -> Result<()> {
+        self.now().set_listener(listener, fade)
     }
     /// Output frames by which the master limiter's look-ahead delays the sound: a
     /// change scheduled at frame `f` is heard at `f + latency()`. 0 without a limiter.
@@ -1510,6 +1572,12 @@ impl MixerHandle {
         if play.bus.0 > handle.buses.len() {
             return Err(Error::invalid("Unknown bus"));
         }
+        if let Some(emitter) = play.emitter {
+            emitter.validate()?;
+            if play.position.is_some() {
+                return Err(Error::invalid("Choose 2D position or a 3D emitter"));
+            }
+        }
         check_rate(play.rate)?;
         check_pitch(play.pitch)?;
         let Variation {
@@ -1561,6 +1629,7 @@ impl MixerHandle {
         voice.rate = Ramp::constant(play.rate as f64);
         voice.pitch = Ramp::constant(pitch);
         voice.pan = Ramp::constant(play.pan.clamp(-1.0, 1.0) as f64);
+        voice.emitter = play.emitter;
         if let Some(position) = play.position {
             let (pan, distance) = handle.place(position)?;
             voice.pan = Ramp::constant(pan);
@@ -1648,6 +1717,21 @@ impl Commands<'_> {
         let (len, curve) = self.handle.frames(fade)?;
         self.handle
             .send(self.frame, Action::Pause(voice, len, curve))
+    }
+    /// Enable/update permanent point-source mode, using the listener at application
+    /// time. Stereo collapses immediately; fade only ramps spatial parameters.
+    pub fn set_emitter(self, voice: VoiceId, emitter: Emitter, fade: Fade) -> Result<()> {
+        emitter.validate()?;
+        let (len, curve) = self.handle.frames(fade)?;
+        self.handle
+            .send(self.frame, Action::Emitter(voice, emitter, len, curve))
+    }
+    /// Update every spatial voice, including paused voices and fading tails.
+    pub fn set_listener(self, listener: Listener, fade: Fade) -> Result<()> {
+        listener.validate()?;
+        let (len, curve) = self.handle.frames(fade)?;
+        self.handle
+            .send(self.frame, Action::Listener(listener, len, curve))
     }
     pub fn resume(self, voice: VoiceId, fade: Fade) -> Result<()> {
         let (len, curve) = self.handle.frames(fade)?;

@@ -141,6 +141,9 @@ pub(crate) fn canonical(key: &str) -> Option<&'static str> {
 }
 
 pub(crate) fn validate_options(options: &EncodeOptions, format: AudioFormat) -> Result<()> {
+    if options.wav_channel_mask.is_some() && format != AudioFormat::Wav {
+        return Err(Error::invalid("A WAVE channel mask requires WAV output"));
+    }
     if format == AudioFormat::Wav
         && (options.tags.album_artist.is_some()
             || options.tags.disc.is_some()

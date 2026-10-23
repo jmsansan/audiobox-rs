@@ -863,6 +863,104 @@ Render a short scene with music and effects to a WAV file:
 cargo run --example game_audio --features mixer,sfx -- game.wav
 ```
 
+### 3D emitters and surround output
+
+`Play::emitter` opts into a point source with world position, velocity and its own
+attenuation. `MixerConfig::listener` supplies position, forward/up orientation and
+velocity; the default looks down -Z with +X right and +Y up. Positions use one
+consistent unit (normally metres), velocities use units/second. The host supplies
+new positions explicitly; velocity controls Doppler and does not integrate motion.
+
+```rust
+use audiobox::mixer::*;
+use audiobox::Audio;
+let (mut mixer, mut handle) = Mixer::new(MixerConfig {
+    channels: OutputLayout::Surround71.channels(),
+    ..Default::default()
+})?;
+let sound = Audio::new(vec![vec![0.1; 4800]], 48_000)?;
+let voice = handle.play(sound, &Play {
+    emitter: Some(Emitter {
+        position: [3.0, 1.0, -5.0],
+        velocity: [-10.0, 0.0, 0.0],
+        attenuation: Attenuation {
+            min_distance: 1.0, max_distance: 100.0,
+            model: DistanceModel::Inverse, rolloff: 1.0,
+        },
+    }),
+    ..Default::default()
+})?;
+handle.at(240).set_emitter(voice, Emitter {
+    position: [2.0, 1.0, -5.0], ..Default::default()
+}, Fade::linear(0.016))?;
+handle.at(480).set_listener(Listener {
+    forward: [1.0, 0.0, 0.0], ..Default::default()
+}, Fade::linear(0.016))?;
+let mut output = [0.0; 8 * 256];
+mixer.render(&mut output);
+# Ok::<(), audiobox::Error>(())
+```
+
+All vectors must be finite. Listener axes are normalized/orthogonalized; zero or
+near-parallel forward/up axes are rejected. Reference distance is 0.001..1e9,
+maximum distance is greater than reference and at most 1e12, rolloff is 0..16.
+For `d = clamp(distance, min, max)` and `r = rolloff`:
+
+| Model | Gain |
+| --- | --- |
+| Linear | `clamp(1 - r*(d-min)/(max-min), 0, 1)` |
+| Inverse | `min / (min + r*(d-min))` |
+| Exponential | `(d/min)^(-r)` |
+
+These use the [OpenAL clamped models](https://www.openal.org/documentation/openal-1.1-specification.pdf).
+Maximum distance clamps evaluation; inverse/exponential keep a nonzero floor.
+Rolloff zero disables attenuation. Existing `Space2d` keeps its previous behavior.
+Doppler uses both radial velocities with `SpatialConfig::speed_of_sound` (1..1e6,
+default 343.3) and `doppler_factor` (0..16, default 1; zero disables it). Scaled
+radial velocities clamp to ±0.9 times sound speed and the playback ratio to
+0.25..4. The final rate × pitch × Doppler speed retains the 1/1024..512 bound.
+
+Placement is recomputed at command application, using the listener then current.
+Direction ramps keep unit power; distance and Doppler ramp separately. Their
+clocks freeze with voice/bus pauses, and listener updates include fading tails.
+Stereo sources collapse immediately to `(L+R)/2` in point mode, so antiphase
+material can cancel. `set_emitter` enables that mode permanently; its fade ramps
+spatial parameters, not stereo-to-mono conversion. Pan/2D-position commands then
+have no audible effect. Choose either `Play::position` or `Play::emitter`.
+
+| Output channels | Order | Horizontal speaker angles from forward | WAV mask |
+| --- | --- | --- | --- |
+| 1 | Mono | none | `0x4` |
+| 2 | FL, FR | constant-power stereo pan | `0x3` |
+| 4 | FL, FR, BL, BR | fronts ±45°, backs ±135° | `0x33` |
+| 6 | FL, FR, C, LFE, BL, BR | fronts ±30°, centre 0°, surrounds ±110° | `0x3f` |
+| 8 | FL, FR, C, LFE, BL, BR, SL, SR | fronts ±30°, centre 0°, backs ±150°, sides ±90° | `0x63f` |
+
+Surround uses normalized positive gains between adjacent speakers. Elevation
+affects distance/Doppler; a directly vertical/coincident source uses the front
+direction. LFE stays silent without explicit bass routing; there is no HRTF,
+occlusion or propagation delay. Legacy voices use the front pair on surround.
+Bus effects process every channel; compressor/limiter detection links all channels.
+Modulation channel phase offsets repeat by channel index.
+
+`OutputLayout::downmix_stereo(input, output)` folds caller-owned interleaved buffers
+without allocation. Each full-range matrix column has unit power: FL/BL/SL go
+left, FR/BR/SR right, centre/mono at 1/√2 to each side; LFE is omitted. This
+preserves isolated-channel and uncorrelated-input energy. Correlated channels can
+sum above unity; apply headroom or a limiter **after** the fold for a stereo ceiling.
+
+For PCM/float WAV export, set `EncodeOptions::wav_channel_mask` to
+`Some(layout.channel_mask())`. It writes WAVEFORMATEXTENSIBLE with the
+[standard speaker order](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ksmedia/ns-ksmedia-waveformatextensible).
+Set-bit count must match channels, using the standard low 18 bits; other output
+formats reject the option. The default `None` retains existing WAV bytes.
+
+Export an orbit and a Doppler flyby in all three surround layouts, plus stereo folds:
+
+```sh
+cargo run --example spatial_audio --features mixer -- target/spatial-audio
+```
+
 ### Bus effects and sidechains
 
 `mixer::effects` prepares up to 16 effects per bus on the control thread. Install a

@@ -4,6 +4,12 @@
 
 ### Added
 
+- 3D point emitters and oriented/moving listeners, clamped inverse/linear/exponential
+  distance models, bounded radial Doppler and scheduled, normalized movement ramps.
+- Quad, 5.1 and 7.1 mixer output, all-channel bus effects/linked limiting, explicit
+  stereo downmix and optional WAV extensible speaker masks (`wav_channel_mask`).
+- Spatial routing/response/order/pause/voice-limit/allocation tests, native/WASI
+  hashes and a `spatial_audio` orbit/flyby example with surround and stereo WAVs.
 - Optional native `file-stream` feature: WAV/FLAC/MP3 reader threads with fixed
   encoded windows and PCM rings, prefill, generation-tagged asynchronous seeks,
   cancellation/lifetime handles, independent resident budgets and diagnostics.
@@ -64,6 +70,8 @@
 
 ### Breaking
 
+- Full `Play` literals need `emitter`; `MixerConfig` needs `listener` and `spatial`;
+  `EncodeOptions` needs `wav_channel_mask`. Defaults preserve existing behavior.
 - Full struct literals for `Instrument` need `chip` and `drum`; `Note` needs
   `velocity`. Constructors/defaults provide no chip/drum and velocity 127.
 - Full struct literals for `EncodeOptions` and `DecodeInfo` need the new `tags`

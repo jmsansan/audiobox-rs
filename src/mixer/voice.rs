@@ -234,6 +234,9 @@ pub(super) struct Voice {
     jump_count: usize,
     /// Temporary starvation: retry only at the next render segment.
     starved: bool,
+    pub emitter: Option<super::Emitter>,
+    direction: [Ramp; 8],
+    doppler: Ramp,
 }
 
 /// Loop restarts remembered for mapping positions; enough for loops longer than the
@@ -304,6 +307,9 @@ impl Voice {
             jumps: [(0, 0); JUMPS],
             jump_count: 1,
             starved: false,
+            emitter: None,
+            direction: [Ramp::constant(0.0); 8],
+            doppler: Ramp::constant(1.0),
         }
     }
     /// Starts the source at `frame`. Runs on the game's thread, where a stream may seek.
@@ -328,6 +334,30 @@ impl Voice {
             * self.fade.value(time)
             * self.distance.value(time)
             * self.pause.value(time)
+    }
+    pub fn update_spatial(
+        &mut self,
+        p: super::Placement,
+        frame: u64,
+        len: u64,
+        curve: FadeCurve,
+        output_channels: usize,
+    ) {
+        let time = self.time(frame);
+        if self.direction.iter().all(|r| r.value(time) == 0.0) {
+            if output_channels == 1 {
+                self.direction[0] = Ramp::constant(1.0);
+            } else {
+                let turns = (self.pan.value(time) + 1.0) / 8.0;
+                self.direction[0] = Ramp::constant(sin_turns(0.25 - turns));
+                self.direction[1] = Ramp::constant(sin_turns(turns));
+            }
+        }
+        for (r, g) in self.direction.iter_mut().zip(p.gains) {
+            r.retarget(time, g, len, curve);
+        }
+        self.distance.retarget(time, p.distance_gain, len, curve);
+        self.doppler.retarget(time, p.doppler, len, curve);
     }
     /// Whether the voice is frozen by its own pause.
     pub fn paused(&self) -> bool {
@@ -409,14 +439,15 @@ impl Voice {
     fn update_speed(&mut self, frame: u64) {
         let rate = self.rate.value(frame);
         let pitch = self.pitch.value(frame);
-        if rate == 1.0 && pitch == 0.0 {
+        let doppler = self.doppler.value(frame);
+        if rate == 1.0 && pitch == 0.0 && doppler == 1.0 {
             self.step = self.base_step;
             self.bank_index = None;
             return;
         }
         // Every accepted rate (1/16..=8), pitch (±48 semitones) and pitch variation
         // (±24 more) combines to 1/1024..=512, which the fixed-point step represents.
-        let speed = (rate * exp2(pitch / 12.0)).clamp(1.0 / 1024.0, 512.0);
+        let speed = (rate * exp2(pitch / 12.0) * doppler).clamp(1.0 / 1024.0, 512.0);
         self.step = ((self.base_step as f64 * speed).round() as u64).max(1);
         self.bank_index = Some(SincBank::index(self.base_ratio * speed));
     }
@@ -464,8 +495,9 @@ impl Voice {
             && !self.distance.changing(local)
             && !self.pan.changing(local)
             && !self.pause.changing(local);
-        let fixed = constant.then(|| self.gains(local, out_channels));
-        let speeding = self.rate.changing(local) || self.pitch.changing(local);
+        let fixed = (constant && self.emitter.is_none()).then(|| self.gains(local, out_channels));
+        let speeding =
+            self.rate.changing(local) || self.pitch.changing(local) || self.doppler.changing(local);
         self.update_speed(local);
         for j in 0..frames {
             if self.done() {
@@ -478,12 +510,31 @@ impl Voice {
             let Some((left, right)) = self.next_frame() else {
                 return;
             };
-            let (gl, gr) = fixed.unwrap_or_else(|| self.gains(time, out_channels));
-            if out_channels == 1 {
-                out[j] += (left * gl + right * gr) as f32;
+            if self.emitter.is_some() {
+                let gains = self.direction.map(|r| r.value(time));
+                let norm = gains[..out_channels]
+                    .iter()
+                    .map(|g| g * g)
+                    .sum::<f64>()
+                    .sqrt();
+                let value = if self.channels == 1 {
+                    left
+                } else {
+                    (left + right) * 0.5
+                } * self.level(first + j as u64);
+                if norm > 0.0 {
+                    for c in 0..out_channels {
+                        out[j * out_channels + c] += (value * gains[c] / norm) as f32;
+                    }
+                }
             } else {
-                out[2 * j] += (left * gl) as f32;
-                out[2 * j + 1] += (right * gr) as f32;
+                let (gl, gr) = fixed.unwrap_or_else(|| self.gains(time, out_channels));
+                if out_channels == 1 {
+                    out[j] += (left * gl + right * gr) as f32;
+                } else {
+                    out[out_channels * j] += (left * gl) as f32;
+                    out[out_channels * j + 1] += (right * gr) as f32;
+                }
             }
             if self.state == State::Stopping && self.fade.finished(time + 1) {
                 self.state = State::Finished;
