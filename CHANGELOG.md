@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Optional `assets` module: a single background file/byte loader with a bounded
+  request queue, input/decode limits and one-shot polling/waiting handles returning
+  shared `Arc<Audio>`. Available on native targets, independently of the mixer.
+- `AudioCache`: a retained-data byte budget and LRU eviction that skips sounds
+  still referenced by callers or voices. Cache admission is best effort during
+  loading; an oversized sound or a pinned cache does not fail a successful decode.
+  The standalone cache also supports WebAssembly.
+- A `load_assets` example and asset-loading/cache documentation.
+
 ## 0.3.0
 
 ### Added
