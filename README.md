@@ -535,6 +535,48 @@ Render the example song to a WAV file:
 cargo run --example chiptune --features synth -- song.wav
 ```
 
+### Tracker instruments
+
+Opt in with `Instrument::chip: Some(ChipInstrument { .. })` or these score keys.
+Existing scores keep their sample bits. Each new note restarts source phase and
+macro age; ties continue them, and notes crossing `L` restart on the next lap.
+
+```text
+instrument table wavetable=0123456789abcdefedcba98765432100 macro-arpeggio=0,7,12 macro-arpeggio-step=ticks,6 macro-arpeggio-loop=0
+instrument lead wave=pulse quantize=ntsc-pulse macro-duty=0,1,2,3 macro-duty-loop=0 macro-pitch=0,-8,8 macro-pitch-loop=0
+instrument hat wave=noise noise=short noise-period=6 macro-volume=15,8,2,0
+instrument pcm sample=00040a0f080300 sample-bits=4 sample-rate=4000 sample-root=60 sample-loop=on
+```
+
+| Control | Format and bounds |
+| --- | --- |
+| Wavetable | `wavetable=HEX`, 2..256 unsigned four-bit nibbles, one per entry |
+| Sample | `sample=HEX`, 1..65536 unsigned values, **two hex digits per value**; `sample-bits=2..8` (default 4), `sample-rate=100..32000` (default 8000 Hz), `sample-root=0..127` (default MIDI 60), `sample-loop=off` (default) or `on` |
+| Noise | `wave=noise noise=long\|short noise-period=0..15` selects the NTSC period table, independent of note pitch |
+| Macros | `macro-volume` 0..15, `macro-duty` 0..3 (12.5/25/50/75%), `macro-arpeggio` ±48 semitones, `macro-pitch` ±1200 cents; comma-separated, up to 64 values each |
+| Macro clock | Each `macro-LANE-step=frames,COUNT,HZ` (both 1..1000, default `frames,1,60`) or `ticks,COUNT` (1..960) |
+| Macro ending | `macro-LANE-loop=INDEX` (zero-based) repeats from that index after the initial prefix; default `hold` keeps the last value |
+| Quantization | `quantize=volume` rounds combined ADSR/volume/velocity/macro gain to 16 levels; `ntsc-pulse` or `ntsc-triangle` also selects the matching period pitch model; `none` disables both |
+
+Macro steps use a rational clock relative to the note, independent of callback size;
+the first sample at or after each boundary takes the new value. Tick steps can differ
+by one sample from globally rounded score note positions. All clocks keep advancing
+at zero gain. Custom sources are mutually exclusive; tables/PCM reject wave/duty/noise
+settings, fixed noise rejects pitch modulation, and duplicate legacy/macro lanes are
+errors. Gate and ADSR apply to all sources; non-looping PCM also stops at its data end.
+
+Wavetables and PCM use sample-and-hold without anti-aliasing. PCM speed follows the
+ratio to its root note. NTSC pitch models use 11-bit timers and clamp out-of-range
+requests; they do not emulate hardware mute rules or cycle-accurate consoles. See the
+[full reference](https://docs.rs/audiobox/latest/audiobox/synth/#tracker-instruments-opt-in)
+for exact clocks, ranges and Rust types.
+
+Export the four voices separately and together:
+
+```sh
+cargo run --example tracker_instruments --features synth -- target/tracker-instruments
+```
+
 ### Synthesized drum kits
 
 The `synth` feature also provides kick, snare, closed/open hi-hat, tom, clap and crash

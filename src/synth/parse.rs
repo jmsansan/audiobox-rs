@@ -7,6 +7,7 @@ use super::score::{
 };
 use super::wave::{Duty, NoiseMode, Waveform};
 use crate::{Error, ErrorCode};
+mod chip;
 
 /// An error in score text, with the 1-based line and column (in characters) where it was found.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -340,6 +341,8 @@ fn parse_instrument(cursor: &mut Cursor) -> Parsed<(String, Instrument, Pos)> {
     let (mut drum_kind, mut drum_kit) = (None, None);
     let mut drum_options = Vec::new();
     let mut melodic_key = None;
+    let mut chip_options = Vec::new();
+    let mut chip_wave_key = None;
     loop {
         let (pos, word) = cursor.word();
         if word.is_empty() {
@@ -369,7 +372,13 @@ fn parse_instrument(cursor: &mut Cursor) -> Parsed<(String, Instrument, Pos)> {
         if !matches!(key, "volume" | "drum" | "kit") && !key.starts_with("drum-") {
             melodic_key = Some(pos);
         }
+        if matches!(key, "wave" | "duty" | "duty-step" | "noise") {
+            chip_wave_key = Some(pos);
+        }
         match key {
+            key if chip::is_key(key) => {
+                chip_options.push((key.to_owned(), value.to_owned(), value_pos))
+            }
             "drum" => {
                 drum_kind = Some(match value {
                     "kick" => super::DrumKind::Kick,
@@ -519,6 +528,9 @@ fn parse_instrument(cursor: &mut Cursor) -> Parsed<(String, Instrument, Pos)> {
         offsets,
         step_ms: arpeggio_step,
     });
+    if !chip_options.is_empty() {
+        chip::apply(chip_options, &mut instrument, chip_wave_key)?;
+    }
     instrument.validate().map_err(|e| name_pos.wrap(e))?;
     Ok((name, instrument, name_pos))
 }

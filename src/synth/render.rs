@@ -1,3 +1,4 @@
+use super::chip::{ChipPlan, ChipVoice};
 use super::drum::{DrumPlan, DrumVoice};
 use super::score::{Instrument, Score};
 use super::wave::{Aliasing, Duty, Oscillator, Waveform};
@@ -46,6 +47,7 @@ impl Score {
 
 #[derive(Clone, Debug)]
 struct Plan {
+    chip: Option<ChipPlan>,
     drum: Option<DrumPlan>,
     waveform: Waveform,
     attack: u64,
@@ -59,11 +61,15 @@ struct Plan {
     duty_sweep: Option<(Vec<Duty>, u64)>,
 }
 impl Plan {
-    fn new(instrument: &Instrument, rate: u32) -> Self {
+    fn new(instrument: &Instrument, rate: u32, tempo: u16, ticks: u16) -> Self {
         let samples = |ms: u32| (ms as u64 * rate as u64 + 500) / 1000;
         let step = |ms: u32| samples(ms).max(1);
         let e = instrument.envelope;
         Self {
+            chip: instrument
+                .chip
+                .as_ref()
+                .map(|chip| ChipPlan::new(chip, rate, tempo, ticks)),
             drum: instrument.drum.map(|d| DrumPlan::new(d, rate)),
             waveform: instrument.waveform,
             attack: samples(e.attack_ms),
@@ -133,6 +139,7 @@ enum Stage {
 
 #[derive(Clone, Debug)]
 struct Voice {
+    chip: ChipVoice,
     drum: DrumVoice,
     drumming: bool,
     oscillator: Oscillator,
@@ -148,6 +155,7 @@ struct Voice {
 impl Voice {
     fn new(aliasing: Aliasing) -> Self {
         Self {
+            chip: ChipVoice::new(aliasing),
             drum: DrumVoice::new(aliasing),
             drumming: false,
             oscillator: Oscillator::new(aliasing),
@@ -169,6 +177,9 @@ impl Voice {
         self.from = self.level;
         self.elapsed = 0;
         self.frequency = cents_to_hz(event.cents);
+        if plans[event.instrument].chip.is_some() {
+            self.chip.reset();
+        }
         self.drumming = plans[event.instrument].drum.is_some();
         if let Some(drum) = &plans[event.instrument].drum {
             self.level = 0.0;
@@ -238,6 +249,17 @@ impl Voice {
             self.frequency
         };
         let waveform = plan.waveform(self.elapsed);
+        if let Some(chip) = &plan.chip {
+            let frequency = chip.frequency(frequency, self.elapsed);
+            let (sample, finished) = self.chip.sample(chip, waveform, frequency, self.elapsed);
+            let gain = chip.gain(level * event.amplitude * plan.volume, self.elapsed);
+            self.elapsed += 1;
+            if finished {
+                self.stage = Stage::Idle;
+                self.level = 0.0;
+            }
+            return sample * gain;
+        }
         self.elapsed += 1;
         self.oscillator.next(waveform, frequency, rate) * level * event.amplitude * plan.volume
     }
@@ -300,7 +322,7 @@ impl Synth {
         let plans: Vec<Plan> = score
             .instruments()
             .iter()
-            .map(|(_, i)| Plan::new(i, sample_rate))
+            .map(|(_, i)| Plan::new(i, sample_rate, score.tempo(), score.ticks_per_quarter()))
             .collect();
         let song_end = to_samples(score.length_ticks());
         let loop_start = to_samples(score.loop_tick().unwrap_or(0));

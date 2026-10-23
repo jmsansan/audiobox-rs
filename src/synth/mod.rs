@@ -66,6 +66,79 @@
 //! sines and filtered noise, with a six-oscillator metal bank for hats/cymbals.
 //! These are synthetic characters, not emulations of a particular console.
 //!
+//! ## Tracker instruments (opt-in)
+//!
+//! [`Instrument::chip`] selects a [`ChipInstrument`]. It is `None` by default, so
+//! old scores retain their sample bits. All new keys opt in, even `quantize=none`.
+//! New note triggers reset chip source phase, noise seed, PCM position and macro
+//! age. Ties continue them; a note carried across `L` restarts them on the next lap.
+//! Source clocks advance at zero gain. Gate/ADSR still apply to every chip source.
+//!
+//! | Key | Value | Default |
+//! | --- | --- | --- |
+//! | `wavetable` | 2..=256 hex nibbles, one unsigned four-bit value each | none |
+//! | `sample` | 1..=65536 hex byte pairs, one unsigned PCM value each | none |
+//! | `sample-bits` / `sample-rate` | PCM depth 2..=8 / original rate 100..=32000 Hz | `4` / `8000` |
+//! | `sample-root` / `sample-loop` | PCM root MIDI note 0..=127 / `on` or `off` | `60` / `off` |
+//! | `noise-period` | NTSC noise period-table index 0..=15; requires `wave=noise` | none |
+//! | `macro-volume` | 1..=64 comma-separated values, 0..=15 | none |
+//! | `macro-duty` | 0..=3 selects 12.5/25/50/75%; pulse only | none |
+//! | `macro-arpeggio` | Relative offsets -48..=48 semitones | none |
+//! | `macro-pitch` | Relative offsets -1200..=1200 cents | none |
+//! | `macro-LANE-step` | `frames,COUNT,HZ` (both 1..=1000) or `ticks,COUNT` (1..=960) | `frames,1,60` |
+//! | `macro-LANE-loop` | Zero-based start index, or `hold` | `hold` |
+//! | `quantize` | `none`, `volume`, `ntsc-pulse`, `ntsc-triangle` | `none` |
+//!
+//! Macro lane names are `volume`, `duty`, `arpeggio` and `pitch`. Each lane has its
+//! own interval. Index zero starts at the note's first sample. Frame clocks are
+//! explicit simulation clocks, independent of callbacks; tick clocks follow score
+//! tempo/TPQ. Steps occur at the first sample at or after the exact rational time,
+//! with no cumulative rounding; note-relative tick steps can be one sample later
+//! than globally floor-rounded score note positions. A looping lane plays its
+//! prefix once, then repeats from its loop index. A held lane keeps its last value
+//! through release. Legacy `arpeggio`/duty sweeps cannot duplicate the same lane.
+//!
+//! Wavetables map 0..15 to -1..+1 and loop once per note period; PCM maps its bit
+//! range to -1..+1 and advances at `sample-rate * note-Hz / root-Hz`. PCM requires
+//! one byte pair per value even at four bits (`000f`, not `0f`); values exceeding
+//! the selected depth are errors. Non-looping PCM stops early at its data end and
+//! clears the envelope. Whole-sample loops continue until gate/release ends. These
+//! sources use sample-and-hold and 32.32 phase steps, with no anti-aliasing. Wave
+//! frequency is limited to Nyquist; PCM playback ratios preserve relative pitch.
+//! Extreme PCM increments saturate (one-shot) or wrap (looping) without overflow.
+//! Custom sources are mutually exclusive; PCM/table sources reject wave/duty/noise
+//! keys. Sample controls without data and macro controls without values are errors.
+//!
+//! Period noise bypasses note pitch and the legacy frequency*93 noise clock. It uses
+//! [`NTSC_CLOCK`] / [`NTSC_NOISE_PERIODS`], with the same seeded 15-bit long (32767)
+//! or short (93) register. Pitch modulation is rejected for fixed noise. In the
+//! band-limited mode register output is averaged within each audio sample.
+//! `quantize=volume` rounds the combined ADSR, instrument/channel volume, velocity
+//! and volume-macro gain to one of 16 levels before the master gain. NTSC models
+//! additionally round the final pitch to an 11-bit timer: pulse divider 16 and timer
+//! 8..=2047, triangle divider 32 and timer 0..=2047. Frequencies outside these ranges
+//! clamp to the nearest timer. Each model requires the matching waveform. These
+//! are period models, not cycle-accurate hardware or a model of hardware mute rules.
+//! See [NESdev noise](https://www.nesdev.org/wiki/APU_Noise),
+//! [pulse](https://www.nesdev.org/wiki/APU_Pulse) and
+//! [triangle](https://www.nesdev.org/wiki/APU_Triangle) for the hardware tables.
+//!
+//! ```
+//! use audiobox::synth::Score;
+//! let score: Score = "
+//! instrument table wavetable=0123456789abcdefedcba98765432100 macro-arpeggio=0,7,12 macro-arpeggio-step=ticks,6 macro-arpeggio-loop=0
+//! instrument pulse wave=pulse quantize=ntsc-pulse macro-duty=0,1,2,3 macro-duty-loop=0
+//! instrument noise wave=noise noise=short noise-period=6 macro-volume=15,8,2,0
+//! instrument pcm sample=00040a0f080300 sample-rate=4000 sample-loop=on sample-bits=4
+//! channel a=@table o5 c4
+//! channel b=@pulse o3 c4
+//! channel c=@noise c4
+//! channel d=@pcm o3 c4
+//! ".parse()?;
+//! let audio = score.render(48_000)?;
+//! # Ok::<(), audiobox::Error>(())
+//! ```
+//!
 //! ## Commands
 //!
 //! Commands are written one after another; spaces between them are optional.
@@ -143,6 +216,11 @@
 //! division and rounding, which IEEE 754 defines exactly; `sin`, `exp` and `powf` are
 //! replaced by the crate's own series. Times in milliseconds are rounded to whole
 //! samples, and note positions are computed from ticks with integer arithmetic.
+mod chip;
+pub use chip::{
+    ChipInstrument, ChipSample, ChipSource, MAX_MACRO_VALUES, MAX_SAMPLE_VALUES, Macro, MacroStep,
+    NTSC_CLOCK, NTSC_NOISE_PERIODS, PitchTable, Wavetable, noise_clock,
+};
 mod drum;
 pub use drum::{Drum, DrumKind, DrumKit};
 mod parse;

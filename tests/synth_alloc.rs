@@ -75,13 +75,38 @@ fn fill_does_not_allocate() {
         },
     )
     .unwrap();
+    let chip_score = Score::parse(
+        "tempo 180
+         instrument p quantize=ntsc-pulse macro-duty=0,1,2,3 macro-duty-loop=0 macro-arpeggio=0,7,12 macro-arpeggio-loop=0 macro-pitch=0,-10,10 macro-pitch-loop=0 macro-volume=0,15,7 macro-volume-loop=0
+         instrument w wavetable=0123456789abcdef macro-volume=15,7,0 macro-volume-loop=0
+         instrument n wave=noise noise=short noise-period=0 macro-volume=15,0 macro-volume-loop=0
+         instrument s sample=00040f08 sample-rate=1000 sample-loop=on
+         instrument one sample=0f070300 sample-rate=1000 adsr=2,0,100,10
+         channel p=@p l16 L [c e g]16
+         channel w=@w l8 L [c g]12
+         channel n=@n l16 L [c r]24
+         channel s=@s l8 L [c g]12
+         channel one=@one l16 L [c r]24",
+    ).unwrap();
+    let mut chip_synth = Synth::new(
+        &chip_score,
+        48_000,
+        &RenderOptions {
+            loops: None,
+            ..Default::default()
+        },
+    )
+    .unwrap();
     let mut buffer = vec![0.0f32; 480];
     COUNTING.set(true);
     for _ in 0..500 {
         synth.fill(&mut buffer);
+        chip_synth.fill(&mut buffer);
     }
     synth.reset();
     synth.fill(&mut buffer);
+    chip_synth.reset();
+    chip_synth.fill(&mut buffer);
     COUNTING.set(false);
     assert_eq!(ALLOCATIONS.load(Ordering::SeqCst), 0);
     assert_eq!(FREES.load(Ordering::SeqCst), 0);

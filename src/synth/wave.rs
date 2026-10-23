@@ -163,6 +163,12 @@ impl Oscillator {
         };
         self.tone(Shape::Pulse(duty), frequency, sample_rate)
     }
+    /// Separate fixed register clock for opt-in period-table noise.
+    pub(super) fn clocked_noise(&mut self, mode: NoiseMode, clock: f64, sample_rate: u32) -> f64 {
+        self.lfsr.set_mode(mode);
+        let increment = (clock / sample_rate as f64 * ONE as f64).round() as u64;
+        self.noise(increment)
+    }
     fn tone(&mut self, shape: Shape, frequency: f64, sample_rate: u32) -> f64 {
         let rate = sample_rate.max(1) as f64;
         let increment = (clamp_frequency(frequency, rate) / rate * ONE as f64).round() as u64;
