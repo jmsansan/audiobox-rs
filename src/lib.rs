@@ -76,6 +76,7 @@ mod flac;
 mod formats;
 mod io;
 mod math;
+pub mod metadata;
 #[cfg(feature = "mixer")]
 #[cfg_attr(docsrs, doc(cfg(feature = "mixer")))]
 pub mod mixer;
@@ -99,4 +100,5 @@ pub use codec::{
 };
 pub use dsp::*;
 pub use error::{Error, ErrorCode, Result};
+pub use metadata::{CoverArt, Tags};
 pub use types::*;

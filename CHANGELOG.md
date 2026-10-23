@@ -4,6 +4,12 @@
 
 ### Added
 
+- Structured `Tags` in `EncodeOptions::tags` and `DecodeInfo::tags`, preserving the
+  existing native metadata map. MP3 writes ID3v2.4 UTF-8 text/COMM/APIC, FLAC writes
+  Vorbis comments and front-cover PICTURE blocks, and WAV INFO adds track/year/genre.
+  JPEG/PNG cover bytes round-trip exactly; unsupported WAV fields are errors.
+- Metadata byte/field bounds, UTF-8/size validation, tagged decode/seek tests,
+  a `tag_audio` example and an optional independent Mutagen/FFmpeg verification script.
 - Optional `music` module (enables `mixer`): fixed-tempo beat/bar transport,
   atomic track transitions and crossfades, one-shot cues, and synchronized intensity
   layers. Queued operations are quantized on audio-thread receipt, and group
@@ -22,6 +28,11 @@
 
 - FFmpeg interoperability runs on releases and manual CI dispatches, leaving
   routine push/PR checks independent of FFmpeg installation.
+
+### Breaking
+
+- Full struct literals for `EncodeOptions` and `DecodeInfo` need the new `tags`
+  field, or `..Default::default()`. Existing `metadata` map callers keep their keys.
 
 ## 0.3.0
 
