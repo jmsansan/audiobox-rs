@@ -66,6 +66,35 @@ pub(crate) fn exp(x: f64) -> f64 {
     exp2(x * std::f64::consts::LOG2_E)
 }
 
+/// Deterministic base-two logarithm. The atanh series converges with |z| <= 1/3.
+pub(crate) fn log2(mut x: f64) -> f64 {
+    if x <= 0.0 || !x.is_finite() {
+        return if x == 0.0 {
+            f64::NEG_INFINITY
+        } else if x > 0.0 {
+            x
+        } else {
+            f64::NAN
+        };
+    }
+    let mut offset = 0;
+    if x < f64::MIN_POSITIVE {
+        x *= (1u64 << 52) as f64;
+        offset = -52;
+    }
+    let bits = x.to_bits();
+    let exponent = ((bits >> 52) & 0x7ff) as i32 - 1023 + offset;
+    let m = f64::from_bits((bits & ((1u64 << 52) - 1)) | (1023u64 << 52));
+    let z = (m - 1.0) / (m + 1.0);
+    let mut term = z;
+    let mut sum = z;
+    for k in 1..=17 {
+        term *= z * z;
+        sum += term / (2 * k + 1) as f64;
+    }
+    exponent as f64 + 2.0 * sum * std::f64::consts::LOG2_E
+}
+
 /// Frequency in Hz of a pitch `cents` above or below A4 (440 Hz).
 pub(crate) fn cents_to_hz(cents: f64) -> f64 {
     440.0 * exp2(cents / 1200.0)
@@ -93,5 +122,8 @@ mod tests {
         assert_eq!(db_to_gain(f64::NEG_INFINITY), 0.0);
         assert_eq!(cents_to_hz(0.0), 440.0);
         assert_eq!(cents_to_hz(1200.0), 880.0);
+        for x in [1e-320f64, 1e-100, 0.001, 0.5, 1.0, 1.99, 100.0, 1e100] {
+            assert!((log2(x) - x.log2()).abs() < 2e-13, "log2({x})");
+        }
     }
 }

@@ -671,6 +671,8 @@ fn start(music: &'static [u8], jump: Arc<audiobox::Audio>) -> audiobox::Result<(
   so a pause menu stops the game's sounds and keeps its own; start a voice partway
   through; read a voice's state and position without blocking the audio thread.
 - **Buses:** a master bus and named buses, each with a gain that can fade.
+- **Bus effects:** ordered low/high-pass filters, compression and sidechain ducking,
+  delay and reverb, with sample-scheduled parameter ramps; see below.
 - **Master limiter:** an optional look-ahead peak limiter on the master bus
   (`MixerConfig::limiter`) keeps the sum of many voices at or below a ceiling, passes
   quieter signals unchanged, and reports its gain reduction for meters.
@@ -689,6 +691,74 @@ Render a short scene with music and effects to a WAV file:
 
 ```sh
 cargo run --example game_audio --features mixer,sfx -- game.wav
+```
+
+### Bus effects and sidechains
+
+`mixer::effects` prepares up to 16 effects per bus on the control thread. Install a
+chain with `set_effects`, update a matching slot with `set_effect`, or schedule either
+operation with `handle.at(frame)`. Numeric updates ramp per sample and preserve DSP
+history. The same chain API is the extension point for additional effect variants.
+
+```rust
+use audiobox::mixer::{Fade, Mixer, MixerConfig};
+use audiobox::mixer::effects::{Compressor, Delay, Effect, EffectTime, Reverb};
+
+fn main() -> audiobox::Result<()> {
+    let (_mixer, mut handle) = Mixer::new(MixerConfig {
+        buses: vec!["music".into(), "dialogue".into()],
+        ..Default::default()
+    })?;
+    let music = handle.bus("music").unwrap();
+    let dialogue = handle.bus("dialogue").unwrap();
+    handle.set_effects(music, &[
+        Effect::LowPass { cutoff_hz: 8000.0 },
+        Effect::Compressor(Compressor::ducking(dialogue)),
+        Effect::Delay(Delay {
+            time: EffectTime::Beats { beats: 0.5, bpm: 120.0 },
+            ..Default::default()
+        }),
+        Effect::Reverb(Reverb::default()),
+    ])?;
+    handle.set_effect(music, 0, Effect::LowPass { cutoff_hz: 600.0 }, Fade::linear(0.2))?;
+    Ok(())
+}
+```
+
+Effects run before the bus gain. A compressor's optional sidechain hears another
+named bus **after** its effects, gain and pause fade, in the same frame. Named buses
+are ordered by these dependencies, then summed with direct master voices; master
+effects run on the sum before master gain and the existing limiter. A master key,
+self key or dependency cycle is refused. Application-time cycles, missing slots,
+type changes and delay-capacity increases report `MixerEvent::EffectsRejected` and
+preserve the previous settings. Successful chain edits report `EffectsApplied`.
+Poll events regularly to free retired chains; voice and effect event queues are
+independent, so their combined polling order need not follow frame order.
+
+The filters are first-order (6 dB/octave, -3 dB at cutoff). The hard-knee compressor
+links stereo peak detection; attack/release are exponential time constants, and
+`depth` controls the amount of gain reduction. Delay has a prepared `max_seconds`
+capacity, fractional read positions, signed feedback and a linear dry/wet mix.
+Delay-time ramps produce pitch changes. Beat times take explicit BPM: send updated
+settings to follow tempo changes. Reverb uses four feedback combs and two allpass
+diffusers per channel; `decay_seconds` specifies nominal T60 with zero damping.
+Damping shortens high-frequency tails. Parameter ranges are in the API docs.
+
+Paused buses freeze their effect buffers and automation clock. Tails continue after
+voices end. Replacing/removing a chain is immediate and resets/removes its state;
+fade the bus around structural edits if a discontinuity would be audible. With no
+chains installed, the existing mixer path is unchanged. An installed chain can
+change summation rounding, including at dry/neutral settings. No latency is added
+to the dry path; delay and reverb tails belong to their wet paths.
+
+Rendering allocates no effect memory and frees no chains, including when the handle
+is disconnected. At most `MixerConfig::queue` owning chain edits may await polling;
+further edits return an error until events are reclaimed. Delay/reverb buffers are
+allocated only at installation preparation. Render an example with filter ramps,
+ducking, a tempo-synced delay and reverb:
+
+```sh
+cargo run --example bus_effects --features mixer -- bus-effects.wav
 ```
 
 ## Development and releases

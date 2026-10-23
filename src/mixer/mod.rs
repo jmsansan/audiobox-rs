@@ -70,6 +70,8 @@
 //! Every voice plays through a bus: the master bus, or one of the named buses of
 //! [`MixerConfig::buses`], which play through the master. A voice's samples are scaled
 //! by its gain, its fades, its pan, its bus's gain and the master gain.
+//! [`effects`] adds ordered bus chains, ramped filters, compression/ducking, delay
+//! and reverb. Sidechain dependencies order named buses before master processing.
 //!
 //! Many voices together can go beyond full scale. [`MixerConfig::limiter`] enables a
 //! [`MasterLimiter`] on the master bus, off by default, which keeps the output at or
@@ -117,6 +119,7 @@
 //! start of the next render. The same changes at the same frames give the same samples
 //! on every platform: resampling, panning and fades use only basic IEEE arithmetic and
 //! the crate's own sine series.
+pub mod effects;
 mod limiter;
 #[cfg(feature = "music")]
 #[cfg_attr(docsrs, doc(cfg(feature = "music")))]
@@ -555,6 +558,10 @@ pub enum MixerEvent {
     Limited(VoiceId),
     /// The voice's stream failed and the voice stopped.
     Failed(VoiceId, ErrorCode),
+    /// A bus effect chain was installed at this output frame.
+    EffectsApplied(BusId, u64),
+    /// An effect edit was refused; the existing chain and settings are unchanged.
+    EffectsRejected(BusId, ErrorCode),
     /// A whole music operation took effect at this output frame; a fade may continue.
     #[cfg(feature = "music")]
     MusicApplied(music::MusicId, u64),
@@ -564,6 +571,8 @@ pub enum MixerEvent {
 }
 
 enum Action {
+    Effects(Box<effects::Edit>),
+    Effect(usize, usize, effects::Settings, u64, FadeCurve),
     #[cfg(feature = "music")]
     Music(Box<music::Request>),
     Play(Box<Voice>),
@@ -599,10 +608,13 @@ struct Bus {
     pausing: bool,
     paused: bool,
     buffer: Vec<f32>,
+    effects: Option<Box<effects::Chain>>,
+    effect_clock: u64,
 }
 
 /// The audio thread's half of the mixer. See the [module documentation](self).
 pub struct Mixer {
+    effects: effects::AudioEffects,
     rate: u32,
     channels: usize,
     max_voices: usize,
@@ -628,6 +640,7 @@ pub struct Mixer {
 
 /// The game's half of the mixer: starts, changes and stops voices.
 pub struct MixerHandle {
+    effects: effects::ControlEffects,
     rate: u32,
     channels: usize,
     buses: Vec<String>,
@@ -719,7 +732,9 @@ impl Mixer {
         let (return_tx, return_rx) = queue::queue(returns);
         let clock = Arc::new(AtomicU64::new(0));
         let status = Arc::new(status::Table::new(slots));
+        let (audio_effects, control_effects) = effects::create(queue, buses.len() + 1);
         let mixer = Mixer {
+            effects: audio_effects,
             rate: sample_rate,
             channels,
             max_voices,
@@ -733,6 +748,8 @@ impl Mixer {
                     pausing: false,
                     paused: false,
                     buffer: vec![0.0; BLOCK * channels],
+                    effects: None,
+                    effect_clock: 0,
                 })
                 .collect(),
             pending: Vec::with_capacity(queue),
@@ -748,6 +765,7 @@ impl Mixer {
             limiter_gain: limiter_gain.clone(),
         };
         let handle = MixerHandle {
+            effects: control_effects,
             rate: sample_rate,
             channels,
             buses,
@@ -832,6 +850,7 @@ impl Mixer {
         self.retire_done();
         self.publish();
         self.send_returns();
+        self.effects.send_returns();
         self.clock.store(end, Ordering::Release);
     }
 
@@ -887,6 +906,10 @@ impl Mixer {
 
     fn apply(&mut self, frame: u64, action: Action) {
         match action {
+            Action::Effects(edit) => self.apply_effects(frame, edit),
+            Action::Effect(bus, slot, settings, len, curve) => {
+                self.apply_effect(bus, slot, settings, len, curve)
+            }
             #[cfg(feature = "music")]
             Action::Music(request) => self.apply_music(frame, request),
             Action::Play(voice) => self.start(frame, voice),
@@ -1160,29 +1183,33 @@ impl Mixer {
         }
         self.retire_done();
         let end = first + frames as u64;
-        let (master, master_pause) = (self.buses[0].gain, self.buses[0].pause);
-        for (b, bus) in self.buses.iter().enumerate() {
-            let constant = !bus.gain.changing(first)
-                && !bus.pause.changing(first)
-                && !master.changing(first)
-                && !master_pause.changing(first);
-            let gain_at = |frame| {
-                let pause = if b == 0 {
-                    master_pause.value(frame)
-                } else {
-                    bus.pause.value(frame) * master_pause.value(frame)
+        if self.buses.iter().any(|bus| bus.effects.is_some()) {
+            self.mix_effects(first, out);
+        } else {
+            let (master, master_pause) = (self.buses[0].gain, self.buses[0].pause);
+            for (b, bus) in self.buses.iter().enumerate() {
+                let constant = !bus.gain.changing(first)
+                    && !bus.pause.changing(first)
+                    && !master.changing(first)
+                    && !master_pause.changing(first);
+                let gain_at = |frame| {
+                    let pause = if b == 0 {
+                        master_pause.value(frame)
+                    } else {
+                        bus.pause.value(frame) * master_pause.value(frame)
+                    };
+                    bus_gain(b, &bus.gain, &master, frame) * pause
                 };
-                bus_gain(b, &bus.gain, &master, frame) * pause
-            };
-            let fixed = gain_at(first);
-            for j in 0..frames {
-                let g = if constant {
-                    fixed
-                } else {
-                    gain_at(first + j as u64)
-                };
-                for c in 0..ch {
-                    out[j * ch + c] += (bus.buffer[j * ch + c] as f64 * g) as f32;
+                let fixed = gain_at(first);
+                for j in 0..frames {
+                    let g = if constant {
+                        fixed
+                    } else {
+                        gain_at(first + j as u64)
+                    };
+                    for c in 0..ch {
+                        out[j * ch + c] += (bus.buffer[j * ch + c] as f64 * g) as f32;
+                    }
                 }
             }
         }
@@ -1404,8 +1431,13 @@ impl MixerHandle {
     pub fn set_bus_gain(&mut self, bus: BusId, gain: f32, fade: Fade) -> Result<()> {
         self.now().set_bus_gain(bus, gain, fade)
     }
-    /// Returns the next event, freeing finished voices on this thread.
+    /// Returns the next event, freeing finished voices and retired effect chains
+    /// on this thread. Voice and effect queues are independent; their combined
+    /// polling order is not a chronological ordering of both event kinds.
     pub fn poll_event(&mut self) -> Option<MixerEvent> {
+        if let Some(event) = self.effects.poll() {
+            return Some(event);
+        }
         while let Some(returned) = self.returns.pop() {
             drop(returned.voice);
             #[cfg(feature = "music")]
