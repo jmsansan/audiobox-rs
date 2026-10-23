@@ -22,6 +22,8 @@ synth = []
 sfx = ["synth"]
 # Real-time mixer for games (`audiobox::mixer`).
 mixer = []
+# Beat/bar-aligned music transitions, cues and intensity layers.
+music = ["mixer"]
 # Background loading and a budgeted cache of decoded sounds (`audiobox::assets`).
 assets = []
 
@@ -46,3 +48,7 @@ required-features = ["mixer", "sfx"]
 [[example]]
 name = "load_assets"
 required-features = ["assets"]
+
+[[example]]
+name = "adaptive_music"
+required-features = ["music", "synth"]

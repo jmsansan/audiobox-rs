@@ -45,6 +45,7 @@ only what you use:
 | `synth` | [`audiobox::synth`](https://docs.rs/audiobox/latest/audiobox/synth/) | 8-bit style synthesizer and text score format |
 | `sfx` | [`audiobox::sfx`](https://docs.rs/audiobox/latest/audiobox/sfx/) | Parametric sound effects with seeded presets (enables `synth`) |
 | `assets` | `audiobox::assets` | Background loading on native targets and a budgeted cache of decoded sounds |
+| `music` | `audiobox::music` | Beat/bar transitions, crossfades, cues and intensity layers (enables `mixer`) |
 
 ```toml
 [dependencies]
@@ -99,6 +100,63 @@ fn game_audio() -> audiobox::Result<()> {
 
 More in [`examples/`](examples): `convert`, `chiptune` (a song to WAV), `sfx` (effects
 to WAV) and `game_audio` (music and effects mixed on an audio thread).
+
+### Music that follows the game
+
+The `music` feature schedules a complete track transition, cue or intensity change
+as one mixer command. A track holds up to 16 stems, each a `Sound`: shared decoded
+audio, a streaming decoder or a synthesizer. Stems start together and keep advancing
+at zero gain, so raising the game intensity reveals the correct musical position.
+
+```rust
+use audiobox::music::{Music, TimeSignature, Timing, Track, Transport};
+use audiobox::mixer::{BusId, Fade, Mixer, MixerConfig};
+use audiobox::Audio;
+use std::sync::Arc;
+
+fn start_music(sound: Arc<Audio>) -> audiobox::Result<()> {
+    let (mut mixer, mut handle) = Mixer::new(MixerConfig::default())?;
+    let grid = Transport::new(48_000, 120.0, TimeSignature::default(), 0)?;
+    let music = Music::new(&mut handle, grid, BusId::MASTER)?;
+    music.transition(&mut handle, Track::new(sound), 0.0, Timing::BAR, Fade::linear(0.5))?;
+    // The host calls mixer.render in its audio callback and polls handle events.
+    Ok(())
+}
+```
+
+`Timing::NOW` applies at receipt, `BEAT` at the next beat and `BAR` at the next bar.
+The audio thread resolves timing, using the greater of its current output frame and
+`Timing::not_before`. Beat/bar means **strictly after** that frame, including when it
+already lies on a boundary. BPM counts quarter notes, rounded to 0.001 BPM; the time
+signature defines the beat unit (an eighth note in 6/8). Every grid boundary is
+rounded independently to the nearest output frame, avoiding accumulated drift.
+
+Use `Track::layers` for intensity stems. Each `Layer::intensity = [low, high]` maps
+intensity to zero gain at/below `low` and full `Layer::gain` at/above `high`, linearly
+between. Equal endpoints are a step; the default `[0, 0]` is always on. Schedule
+`Music::set_intensity` with a `Fade` to smooth changes. `Music::cue` adds a finite
+one-shot source, independently of track transitions and `Music::stop`.
+
+Transitions reuse the mixer's linear, equal-power and exponential fade curves. A
+full submission queue changes nothing; insufficient voices reject the complete
+group without fading the previous track. `MixerEvent::MusicApplied(id, frame)`
+reports when an operation starts, and `MusicRejected` reports audio-side rejection.
+Reserve enough mixer voices for both tracks during a crossfade and for cues/effects;
+music uses priority 255, and equal-priority sounds can still steal it. Enabling
+`music` reserves return storage for up to 16 voices per queued command; poll events
+regularly to free containers and finished voices off the audio thread.
+As with normal mixer voices, exhausting both return buffers without polling can
+free retired data on audio; the reservation covers one render's worst case.
+
+Multilayer sources must share sample rate and known frame length. The caller supplies
+matching musical timing, compatible loops and finite cues, including when a source's
+length is unknown. A bus pause keeps its stems together but the output-frame grid
+continues; the controller does not follow rate/pitch changes. A limiter's lookahead
+delays every audible boundary by `handle.latency()` frames.
+
+Run `cargo run --example adaptive_music --features music,synth -- music.wav` for
+synthetic stems, an intensity fade, a cue and a bar-aligned transition to a synthetic
+FLAC recording. Device output is provided by the host.
 
 ### Background loading and cached sounds
 
