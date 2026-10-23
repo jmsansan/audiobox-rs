@@ -120,6 +120,9 @@
 //! on every platform: resampling, panning and fades use only basic IEEE arithmetic and
 //! the crate's own sine series.
 pub mod effects;
+#[cfg(feature = "events")]
+#[cfg_attr(docsrs, doc(cfg(feature = "events")))]
+pub mod events;
 mod limiter;
 #[cfg(feature = "music")]
 #[cfg_attr(docsrs, doc(cfg(feature = "music")))]
@@ -423,7 +426,8 @@ pub enum Distance {
 pub struct Instances {
     /// Voices with the same key share the limits. [`Instances::of`] keys a sound by
     /// its identity, so every voice of that audio counts, also through clones and
-    /// `Arc`s. Keys you pick yourself should be below 2^63, where those identities are.
+    /// `Arc`s. Keys you pick yourself should be below 2^63; internal audio and event
+    /// identities occupy the upper half of the key space.
     pub key: u64,
     /// Most voices playing at once; 0 for no limit.
     pub max: u16,
