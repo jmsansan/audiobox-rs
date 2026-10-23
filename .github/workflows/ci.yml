@@ -59,6 +59,8 @@ jobs:
           CARGO_TARGET_WASM32_WASIP1_RUNNER: node --no-warnings scripts/wasi-run.mjs
 
   interoperability:
+    # Keep FFmpeg installation out of the normal push/PR path.
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'release'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

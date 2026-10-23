@@ -591,9 +591,11 @@ python3 scripts/build-site.py && node --test site/tests/engine.test.mjs
 cargo publish --dry-run
 ```
 
-The interoperability tests use an installed FFmpeg **only in tests**. CI also checks
-the MSRV and FFmpeg interoperability; the website is built on pull requests and
-deployed from `main`. The `.crate` contains the Rust implementation,
+The interoperability tests use an installed FFmpeg **only in tests**. Their CI job
+runs on published releases and manual dispatches of the **Rust** workflow, so
+routine push/PR checks do not wait for FFmpeg installation. Normal CI checks the
+MSRV and codec regressions; the website is built on pull requests and deployed
+from `main`. The `.crate` contains the Rust implementation,
 tests, examples, this README, the changelog and the MIT license; it excludes the
 website and build output.
 

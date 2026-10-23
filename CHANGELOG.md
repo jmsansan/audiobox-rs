@@ -13,6 +13,11 @@
   The standalone cache also supports WebAssembly.
 - A `load_assets` example and asset-loading/cache documentation.
 
+### Changed
+
+- FFmpeg interoperability runs on releases and manual CI dispatches, leaving
+  routine push/PR checks independent of FFmpeg installation.
+
 ## 0.3.0
 
 ### Added
