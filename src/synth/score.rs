@@ -189,6 +189,8 @@ pub struct DutySweep {
 /// The sound of a channel: a waveform, an envelope, a volume and pitch effects.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct Instrument {
+    /// A finite synthesized one-shot instead of a melodic oscillator/ADSR.
+    pub drum: Option<super::Drum>,
     pub waveform: Waveform,
     pub envelope: Envelope,
     /// 0 through 15. The default is 15.
@@ -209,6 +211,7 @@ impl Instrument {
     /// The waveform at full volume with the default envelope and no effects.
     pub fn new(waveform: Waveform) -> Self {
         Self {
+            drum: None,
             waveform,
             envelope: Envelope::default(),
             volume: 15,
@@ -218,7 +221,28 @@ impl Instrument {
             duty_sweep: None,
         }
     }
+    /// A drum at full instrument volume. Configure its envelopes in [`super::Drum`].
+    pub fn drum(settings: super::Drum) -> Self {
+        Self {
+            drum: Some(settings),
+            ..Self::default()
+        }
+    }
     pub fn validate(&self) -> Result<()> {
+        if let Some(drum) = self.drum {
+            drum.validate()?;
+            if self.waveform != Waveform::default()
+                || self.envelope != Envelope::default()
+                || self.slide != 0
+                || self.vibrato.is_some()
+                || self.arpeggio.is_some()
+                || self.duty_sweep.is_some()
+            {
+                return Err(Error::invalid(
+                    "Drums use their own envelopes and oscillators, without melodic modulation",
+                ));
+            }
+        }
         let e = &self.envelope;
         if self.volume > 15 {
             return Err(Error::invalid("Instrument volume must be 0..=15"));
@@ -277,6 +301,8 @@ impl Instrument {
 /// A note with its position and length in ticks and the channel settings it was played with.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct Note {
+    /// Attack velocity, 0..=127. Existing `note` calls and unsuffixed text use 127.
+    pub velocity: u8,
     pub start: u64,
     pub length: u64,
     pub pitch: Pitch,
@@ -491,6 +517,18 @@ impl ChannelWriter<'_> {
         Ok(self)
     }
     pub fn note(&mut self, pitch: Pitch, length: Length) -> Result<&mut Self> {
+        self.note_with_velocity(pitch, length, 127)
+    }
+    /// Appends a note with velocity 0..=127, independently of channel volume.
+    pub fn note_with_velocity(
+        &mut self,
+        pitch: Pitch,
+        length: Length,
+        velocity: u8,
+    ) -> Result<&mut Self> {
+        if velocity > 127 {
+            return Err(Error::invalid("Velocity must be 0..=127"));
+        }
         let ticks = length.ticks(self.score.ticks_per_quarter)?;
         let channel = &self.score.channels[self.index];
         let instrument = channel
@@ -500,6 +538,7 @@ impl ChannelWriter<'_> {
             return Err(Error::limit("Score exceeds its note limit"));
         }
         let note = Note {
+            velocity,
             start: channel.length,
             length: ticks,
             pitch,
