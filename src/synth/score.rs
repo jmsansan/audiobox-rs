@@ -189,6 +189,8 @@ pub struct DutySweep {
 /// The sound of a channel: a waveform, an envelope, a volume and pitch effects.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct Instrument {
+    /// Optional polyphonic unison/filter/LFO path. `None` retains legacy samples.
+    pub synthwave: Option<super::Synthwave>,
     /// Opt-in tracker sources, macros and quantization; `None` keeps legacy samples.
     pub chip: Option<super::ChipInstrument>,
     /// A finite synthesized one-shot instead of a melodic oscillator/ADSR.
@@ -213,6 +215,7 @@ impl Instrument {
     /// The waveform at full volume with the default envelope and no effects.
     pub fn new(waveform: Waveform) -> Self {
         Self {
+            synthwave: None,
             chip: None,
             drum: None,
             waveform,
@@ -232,6 +235,17 @@ impl Instrument {
         }
     }
     pub fn validate(&self) -> Result<()> {
+        if let Some(wide) = self.synthwave {
+            wide.validate()?;
+            if self.chip.is_some()
+                || self.drum.is_some()
+                || matches!(self.waveform, Waveform::Noise(_))
+            {
+                return Err(Error::invalid(
+                    "Synthwave requires a melodic waveform without chip/drum sources",
+                ));
+            }
+        }
         if let Some(chip) = &self.chip {
             chip.validate(self.waveform)?;
             if self.drum.is_some()
@@ -346,13 +360,13 @@ pub struct Channel {
     instrument: Option<usize>,
     volume: u8,
     gate: u8,
-    last_is_note: bool,
+    last_group: usize,
 }
 impl Channel {
     pub fn name(&self) -> &str {
         &self.name
     }
-    /// Non-overlapping notes in order of start.
+    /// Notes in start order. Chord members share the same start and length.
     pub fn notes(&self) -> &[Note] {
         &self.notes
     }
@@ -491,7 +505,7 @@ impl Score {
                     instrument: None,
                     volume: 15,
                     gate: 8,
-                    last_is_note: false,
+                    last_group: 0,
                 });
                 self.channels.len() - 1
             }
@@ -550,6 +564,28 @@ impl ChannelWriter<'_> {
         length: Length,
         velocity: u8,
     ) -> Result<&mut Self> {
+        self.append_group(&[pitch], length, velocity, false)
+    }
+    /// Appends 1..=16 distinct simultaneous pitches, advancing once. Requires a
+    /// synthwave instrument and no more members than its configured voice limit.
+    pub fn chord(&mut self, pitches: &[Pitch], length: Length) -> Result<&mut Self> {
+        self.chord_with_velocity(pitches, length, 127)
+    }
+    pub fn chord_with_velocity(
+        &mut self,
+        pitches: &[Pitch],
+        length: Length,
+        velocity: u8,
+    ) -> Result<&mut Self> {
+        self.append_group(pitches, length, velocity, true)
+    }
+    fn append_group(
+        &mut self,
+        pitches: &[Pitch],
+        length: Length,
+        velocity: u8,
+        chord: bool,
+    ) -> Result<&mut Self> {
         if velocity > 127 {
             return Err(Error::invalid("Velocity must be 0..=127"));
         }
@@ -558,29 +594,50 @@ impl ChannelWriter<'_> {
         let instrument = channel
             .instrument
             .ok_or_else(|| Error::invalid("Select an instrument before the first note"))?;
-        if self.score.notes >= self.score.limits.max_notes {
+        if pitches.is_empty()
+            || pitches.len() > 16
+            || pitches
+                .iter()
+                .enumerate()
+                .any(|(i, p)| pitches[..i].contains(p))
+        {
+            return Err(Error::invalid("A chord needs 1..=16 distinct pitches"));
+        }
+        if chord
+            && self.score.instruments[instrument]
+                .1
+                .synthwave
+                .is_none_or(|s| pitches.len() > s.voices as usize)
+        {
+            return Err(Error::invalid(
+                "Chord needs a synthwave instrument with enough voices",
+            ));
+        }
+        if pitches.len() > self.score.limits.max_notes.saturating_sub(self.score.notes) {
             return Err(Error::limit("Score exceeds its note limit"));
         }
         let note = Note {
             velocity,
             start: channel.length,
             length: ticks,
-            pitch,
+            pitch: pitches[0],
             instrument,
             volume: channel.volume,
             gate: channel.gate,
         };
         self.advance(ticks)?;
-        self.score.notes += 1;
+        self.score.notes += pitches.len();
         let channel = self.state();
-        channel.notes.push(note);
-        channel.last_is_note = true;
+        for &pitch in pitches {
+            channel.notes.push(Note { pitch, ..note });
+        }
+        channel.last_group = pitches.len();
         Ok(self)
     }
     pub fn rest(&mut self, length: Length) -> Result<&mut Self> {
         let ticks = length.ticks(self.score.ticks_per_quarter)?;
         self.advance(ticks)?;
-        self.state().last_is_note = false;
+        self.state().last_group = 0;
         Ok(self)
     }
     /// Lengthens the previous note, or the previous rest, by `length`.
@@ -591,10 +648,8 @@ impl ChannelWriter<'_> {
         }
         self.advance(ticks)?;
         let channel = self.state();
-        if channel.last_is_note {
-            if let Some(note) = channel.notes.last_mut() {
-                note.length += ticks;
-            }
+        for note in channel.notes.iter_mut().rev().take(channel.last_group) {
+            note.length += ticks;
         }
         Ok(self)
     }

@@ -128,6 +128,9 @@ pub struct Oscillator {
     aliasing: Aliasing,
 }
 impl Oscillator {
+    pub(super) fn phase_offset(&mut self, turns: f64) {
+        self.phase = ((turns - turns.floor()) * ONE as f64).round() as u64 & FRACTION;
+    }
     pub fn new(aliasing: Aliasing) -> Self {
         Self {
             phase: 0,

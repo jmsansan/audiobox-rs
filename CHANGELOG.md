@@ -2,8 +2,17 @@
 
 ## Unreleased
 
+## 0.4.0 — 2026-10-23
+
 ### Added
 
+- Opt-in synthwave instruments: normalized/detuned stereo unison, per-voice
+  resonant low/high/band-pass SVFs with independent envelopes/key tracking,
+  free/beat-synced pitch/cutoff/amplitude/pan LFOs, mono glide and legato.
+- Polyphonic chord groups (`{c e g}4`, typed `ChannelWriter::chord`), bounded
+  deterministic voice stealing, full chord loop carries/ties, stereo offline
+  and mixer-stream rendering, numerical/allocation/native/WASI regression tests,
+  bass/pad/lead format examples and a `synthwave` WAV example.
 - Optional `events` module: designer-editable named sounds, recorded/SFX/score
   source registration, seeded random/shuffle/sequence selection, gain/pitch ranges,
   bus/priority/loop/instance/repeat controls and per-trigger 2D/3D placement.
@@ -78,8 +87,8 @@
 
 - Full `Play` literals need `emitter`; `MixerConfig` needs `listener` and `spatial`;
   `EncodeOptions` needs `wav_channel_mask`. Defaults preserve existing behavior.
-- Full struct literals for `Instrument` need `chip` and `drum`; `Note` needs
-  `velocity`. Constructors/defaults provide no chip/drum and velocity 127.
+- Full struct literals for `Instrument` need `chip`, `drum` and `synthwave`; `Note`
+  needs `velocity`. Constructors/defaults disable these sources and use velocity 127.
 - Full struct literals for `EncodeOptions` and `DecodeInfo` need the new `tags`
   field, or `..Default::default()`. Existing `metadata` map callers keep their keys.
 

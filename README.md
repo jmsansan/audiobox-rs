@@ -33,7 +33,7 @@ your own audio files the same way.
 
 ```toml
 [dependencies]
-audiobox = "0.3"
+audiobox = "0.4"
 ```
 
 Rust 1.85 or newer. Optional features add modules, never dependencies, so you compile
@@ -51,7 +51,7 @@ only what you use:
 
 ```toml
 [dependencies]
-audiobox = { version = "0.3", features = ["mixer", "synth", "sfx"] }
+audiobox = { version = "0.4", features = ["mixer", "synth", "sfx"] }
 ```
 
 ## Examples
@@ -704,6 +704,77 @@ Render a pattern in each kit (optionally choose an output directory):
 
 ```sh
 cargo run --example drum_kits --features synth -- target/drum-kits
+```
+
+### Synthwave instruments, chords and stereo
+
+Any synthwave key opts an instrument into `Instrument::synthwave`; `synthwave=on`
+selects its defaults. It supports band-limited saw, pulse/square and triangle
+oscillators. This path always uses PolyBLEP/PolyBLAMP, independently of legacy
+`RenderOptions::aliasing`. Existing instruments without these keys keep their
+sample bits. Here are a bass, a chord pad and a lead:
+
+```text
+tempo 110
+instrument bass wave=saw voices=1 glide=80 legato=on adsr=5,120,60,40 filter=lowpass cutoff=500 resonance=160 filter-env=2400 filter-adsr=0,200,0,40
+instrument pad wave=saw unison=5 detune=18 spread=90 voices=6 adsr=120,150,70,300 filter=lowpass cutoff=1800 resonance=90 keytrack=40 lfo-cutoff=beats,4,1,600
+instrument lead wave=pulse voices=1 glide=60 legato=on adsr=5,80,80,100 lfo-pitch=5000,12 lfo-pan=beats,2,1,30
+channel bass=@bass o2 l8 [c c >c< g]4
+channel pad=@pad o4 {c e g}1 {f a >c}1
+channel lead=@lead o5 l8 [c e g >c< g e d g]2
+```
+
+`{c e g}4!90` plays one chord with a shared length/gate/velocity; octave shifts
+inside braces are local to that chord. Only notes, accidentals and `>`/`<` are
+allowed inside. Members must be distinct, at most 16 and within the instrument's
+voice limit. `^` extends every member; `&` joins single notes only. Each member
+counts against `ScoreLimits::max_notes`. The typed equivalent is
+`ChannelWriter::chord` / `chord_with_velocity`; invalid groups leave the score intact.
+
+| Key | Units, range and default |
+| --- | --- |
+| `unison` | 1..=8 oscillators per note (default 1), normalized by count, fixed initial phases |
+| `detune`, `spread` | Outer detune 0..=100 cents / stereo spread 0..=100 percent; defaults 0 |
+| `pan` | Linear stereo pan -100..=100 percent, default 0 |
+| `voices` | 1..=16 voice slots per channel, default 8 |
+| `glide`, `legato` | Glide 0..=60000 ms (default 0); legato `on`/`off` (default off); both require `voices=1` |
+| `filter` | `lowpass`, `highpass`, `bandpass`; absent means bypass |
+| `cutoff`, `resonance` | Base cutoff 1..=96000 Hz (default 2000); Q multiplied by 100, 50..=1000 (default 71) |
+| `keytrack` | Cutoff pitch tracking relative to C4, 0..=200 percent (default 0) |
+| `filter-adsr` | Independent filter envelope: attack/decay/release 0..=60000 ms, sustain 0..=100 percent; default `0,0,100,0` |
+| `filter-env` | Peak cutoff envelope offset -9600..=9600 cents, default 0 |
+| `lfo-pitch`, `lfo-cutoff` | `millihertz,depth` or `beats,numerator,denominator,depth`; depth 0..=2400 / 0..=9600 cents |
+| `lfo-amplitude`, `lfo-pan` | Same rate syntax, depth 0..=100 percent; all LFOs absent by default |
+
+LFO rates are 1..=20000 millihertz (0.001..=20 Hz), or a rational period of
+quarter-note beats with numerator/denominator 1..=64. Their sine phase follows total
+output frames, continuing across notes and loops; `reset` starts it at zero.
+Amplitude modulation ranges from `1-depth/100` to 1. Pan clamps after modulation.
+Filter controls require `filter=MODE`; cutoff combines envelope, keytrack and LFO
+in cents, then clamps to 1..=0.45 times the output rate. The [trapezoidal SVF](https://cytomic.com/files/dsp/SvfLinearTrapOptimised2.pdf)
+uses separate L/R states; LP/HP slopes are 12 dB/octave and band-pass peak is
+normalized to 1. Resonance can exceed full scale: allow headroom or limit downstream.
+The amplitude ADSR follows the filter and bounds its tail.
+
+Glide interpolates pitch in cents over its prepared duration when a mono voice is
+reused while active. Adjacent full-gate notes of the same instrument in legato mode
+preserve oscillator/filter state and both envelopes. Gaps or short gates retrigger;
+an inactive slot starts its attack from silence. Slots are selected in index order
+when idle, otherwise the oldest releasing voice, then oldest held voice (index
+breaks ties). Stealing is immediate and can click. A smaller voice limit retires
+higher slots immediately; legacy/synthwave instrument changes release the other
+path's held notes. Chords crossing a loop point retrigger every held member on the
+next lap, like legacy notes. Chip sources and drums cannot combine with synthwave.
+
+`Score::render` and `Synth::new` remain mono (the synthwave stereo pair is averaged).
+Use `Score::render_stereo[_with]` or `Synth::new_stereo` for stereo spread/pan.
+`Synth::fill` writes interleaved samples and returns **frames**; `channels()` reports
+1 or 2, and incomplete trailing frames are untouched. Stereo synths work directly
+as mixer streams. Prepared rendering and reset allocate/free nothing; native/WASI
+checksums cover block boundaries, loops and reset. Run:
+
+```sh
+cargo run --example synthwave --features synth -- target/synthwave.wav
 ```
 
 ## Sound effects (`sfx` feature)

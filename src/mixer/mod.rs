@@ -188,7 +188,7 @@ impl<B: AsRef<[u8]> + Send + 'static> Stream for crate::stream::Decoder<B> {
     }
 }
 
-/// A synthesizer plays as a mono stream. It loops by itself when its
+/// A synthesizer plays as a mono or stereo stream. It loops by itself when its
 /// [`RenderOptions::loops`](crate::synth::RenderOptions::loops) is `None`; as a voice
 /// loop it can only return to its start.
 #[cfg(feature = "synth")]
@@ -198,7 +198,7 @@ impl Stream for crate::synth::Synth {
         crate::synth::Synth::sample_rate(self)
     }
     fn channels(&self) -> usize {
-        1
+        crate::synth::Synth::channels(self)
     }
     fn read(&mut self, out: &mut [f32]) -> Result<usize> {
         Ok(self.fill(out))
