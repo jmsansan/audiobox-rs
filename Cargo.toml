@@ -52,3 +52,7 @@ required-features = ["assets"]
 [[example]]
 name = "adaptive_music"
 required-features = ["music", "synth"]
+
+[[example]]
+name = "bus_effects"
+required-features = ["mixer"]

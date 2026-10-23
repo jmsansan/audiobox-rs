@@ -1,5 +1,6 @@
 //! Checks that rendering allocates nothing, so it can run on an audio thread.
 #![cfg(feature = "mixer")]
+use audiobox::mixer::effects::*;
 use audiobox::mixer::*;
 use audiobox::stream::Decoder;
 use audiobox::{Audio, AudioFormat, FadeCurve, encode};
@@ -67,6 +68,34 @@ fn rendering_allocates_and_frees_nothing() {
     .unwrap();
     let music = handle.bus("music").unwrap();
     let effects = handle.bus("effects").unwrap();
+    handle
+        .set_effects(
+            music,
+            &[
+                Effect::LowPass { cutoff_hz: 8000.0 },
+                Effect::Compressor(Compressor::ducking(effects)),
+                Effect::Delay(Delay::default()),
+                Effect::Reverb(Reverb::default()),
+            ],
+        )
+        .unwrap();
+    handle
+        .set_effects(effects, &[Effect::HighPass { cutoff_hz: 60.0 }])
+        .unwrap();
+    handle
+        .at(10_001)
+        .set_effect(
+            music,
+            0,
+            Effect::LowPass { cutoff_hz: 800.0 },
+            Fade::linear(0.05),
+        )
+        .unwrap();
+    handle
+        .at(20_003)
+        .set_effects(effects, &[Effect::Delay(Delay::default())])
+        .unwrap();
+    handle.at(40_005).set_effects(effects, &[]).unwrap();
     let flac = encode(
         &Audio::new(vec![tone(20_000, 44_100, 330.0)], 44_100).unwrap(),
         AudioFormat::Flac,
@@ -218,6 +247,7 @@ fn rendering_allocates_and_frees_nothing() {
         loudest = buffer.iter().fold(loudest, |m, s| m.max(s.abs()));
     }
     COUNTING.set(false);
+    effects_reclamation_stays_off_audio();
     assert_eq!(ALLOCATIONS.load(Ordering::SeqCst), 0, "rendering allocated");
     assert_eq!(FREES.load(Ordering::SeqCst), 0, "rendering freed memory");
     // Finished voices came back to the handle, which frees them here.
@@ -228,4 +258,40 @@ fn rendering_allocates_and_frees_nothing() {
     );
     assert!(events.contains(&MixerEvent::Ended(song)));
     assert!(loudest > 0.1);
+}
+
+fn effects_reclamation_stays_off_audio() {
+    let (mut mixer, mut handle) = Mixer::new(MixerConfig {
+        queue: 2,
+        ..Default::default()
+    })
+    .unwrap();
+    let chain = [
+        Effect::Delay(Delay::default()),
+        Effect::Reverb(Reverb::default()),
+    ];
+    handle.set_effects(BusId::MASTER, &chain).unwrap();
+    handle.set_effects(BusId::MASTER, &chain).unwrap();
+    let mut buffer = [0.0; 512];
+    COUNTING.set(true);
+    mixer.render(&mut buffer);
+    for _ in 0..10 {
+        mixer.render(&mut buffer);
+    }
+    COUNTING.set(false);
+    // Unpolled owning edits exhaust their credits, even though commands are empty.
+    assert!(handle.set_effects(BusId::MASTER, &[]).is_err());
+    assert!(matches!(
+        handle.poll_event(),
+        Some(MixerEvent::EffectsApplied(..))
+    ));
+    handle.set_effects(BusId::MASTER, &[]).unwrap();
+    // Reclamation receiver disappears with an edit pending and a return unpolled.
+    drop(handle);
+    COUNTING.set(true);
+    for _ in 0..10 {
+        mixer.render(&mut buffer);
+    }
+    COUNTING.set(false);
+    // Mixer and its retained storage are destroyed with counting disabled.
 }

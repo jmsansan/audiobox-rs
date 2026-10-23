@@ -4,6 +4,12 @@
 
 ### Added
 
+- Bus effect chains (`mixer::effects`): first-order low/high-pass filters, hard-knee
+  stereo-linked compression and sidechain ducking, fractional delay with beat times,
+  and a comb/allpass reverb. Settings ramp per sample without resetting DSP state.
+- Sample-scheduled chain edits, application-time sidechain dependency sorting and
+  cycle rejection, paused DSP clocks, bounded control-thread chain reclamation,
+  quantitative DSP/real-time/determinism tests and a `bus_effects` WAV example.
 - Structured `Tags` in `EncodeOptions::tags` and `DecodeInfo::tags`, preserving the
   existing native metadata map. MP3 writes ID3v2.4 UTF-8 text/COMM/APIC, FLAC writes
   Vorbis comments and front-cover PICTURE blocks, and WAV INFO adds track/year/genre.
