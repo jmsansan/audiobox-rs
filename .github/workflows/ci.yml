@@ -54,11 +54,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: cargo test --locked --offline --release --target wasm32-wasip1 --all-features --test deterministic --test synth --test sfx
+      - run: cargo test --locked --offline --release --target wasm32-wasip1 --all-features --test deterministic --test synth --test sfx --test assets
         env:
           CARGO_TARGET_WASM32_WASIP1_RUNNER: node --no-warnings scripts/wasi-run.mjs
 
   interoperability:
+    # Keep FFmpeg installation out of the normal push/PR path.
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'release'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

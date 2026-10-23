@@ -33,6 +33,7 @@
 //! | Synthesizer | [`synth`]: text scores rendered in an 8-bit style | `synth` |
 //! | Sound effects | [`sfx`]: parameters, text form and seeded presets | `sfx` |
 //! | Game mixer | [`mixer`]: voices, buses, fades, loops and an allocation-free `render` | `mixer` |
+//! | Sound assets | [`assets`]: background loading and a budgeted decoded-audio cache | `assets` |
 //!
 //! Enable the optional modules you use:
 //!
@@ -62,6 +63,9 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 pub mod analyze;
+#[cfg(feature = "assets")]
+#[cfg_attr(docsrs, doc(cfg(feature = "assets")))]
+pub mod assets;
 mod audio;
 mod codec;
 mod decoder;

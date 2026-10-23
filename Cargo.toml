@@ -22,6 +22,8 @@ synth = []
 sfx = ["synth"]
 # Real-time mixer for games (`audiobox::mixer`).
 mixer = []
+# Background loading and a budgeted cache of decoded sounds (`audiobox::assets`).
+assets = []
 
 [dependencies]
 
@@ -40,3 +42,7 @@ required-features = ["sfx"]
 [[example]]
 name = "game_audio"
 required-features = ["mixer", "sfx"]
+
+[[example]]
+name = "load_assets"
+required-features = ["assets"]

@@ -44,6 +44,7 @@ only what you use:
 | `mixer` | [`audiobox::mixer`](https://docs.rs/audiobox/latest/audiobox/mixer/) | Real-time game mixer: voices, buses, fades, loops and resampling |
 | `synth` | [`audiobox::synth`](https://docs.rs/audiobox/latest/audiobox/synth/) | 8-bit style synthesizer and text score format |
 | `sfx` | [`audiobox::sfx`](https://docs.rs/audiobox/latest/audiobox/sfx/) | Parametric sound effects with seeded presets (enables `synth`) |
+| `assets` | `audiobox::assets` | Background loading on native targets and a budgeted cache of decoded sounds |
 
 ```toml
 [dependencies]
@@ -98,6 +99,51 @@ fn game_audio() -> audiobox::Result<()> {
 
 More in [`examples/`](examples): `convert`, `chiptune` (a song to WAV), `sfx` (effects
 to WAV) and `game_audio` (music and effects mixed on an audio thread).
+
+### Background loading and cached sounds
+
+With `assets`, a `Loader` reads files and decodes on one worker thread. Poll the
+result from the game's control thread, then pass its `Arc<Audio>` to
+`MixerHandle::play`. Loading also works without the `mixer` feature.
+
+```rust,no_run
+use audiobox::assets::{Loader, LoaderConfig};
+
+fn load_sound() -> audiobox::Result<()> {
+    let loader = Loader::new(LoaderConfig {
+        cache_bytes: 32 * 1024 * 1024,
+        ..LoaderConfig::default()
+    })?;
+    let mut loading = loader.load_file("sounds/jump.wav")?;
+    // Once per game frame, on the control thread:
+    if let Some(result) = loading.try_take() {
+        let sound = result?; // Shared Arc<Audio>, ready to play.
+    }
+    // Keep the loader across game frames: dropping it waits for accepted work.
+    Ok(())
+}
+```
+
+`load_bytes(name, bytes)` accepts owned encoded data instead. Names and paths are
+separate cache keys; paths become absolute when submitted. Keys identify immutable
+assets: repeated loads share a cached sound even if supplied bytes or file contents
+change. Use a new name or loader for changed content. The worker queue defaults to
+16 waiting requests; a full queue returns `LimitExceeded` without waiting. Each
+encoded input is limited to 64 MiB by default, and `LoaderConfig::decode` supplies
+the usual decoded-audio limits. I/O and decode failures arrive through the handle.
+
+`AudioCache` also works on its own. Its LRU policy skips sounds held by callers,
+pending results or mixer voices, and weak references. The byte budget accounts for
+retained PCM/channel capacities, entry structs and key/metadata strings; allocator
+overhead, spare collection capacity, metadata tree nodes, temporary decoding memory
+and externally retained sounds are excluded. Failed admission preserves existing
+entries. If a sound is too large or all sufficient victims are in use, the loader
+still returns it without caching. Zero cache bytes disables retention.
+
+All asset operations, polling and destruction belong off the audio callback. The
+cache supports WebAssembly; the thread-based loader is available on native targets.
+Run `cargo run --example load_assets --features assets -- path/to/sound.wav` for a
+complete file-loading example.
 
 ## When to use audiobox
 
@@ -545,9 +591,11 @@ python3 scripts/build-site.py && node --test site/tests/engine.test.mjs
 cargo publish --dry-run
 ```
 
-The interoperability tests use an installed FFmpeg **only in tests**. CI also checks
-the MSRV and FFmpeg interoperability; the website is built on pull requests and
-deployed from `main`. The `.crate` contains the Rust implementation,
+The interoperability tests use an installed FFmpeg **only in tests**. Their CI job
+runs on published releases and manual dispatches of the **Rust** workflow, so
+routine push/PR checks do not wait for FFmpeg installation. Normal CI checks the
+MSRV and codec regressions; the website is built on pull requests and deployed
+from `main`. The `.crate` contains the Rust implementation,
 tests, examples, this README, the changelog and the MIT license; it excludes the
 website and build output.
 
