@@ -26,6 +26,8 @@ mixer = []
 music = ["mixer"]
 # Background loading and a budgeted cache of decoded sounds (`audiobox::assets`).
 assets = []
+# Native background disk streaming with bounded buffers (`stream::FileStream`).
+file-stream = []
 
 [dependencies]
 
@@ -68,3 +70,7 @@ required-features = ["synth"]
 [[example]]
 name = "tracker_instruments"
 required-features = ["synth"]
+
+[[example]]
+name = "stream_from_disk"
+required-features = ["file-stream", "mixer"]

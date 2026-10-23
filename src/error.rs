@@ -12,6 +12,8 @@ pub enum ErrorCode {
     Io,
     /// Malformed text, such as a synthesizer score.
     Syntax,
+    /// A nonblocking source temporarily has no frames; retry later.
+    Underrun,
 }
 
 /// An error with a stable category and human-readable context.

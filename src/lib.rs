@@ -30,6 +30,7 @@
 //! | Editing and DSP | [`Audio`]: cut, concat, mix, fades, filters, resampling, limiter, tempo and pitch | always |
 //! | Analysis | [`Audio::loudness`], peaks, RMS, [`analyze::spectrum`], waveforms | always |
 //! | Streaming | [`stream::Decoder`] for WAV, FLAC and MP3 a chunk at a time with seeking; raw PCM and resampling across chunks | always |
+//! | Disk streaming | `stream::FileStream`: a native reader thread and bounded PCM/encoded buffers | `file-stream` |
 //! | Synthesizer | [`synth`]: text scores rendered in an 8-bit style | `synth` |
 //! | Sound effects | [`sfx`]: parameters, text form and seeded presets | `sfx` |
 //! | Game mixer | [`mixer`]: voices, buses, fades, loops and an allocation-free `render` | `mixer` |

@@ -93,43 +93,7 @@ pub(crate) fn parse_wav(bytes: &[u8], limits: &crate::Limits) -> Result<WavLayou
                         .map_err(|_| Error::decode("RF64 size overflow"))?,
                 );
             }
-            b"fmt " => {
-                let mut f = Reader::new(b);
-                let mut code = f.u16(true)?;
-                let channels = f.u16(true)? as usize;
-                let rate = f.u32(true)?;
-                f.u32(true)?;
-                let align = f.u16(true)? as usize;
-                let bits = f.u16(true)?;
-                let mut spb = 0;
-                if code == 0xfffe {
-                    if b.len() < 40 {
-                        return Err(Error::decode("Truncated extensible WAVE format"));
-                    }
-                    let mut ext = Reader::new(&b[16..]);
-                    if ext.u16(true)? < 22 {
-                        return Err(Error::decode("Invalid extensible format"));
-                    }
-                    let valid = ext.u16(true)?;
-                    if valid != 0 && valid != bits {
-                        return Err(Error::decode("Packed valid bits are unsupported"));
-                    }
-                    ext.u32(true)?;
-                    let guid = ext.take(16)?;
-                    if guid[2..] != [0, 0, 0, 0, 0x10, 0, 0x80, 0, 0, 0xaa, 0, 0x38, 0x9b, 0x71] {
-                        return Err(Error::decode("Unsupported WAVE subformat GUID"));
-                    }
-                    code = u16::from_le_bytes([guid[0], guid[1]]);
-                } else if code == 17 {
-                    let mut ext = Reader::new(
-                        b.get(16..)
-                            .ok_or_else(|| Error::decode("Missing ADPCM extension"))?,
-                    );
-                    ext.u16(true)?;
-                    spb = ext.u16(true)? as usize;
-                }
-                desc = Some((code, channels, rate, align, bits, spb));
-            }
+            b"fmt " => desc = Some(wav_description(b)?),
             b"data" => payloads.push(at..at + n),
             b"fact" if b.len() >= 4 => {
                 fact = Some(u32::from_le_bytes(b[..4].try_into().unwrap()) as usize)
@@ -156,6 +120,54 @@ pub(crate) fn parse_wav(bytes: &[u8], limits: &crate::Limits) -> Result<WavLayou
             r.take(1)?;
         }
     }
+    wav_layout(desc, payloads, fact, metadata, limits)
+}
+
+pub(crate) type WavDescription = (u16, usize, u32, usize, u16, usize);
+pub(crate) fn wav_description(b: &[u8]) -> Result<WavDescription> {
+    let mut f = Reader::new(b);
+    let mut code = f.u16(true)?;
+    let channels = f.u16(true)? as usize;
+    let rate = f.u32(true)?;
+    f.u32(true)?;
+    let align = f.u16(true)? as usize;
+    let bits = f.u16(true)?;
+    let mut spb = 0;
+    if code == 0xfffe {
+        if b.len() < 40 {
+            return Err(Error::decode("Truncated extensible WAVE format"));
+        }
+        let mut ext = Reader::new(&b[16..]);
+        if ext.u16(true)? < 22 {
+            return Err(Error::decode("Invalid extensible format"));
+        }
+        let valid = ext.u16(true)?;
+        if valid != 0 && valid != bits {
+            return Err(Error::decode("Packed valid bits are unsupported"));
+        }
+        ext.u32(true)?;
+        let guid = ext.take(16)?;
+        if guid[2..] != [0, 0, 0, 0, 0x10, 0, 0x80, 0, 0, 0xaa, 0, 0x38, 0x9b, 0x71] {
+            return Err(Error::decode("Unsupported WAVE subformat GUID"));
+        }
+        code = u16::from_le_bytes([guid[0], guid[1]]);
+    } else if code == 17 {
+        let mut ext = Reader::new(
+            b.get(16..)
+                .ok_or_else(|| Error::decode("Missing ADPCM extension"))?,
+        );
+        ext.u16(true)?;
+        spb = ext.u16(true)? as usize;
+    }
+    Ok((code, channels, rate, align, bits, spb))
+}
+pub(crate) fn wav_layout(
+    desc: Option<WavDescription>,
+    payloads: Vec<std::ops::Range<usize>>,
+    fact: Option<usize>,
+    metadata: crate::AudioMetadata,
+    limits: &crate::Limits,
+) -> Result<WavLayout> {
     let (code, channels, rate, align, bits, spb) =
         desc.ok_or_else(|| Error::decode("Missing WAVE fmt chunk"))?;
     if payloads.is_empty() {

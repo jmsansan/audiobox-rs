@@ -156,6 +156,8 @@ pub trait Stream: Send {
         None
     }
     /// Fills `out` with interleaved frames and returns how many; 0 at the end.
+    /// `ErrorCode::Underrun` is temporary: the mixer emits silence and retries
+    /// next render segment, preserving source position. Other errors fail the voice.
     fn read(&mut self, out: &mut [f32]) -> Result<usize>;
     /// Moves to `frame`, for loops.
     fn seek(&mut self, frame: u64) -> Result<()>;

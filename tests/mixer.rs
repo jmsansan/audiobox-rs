@@ -7,6 +7,71 @@ use std::sync::Arc;
 
 const RATE: u32 = 48_000;
 
+#[test]
+fn a_temporary_underrun_recovers_and_a_stop_finishes_while_starved() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    struct Pending {
+        ready: Arc<AtomicBool>,
+        position: usize,
+    }
+    impl Stream for Pending {
+        fn sample_rate(&self) -> u32 {
+            RATE
+        }
+        fn channels(&self) -> usize {
+            1
+        }
+        fn read(&mut self, out: &mut [f32]) -> audiobox::Result<usize> {
+            if !self.ready.load(Ordering::Relaxed) {
+                return Err(audiobox::Error {
+                    code: ErrorCode::Underrun,
+                    message: String::new(),
+                });
+            }
+            let n = out.len().min(1000 - self.position);
+            out[..n].fill(0.5);
+            self.position += n;
+            Ok(n)
+        }
+        fn seek(&mut self, frame: u64) -> audiobox::Result<()> {
+            self.position = frame.min(1000) as usize;
+            Ok(())
+        }
+    }
+    let ready = Arc::new(AtomicBool::new(false));
+    let (mut m, mut h) = mixer(1, &[], 2);
+    let id = h
+        .play(
+            Sound::stream(Pending {
+                ready: ready.clone(),
+                position: 0,
+            }),
+            &Play::default(),
+        )
+        .unwrap();
+    let mut buffer = [0.0; 64];
+    m.render(&mut buffer);
+    assert!(buffer.iter().all(|&v| v == 0.0));
+    assert_eq!(h.voice_status(id).unwrap().position, 0);
+    ready.store(true, Ordering::Relaxed);
+    m.render(&mut buffer);
+    assert_eq!(buffer, [0.5; 64]);
+    assert_eq!(h.voice_status(id).unwrap().position, 64);
+    // A different voice that never obtains data still obeys its scheduled fade/stop.
+    let id = h
+        .play(
+            Sound::stream(Pending {
+                ready: Arc::new(AtomicBool::new(false)),
+                position: 0,
+            }),
+            &Play::default(),
+        )
+        .unwrap();
+    h.stop(id, Fade::linear(0.001)).unwrap();
+    m.render(&mut buffer);
+    assert_eq!(h.voice_status(id).unwrap().state, VoiceState::Finished);
+}
+
 fn mixer(channels: usize, buses: &[&str], max_voices: usize) -> (Mixer, MixerHandle) {
     Mixer::new(MixerConfig {
         sample_rate: RATE,
