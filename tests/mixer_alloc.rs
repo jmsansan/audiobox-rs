@@ -76,6 +76,11 @@ fn rendering_allocates_and_frees_nothing() {
                 Effect::Compressor(Compressor::ducking(effects)),
                 Effect::Delay(Delay::default()),
                 Effect::Reverb(Reverb::default()),
+                Effect::Chorus(Chorus::default()),
+                Effect::Flanger(Flanger::default()),
+                Effect::Phaser(Phaser::default()),
+                Effect::Bitcrusher(Bitcrusher::default()),
+                Effect::Saturation(Saturation::default()),
             ],
         )
         .unwrap();
@@ -96,6 +101,33 @@ fn rendering_allocates_and_frees_nothing() {
         .set_effects(effects, &[Effect::Delay(Delay::default())])
         .unwrap();
     handle.at(40_005).set_effects(effects, &[]).unwrap();
+    handle
+        .at(21_009)
+        .set_effect(
+            music,
+            4,
+            Effect::Chorus(Chorus {
+                rate: ModulationRate::Beats {
+                    beats: 2.0,
+                    bpm: 120.0,
+                },
+                ..Default::default()
+            }),
+            Fade::linear(0.1),
+        )
+        .unwrap();
+    handle
+        .at(22_011)
+        .set_effect(
+            music,
+            7,
+            Effect::Bitcrusher(Bitcrusher {
+                bits: 5.5,
+                ..Default::default()
+            }),
+            Fade::linear(0.1),
+        )
+        .unwrap();
     let flac = encode(
         &Audio::new(vec![tone(20_000, 44_100, 330.0)], 44_100).unwrap(),
         AudioFormat::Flac,
@@ -269,6 +301,9 @@ fn effects_reclamation_stays_off_audio() {
     let chain = [
         Effect::Delay(Delay::default()),
         Effect::Reverb(Reverb::default()),
+        Effect::Chorus(Chorus::default()),
+        Effect::Flanger(Flanger::default()),
+        Effect::Phaser(Phaser::default()),
     ];
     handle.set_effects(BusId::MASTER, &chain).unwrap();
     handle.set_effects(BusId::MASTER, &chain).unwrap();
