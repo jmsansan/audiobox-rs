@@ -610,6 +610,7 @@ impl Mp3State {
 }
 
 pub(crate) fn decode(bytes: &[u8], options: &DecodeOptions) -> Result<Audio> {
+    let (metadata, tags) = crate::metadata::id3::read(bytes)?;
     let (at, first) = find(bytes, tag_size(bytes))
         .ok_or_else(|| Error::decode("No readable MPEG Layer III frame"))?;
     let tag = vbr(bytes, at, first)?;
@@ -681,7 +682,8 @@ pub(crate) fn decode(bytes: &[u8], options: &DecodeOptions) -> Result<Audio> {
         DecodeInfo {
             format: Some(AudioFormat::Mp3),
             sample_format: Some(SampleFormat::S16),
-            ..Default::default()
+            metadata,
+            tags,
         },
     )
 }

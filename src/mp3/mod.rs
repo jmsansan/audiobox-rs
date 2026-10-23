@@ -219,5 +219,6 @@ pub fn decode_mp3(bytes: &[u8]) -> Result<Audio> {
     decode(bytes, &DecodeOptions::default())
 }
 pub fn encode_mp3(audio: &Audio, options: &EncodeOptions) -> Result<Vec<u8>> {
+    crate::metadata::validate_options(options, crate::AudioFormat::Mp3)?;
     encode(audio, options)
 }

@@ -270,10 +270,72 @@ trimming for a whitelist of encoder names; they may expose priming and trailing 
 for audiobox's own encoder name. The independent MP3 encoding tests explicitly align
 that reference by the tag before checking samples and gain.
 
-WAV metadata supports `title`, `artist`, `album`, `comment`, or four-character RIFF INFO
-keys. AIFF supports `title`, `artist`, `comment`, `copyright`; FLAC supports Vorbis
-comments; AU supports `comment`. CAF and MP3 metadata writing is currently unsupported.
-The returned WAV metadata uses its RIFF keys, such as `INAM` for a title.
+### Publishing tags and cover images
+
+Use `EncodeOptions::tags` for structured publishing fields. Whole decoding reads them
+back through `Audio::info().tags`, with the same field names across containers.
+
+```rust
+use audiobox::{Audio, AudioFormat, CoverArt, EncodeOptions, Tags, encode_with_options};
+
+fn publish(audio: &Audio, png_bytes: Vec<u8>) -> audiobox::Result<Vec<u8>> {
+    encode_with_options(audio, AudioFormat::Mp3, &EncodeOptions {
+        tags: Tags {
+            title: Some("Título".into()),
+            artist: Some("José".into()),
+            album: Some("Game soundtrack".into()),
+            album_artist: Some("The team".into()),
+            track: Some("3/12".into()),
+            disc: Some("1/2".into()),
+            year: Some("2026".into()),
+            genre: Some("Chiptune".into()),
+            comment: Some("Original soundtrack".into()),
+            isrc: Some("ESABC2600001".into()),
+            cover: Some(CoverArt::new("image/png", png_bytes)?),
+        },
+        ..Default::default()
+    })
+}
+```
+
+| Fields | MP3 | FLAC | WAV INFO |
+| --- | --- | --- | --- |
+| Title, artist, album, track, year, genre, comment | ID3v2.4 | Vorbis comments | Yes |
+| Album artist, disc, ISRC | ID3v2.4 | Vorbis comments | Unsupported |
+| JPEG/PNG front cover | APIC frame | PICTURE block | Unsupported |
+
+WAV rejects unsupported structured fields instead of discarding them. Images are
+supplied by the caller; MIME/signature validation does not decode or fully validate
+the image. Original bytes are preserved. Only a front cover is exposed; unsupported
+picture types/MIME types are ignored on reading. FLAC dimensions/depth are zero
+(unknown), as allowed by [RFC 9639 §8.8](https://www.rfc-editor.org/rfc/rfc9639.html#section-8.8).
+
+The existing `metadata` map remains available. WAV returns RIFF keys such as `INAM`,
+`IART`, `IPRD`, `IPRT`, `ICRD`, `IGNR` and `ICMT`. FLAC returns lowercase native names
+such as `albumartist`, `tracknumber`, `discnumber` and `date`; MP3 uses the structured
+field names and stores custom map keys in UTF-8 TXXX frames. Supplying a field in
+both `tags` and a known map alias is an error, as are duplicate native aliases on
+writing. FLAC continues to accept custom Vorbis fields; WAV accepts four printable
+ASCII character keys. AIFF's map supports `title`, `artist`, `comment`, `copyright`;
+AU supports `comment`. CAF map writing and structured tags for these other formats
+are unsupported.
+
+Text is UTF-8 on writing and NUL is rejected. New readers check UTF-8; MP3 also reads
+common ID3v2.3/2.4 Latin-1 and UTF-16 text, and frame unsynchronisation. Unsupported
+ID3 versions, compressed/encrypted frames and whole-tag v2.3 unsynchronisation are
+skipped for metadata while audio decoding remains available. Supported metadata
+payloads are bounded to 16 MiB minus one byte and 4096 fields/frames, with container
+sizes checked before copying. These bounds exclude allocator overhead and duplicate
+native/structured strings. Tags are exposed by whole decoding; the incremental
+decoder's sample reads/seek remain independent of tag access.
+
+`cargo run --example tag_audio -- target/tag-demo tests/fixtures/cover.png` writes
+synthetic WAV, FLAC and MP3 examples and verifies their tags. For optional independent
+verification, install Mutagen in a separate Python environment and run
+`python scripts/check-metadata.py target/tag-demo tests/fixtures/cover.png --ffmpeg ffmpeg`.
+The script checks fields in Mutagen/FFmpeg, exact cover extraction and unchanged PCM.
+These tools are test-only; the crate remains dependency-free and normal CI needs no
+FFmpeg installation.
 
 ## Audio editing and DSP
 

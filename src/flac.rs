@@ -1,5 +1,5 @@
 #![allow(clippy::needless_range_loop)]
-use crate::io::{BitWriter, Bits, Reader, put32};
+use crate::io::{BitWriter, Bits, Reader};
 use crate::{
     Audio, AudioFormat, DecodeInfo, DecodeOptions, EncodeOptions, Error, Result, SampleFormat,
 };
@@ -215,6 +215,7 @@ pub(crate) struct FlacInfo {
     pub max: usize,
     pub md5: [u8; 16],
     pub metadata: crate::AudioMetadata,
+    pub cover: Option<crate::CoverArt>,
     /// Offset of the first audio frame.
     pub first_frame: usize,
     /// Byte range of the SEEKTABLE block's points, if any.
@@ -239,6 +240,8 @@ pub(crate) fn parse_info(bytes: &[u8], limits: &crate::Limits) -> Result<FlacInf
     }
     let mut stream = None;
     let mut metadata = crate::AudioMetadata::new();
+    let mut cover = None;
+    let mut metadata_budget = crate::metadata::Budget::default();
     let mut md5 = [0u8; 16];
     let mut seek_table = None;
     loop {
@@ -269,16 +272,27 @@ pub(crate) fn parse_info(bytes: &[u8], limits: &crate::Limits) -> Result<FlacInf
         } else if kind == 3 {
             seek_table = Some(at..at + n - n % 18);
         } else if kind == 4 {
+            metadata_budget.add(b.len())?;
             let mut tags = Reader::new(b);
             let vendor = tags.u32(true)? as usize;
             tags.take(vendor)?;
             let count = tags.u32(true)?;
             for _ in 0..count {
+                metadata_budget.field()?;
                 let n = tags.u32(true)? as usize;
-                let tag = String::from_utf8_lossy(tags.take(n)?);
+                let tag = crate::metadata::utf8(tags.take(n)?)?;
                 if let Some((key, value)) = tag.split_once('=') {
                     metadata.insert(key.to_ascii_lowercase(), value.to_string());
                 }
+            }
+            if tags.pos != b.len() {
+                return Err(Error::decode("Trailing FLAC comment data"));
+            }
+        } else if kind == 6 {
+            metadata_budget.add(b.len())?;
+            let image = crate::metadata::read_flac_picture(b)?;
+            if cover.is_none() {
+                cover = image;
             }
         }
         if last {
@@ -295,6 +309,7 @@ pub(crate) fn parse_info(bytes: &[u8], limits: &crate::Limits) -> Result<FlacInf
         max,
         md5,
         metadata,
+        cover,
         first_frame: r.pos,
         seek_table,
     })
@@ -458,6 +473,8 @@ pub(crate) fn decode(bytes: &[u8], options: &DecodeOptions) -> Result<Audio> {
         return Err(Error::decode("FLAC PCM MD5 mismatch"));
     }
     let sample_format = info.sample_format();
+    let mut tags = crate::Tags::from_native(&info.metadata);
+    tags.cover = info.cover;
     Audio::decoded(
         out,
         rate,
@@ -465,6 +482,7 @@ pub(crate) fn decode(bytes: &[u8], options: &DecodeOptions) -> Result<Audio> {
             format: Some(AudioFormat::Flac),
             sample_format: Some(sample_format),
             metadata: info.metadata,
+            tags,
         },
     )
 }
@@ -537,6 +555,17 @@ fn sub_writer(samples: &[i64], bits: usize, level: u8, w: &mut BitWriter) {
     }
 }
 pub(crate) fn encode(audio: &Audio, options: &EncodeOptions) -> Result<Vec<u8>> {
+    let comments = crate::metadata::flac_comments(options)?;
+    let picture = options
+        .tags
+        .cover
+        .as_ref()
+        .map(crate::metadata::flac_picture)
+        .transpose()?;
+    let mut metadata_budget = crate::metadata::Budget::default();
+    for block in comments.iter().chain(picture.iter()) {
+        metadata_budget.add(block.len())?;
+    }
     let bits = match options.sample_format {
         SampleFormat::U8 | SampleFormat::S8 => 8,
         SampleFormat::S16 => 16,
@@ -608,32 +637,30 @@ pub(crate) fn encode(audio: &Audio, options: &EncodeOptions) -> Result<Vec<u8>> 
     }
     stream.bytes.extend_from_slice(&hash.digest());
     let mut out = b"fLaC".to_vec();
-    out.push(if options.metadata.is_empty() { 128 } else { 0 });
+    out.push(if comments.is_none() && picture.is_none() {
+        128
+    } else {
+        0
+    });
     out.extend_from_slice(&[0, 0, 34]);
     out.extend_from_slice(&stream.bytes);
-    if !options.metadata.is_empty() {
-        let mut tags = Vec::new();
-        put32(&mut tags, 8, true);
-        tags.extend_from_slice(b"audiobox");
-        put32(&mut tags, options.metadata.len() as u32, true);
-        for (key, value) in &options.metadata {
-            if key.is_empty() || key.contains('=') || !key.is_ascii() {
-                return Err(Error::encode("Invalid FLAC metadata key"));
-            }
-            let tag = format!("{}={value}", key.to_ascii_uppercase());
-            put32(&mut tags, tag.len() as u32, true);
-            tags.extend_from_slice(tag.as_bytes());
-        }
-        if tags.len() > 0xffffff {
-            return Err(Error::encode("FLAC metadata exceeds 16 MiB"));
-        }
-        out.push(132);
+    if let Some(tags) = comments {
+        out.push(if picture.is_none() { 132 } else { 4 });
         out.extend_from_slice(&[
             (tags.len() >> 16) as u8,
             (tags.len() >> 8) as u8,
             tags.len() as u8,
         ]);
         out.extend_from_slice(&tags);
+    }
+    if let Some(picture) = picture {
+        out.push(134);
+        out.extend_from_slice(&[
+            (picture.len() >> 16) as u8,
+            (picture.len() >> 8) as u8,
+            picture.len() as u8,
+        ]);
+        out.extend_from_slice(&picture);
     }
     out.extend_from_slice(&frames);
     Ok(out)

@@ -193,5 +193,14 @@ fn entry_bytes(key: &AssetKey, audio: &Audio) -> Result<usize> {
         add(key.capacity())?;
         add(value.capacity())?;
     }
+    for (_, value) in audio.info.tags.fields() {
+        if let Some(value) = value {
+            add(value.capacity())?;
+        }
+    }
+    if let Some(cover) = &audio.info.tags.cover {
+        add(cover.mime_type.capacity())?;
+        add(cover.data.capacity())?;
+    }
     Ok(bytes)
 }

@@ -67,6 +67,7 @@ pub(crate) fn parse_wav(bytes: &[u8], limits: &crate::Limits) -> Result<WavLayou
     let mut data64 = None;
     let mut fact = None;
     let mut metadata = crate::AudioMetadata::new();
+    let mut metadata_budget = crate::metadata::Budget::default();
     while r.pos < end {
         if end - r.pos < 8 {
             return Err(Error::decode("Truncated WAVE chunk header"));
@@ -134,11 +135,13 @@ pub(crate) fn parse_wav(bytes: &[u8], limits: &crate::Limits) -> Result<WavLayou
                 fact = Some(u32::from_le_bytes(b[..4].try_into().unwrap()) as usize)
             }
             b"LIST" if b.starts_with(b"INFO") => {
+                metadata_budget.add(b.len())?;
                 let mut info = Reader::new(&b[4..]);
                 while info.pos + 8 <= info.bytes.len() {
-                    let tag = String::from_utf8_lossy(info.take(4)?).to_string();
+                    metadata_budget.field()?;
+                    let tag = crate::metadata::utf8(info.take(4)?)?.to_string();
                     let n = info.u32(true)? as usize;
-                    let value = String::from_utf8_lossy(info.take(n)?)
+                    let value = crate::metadata::utf8(info.take(n)?)?
                         .trim_end_matches('\0')
                         .to_string();
                     metadata.insert(tag, value);
@@ -242,6 +245,7 @@ pub(crate) fn decode_wav(bytes: &[u8], options: &DecodeOptions) -> Result<Audio>
         c.truncate(layout.frames);
     }
     audio.info.metadata = layout.metadata;
+    audio.info.tags = crate::Tags::from_native(&audio.info.metadata);
     Ok(finish(audio, AudioFormat::Wav))
 }
 
@@ -280,23 +284,21 @@ pub(crate) fn encode_wav(audio: &Audio, options: &EncodeOptions) -> Result<Vec<u
         put32(&mut fact, audio.frames() as u32, true);
         chunk(&mut out, b"fact", &fact, true)?;
     }
-    if !options.metadata.is_empty() {
+    let metadata = crate::metadata::wav_text(options);
+    if !metadata.is_empty() {
         let mut info = b"INFO".to_vec();
-        for (key, value) in &options.metadata {
-            let tag = match key.as_str() {
-                "title" => *b"INAM",
-                "artist" => *b"IART",
-                "album" => *b"IPRD",
-                "comment" => *b"ICMT",
-                _ => {
-                    if key.len() != 4 || !key.is_ascii() {
-                        return Err(Error::encode(
-                            "WAVE metadata keys must be four ASCII characters or title/artist/album/comment",
-                        ));
-                    }
-                    key.as_bytes().try_into().unwrap()
-                }
-            };
+        let mut budget = crate::metadata::Budget::default();
+        budget.add(4)?;
+        let mut seen = std::collections::BTreeSet::new();
+        for (key, value) in &metadata {
+            let tag = wav_tag(key)?;
+            if !seen.insert(tag) {
+                return Err(Error::encode("Duplicate WAV metadata alias"));
+            }
+            budget.add(8 + value.len() + 1 + (value.len() + 1) % 2)?;
+        }
+        for (key, value) in &metadata {
+            let tag = wav_tag(key)?;
             let mut value = value.as_bytes().to_vec();
             value.push(0);
             chunk(&mut info, &tag, &value, true)?;
@@ -307,6 +309,28 @@ pub(crate) fn encode_wav(audio: &Audio, options: &EncodeOptions) -> Result<Vec<u
     let size = u32::try_from(out.len() - 8).map_err(|_| Error::encode("RIFF exceeds 4 GiB"))?;
     out[4..8].copy_from_slice(&size.to_le_bytes());
     Ok(out)
+}
+
+fn wav_tag(key: &str) -> Result<[u8; 4]> {
+    // Preserve all previously accepted native four-character keys, including the
+    // lowercase strings "year" and "date". Structured tags map to ICRD separately.
+    if key.len() == 4 && key.bytes().all(|b| (0x20..=0x7e).contains(&b)) {
+        return Ok(key.as_bytes().try_into().unwrap());
+    }
+    match key {
+        "title" => Ok(*b"INAM"),
+        "artist" => Ok(*b"IART"),
+        "album" => Ok(*b"IPRD"),
+        "comment" => Ok(*b"ICMT"),
+        "track" => Ok(*b"IPRT"),
+        "genre" => Ok(*b"IGNR"),
+        _ if key.len() == 4 && key.bytes().all(|b| (0x20..=0x7e).contains(&b)) => {
+            Ok(key.as_bytes().try_into().unwrap())
+        }
+        _ => Err(Error::encode(
+            "Unsupported WAV INFO field; use a supported tag or four printable ASCII characters",
+        )),
+    }
 }
 
 fn extended_rate(b: &[u8]) -> Result<u32> {

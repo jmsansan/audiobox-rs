@@ -185,9 +185,7 @@ pub(crate) fn encode(audio: &Audio, options: &EncodeOptions) -> Result<Vec<u8>> 
             "MP3 requires mono/stereo, 32/44.1/48 kHz and a standard 32–320 kbit/s bitrate",
         ));
     }
-    if !options.metadata.is_empty() {
-        return Err(Error::encode("MP3 metadata writing is not supported"));
-    }
+    let mut id3 = crate::metadata::id3::encode(options)?;
     let channels = audio.channels();
     let rate = audio.rate;
     let bitrate = options.bitrate;
@@ -272,5 +270,6 @@ pub(crate) fn encode(audio: &Audio, options: &EncodeOptions) -> Result<Vec<u8>> 
     tag[p + 22] = ((delay & 15) << 4) as u8 | ((padding >> 8) & 15) as u8;
     tag[p + 23] = padding as u8;
     tag.extend_from_slice(&frames);
-    Ok(tag)
+    id3.extend_from_slice(&tag);
+    Ok(id3)
 }

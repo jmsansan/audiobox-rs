@@ -48,6 +48,7 @@ pub fn encode_with_options(
     format: AudioFormat,
     options: &EncodeOptions,
 ) -> Result<Vec<u8>> {
+    crate::metadata::validate_options(options, format)?;
     match format {
         AudioFormat::Wav => crate::formats::encode_wav(audio, options),
         AudioFormat::Aiff => crate::formats::encode_aiff(audio, options),

@@ -11,3 +11,7 @@ and libmp3lame, for the incremental decoder's tests. `lame-stereo.mp3` is 3 s of
 of 22.05 kHz mono at 32 kbit/s (MPEG-2), and `lame-mpeg25.mp3` 2 s of 8 kHz mono at
 16 kbit/s (MPEG-2.5). Most of their frames use the bit reservoir. `ima-stereo.wav` is
 2 s of 11.025 kHz stereo IMA ADPCM.
+
+`cover.png` and `cover.jpg` are synthetic 16x16 flat violet images generated with
+FFmpeg 7.1 for front-cover metadata tests. No outside artwork is used. For each
+extension: `ffmpeg -f lavfi -i color=c=0x6841cb:s=16x16:d=0.04 -frames:v 1 -update 1 cover.EXT`.

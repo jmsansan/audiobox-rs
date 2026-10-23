@@ -122,6 +122,8 @@ pub struct DecodeInfo {
     pub format: Option<AudioFormat>,
     pub sample_format: Option<SampleFormat>,
     pub metadata: AudioMetadata,
+    /// Structured publishing tags and the first supported front cover.
+    pub tags: crate::Tags,
 }
 #[derive(Clone, Debug, Default)]
 pub struct DecodeOptions {
@@ -133,6 +135,9 @@ pub struct EncodeOptions {
     pub sample_format: SampleFormat,
     pub endian: Endian,
     pub metadata: AudioMetadata,
+    /// Structured publishing tags, supported by WAV, FLAC and MP3. Native map keys
+    /// remain available through `metadata`; supplying the same field twice is an error.
+    pub tags: crate::Tags,
     /// MP3 bitrate in kbit/s.
     pub bitrate: u32,
     /// FLAC compression level, 0 through 8.
@@ -144,6 +149,7 @@ impl Default for EncodeOptions {
             sample_format: SampleFormat::S16,
             endian: Endian::Little,
             metadata: AudioMetadata::new(),
+            tags: crate::Tags::default(),
             bitrate: 192,
             compression_level: 5,
         }
