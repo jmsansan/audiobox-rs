@@ -4,6 +4,11 @@
 
 ### Added
 
+- Chorus, flanger, phaser, bitcrusher/sample-rate reduction and cubic soft saturation
+  in the existing bus effect chains. Whole tracks use a dedicated music bus.
+- Retained-phase LFO automation in Hz or explicit beat/BPM periods, bounded prepared
+  modulation delays, fractional bit-depth blending, measured response/continuity and
+  native/WASI checksum tests, and a `colour_effects` comparison WAV example.
 - Bus effect chains (`mixer::effects`): first-order low/high-pass filters, hard-knee
   stereo-linked compression and sidechain ducking, fractional delay with beat times,
   and a comb/allpass reverb. Settings ramp per sample without resetting DSP state.

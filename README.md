@@ -761,6 +761,72 @@ ducking, a tempo-synced delay and reverb:
 cargo run --example bus_effects --features mixer -- bus-effects.wav
 ```
 
+### Modulation and colour effects
+
+The same `mixer::effects` chains also accept `Chorus`, `Flanger`, `Phaser`,
+`Bitcrusher` and `Saturation`. Use a dedicated bus for one voice (`Play::bus`) or
+one whole music track (`Music::new(..., track_bus)`). All stems and transitions of
+that music controller share its bus chain; individual `Layer` routing is not exposed.
+
+```rust
+use audiobox::mixer::{Fade, Mixer, MixerConfig};
+use audiobox::mixer::effects::{Chorus, Effect, ModulationRate, Saturation};
+
+fn main() -> audiobox::Result<()> {
+    let (_mixer, mut handle) = Mixer::new(MixerConfig {
+        buses: vec!["pad".into()], ..Default::default()
+    })?;
+    let pad = handle.bus("pad").unwrap();
+    let chorus = Chorus {
+        rate: ModulationRate::Beats { beats: 2.0, bpm: 120.0 },
+        ..Default::default()
+    };
+    handle.set_effects(pad, &[
+        Effect::Chorus(chorus),
+        Effect::Saturation(Saturation { drive_db: 3.0, ..Default::default() }),
+    ])?;
+    handle.at(48_000).set_effect(pad, 0,
+        Effect::Chorus(Chorus { mix: 0.6, ..chorus }), Fade::linear(0.2))?;
+    Ok(())
+}
+```
+
+- **Chorus:** two modulated delay taps per channel, a quarter cycle apart, with
+  optional feedback and a right-channel phase offset. Delay capacity is 80 ms.
+- **Flanger:** one modulated short delay per channel, mixed with dry audio for a
+  moving comb response. Delay capacity is 20 ms; feedback can be positive or negative.
+- **Phaser:** four first-order allpasses per channel. With fixed settings and zero
+  feedback the full-wet magnitude is one; a dry/wet blend produces two notches.
+  The sweep is logarithmic, with a centre frequency and a depth in octaves.
+- **Bitcrusher:** nearest signed PCM levels (2..=24 bits) and a sample-and-hold
+  reducer. Integer depth gives exactly `2^bits` levels from -1 to `1 - 2^(1-bits)`.
+  Fractional depth blends adjacent integer quantizers. `rate_ratio = 0.25` captures
+  the first frame and every fourth frame thereafter, with one phase for both channels.
+- **Saturation:** symmetric cubic soft clipping, `v - v³/3` within +/-1 and +/-2/3
+  beyond it, with input drive, wet output gain and dry/wet mix. Its slope joins
+  continuously at the boundaries. It adds colour without modelling physical tape.
+
+`ModulationRate` supports Hz (zero freezes the phase) or a cycle period in quarter-note
+beats with explicit BPM. Tempo changes use `set_effect`; speed and other parameters
+ramp per sample while retaining LFO phase, delay history, allpass state and reducer
+phase. Installation starts the LFO at phase zero; beat mode synchronizes period,
+without locking phase to a song transport. Pausing a bus freezes that state too.
+The default flanger needs at least 2000 Hz output and the default phaser 1778 Hz;
+adjust delay/depth or centre frequency when using the mixer's lower supported rates.
+
+Delay +/- depth must fit the effect's capacity and stay at least one sample at
+validation. Evaluated delays and phaser frequencies are clamped during automation
+as well, because nonlinear fade curves can cross bounds between valid endpoints.
+Modulated read heads intentionally bend pitch. Quantization/hold steps and nonlinear
+harmonics are intentional; these effects do not dither, oversample or anti-alias.
+
+Render six labelled sections (dry, chorus, phaser, flanger, bitcrusher, saturation)
+of the same synthetic pad for comparison:
+
+```sh
+cargo run --example colour_effects --features mixer -- colour-effects.wav
+```
+
 ## Development and releases
 
 CI runs these checks on every pull request and on `main`, on Linux, macOS and Windows.

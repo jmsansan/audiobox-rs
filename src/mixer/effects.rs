@@ -5,6 +5,10 @@
 //! Structural edits are immediate and reset the new chain's state; fade the bus
 //! around them when needed. Parameter ramps preserve filter/delay/reverb history.
 //! A delay-time ramp moves the read head and intentionally changes pitch.
+//! Chorus, flanger and phaser share retained-phase [`ModulationRate`] automation.
+//! [`Bitcrusher`] deliberately quantizes and holds samples; [`Saturation`] applies
+//! a cubic soft curve. These colour effects do not oversample or suppress aliasing.
+//! Parameter smoothing does not remove their intentional waveform discontinuities.
 //!
 //! Named buses run in sidechain dependency order, effects before the bus fader.
 //! Detectors hear the key bus after its effects, gain and pause fade, in the same
@@ -31,6 +35,9 @@ use super::voice::Ramp;
 use super::{Action, Bus, BusId, Commands, Fade, Mixer, MixerEvent, MixerHandle};
 use crate::math::{cos_turns, db_to_gain, exp, log2, sin_turns};
 use crate::{Error, ErrorCode, FadeCurve, Result};
+
+mod colour;
+pub use colour::{Bitcrusher, Chorus, Flanger, ModulationRate, Phaser, Saturation};
 
 /// Maximum effects per bus, including the master.
 pub const MAX_EFFECTS: usize = 16;
@@ -166,6 +173,11 @@ pub enum Effect {
     Compressor(Compressor),
     Delay(Delay),
     Reverb(Reverb),
+    Chorus(Chorus),
+    Flanger(Flanger),
+    Phaser(Phaser),
+    Bitcrusher(Bitcrusher),
+    Saturation(Saturation),
 }
 
 #[derive(Clone, Copy)]
@@ -247,6 +259,26 @@ impl Effect {
                     0.0,
                 ];
             }
+            Self::Chorus(c) => {
+                s.kind = 5;
+                s.values = c.values(rate)?;
+            }
+            Self::Flanger(f) => {
+                s.kind = 6;
+                s.values = f.values(rate)?;
+            }
+            Self::Phaser(p) => {
+                s.kind = 7;
+                s.values = p.values(rate)?;
+            }
+            Self::Bitcrusher(b) => {
+                s.kind = 8;
+                s.values = b.values()?;
+            }
+            Self::Saturation(d) => {
+                s.kind = 9;
+                s.values = d.values()?;
+            }
         }
         Ok(s)
     }
@@ -270,6 +302,7 @@ struct Node {
     state: State,
 }
 enum State {
+    Colour(colour::Processor),
     Filter {
         memory: [f64; 2],
         cutoff: f64,
@@ -367,7 +400,7 @@ impl Chain {
                         ring: vec![[0.0; 2]; s.capacity.ceil() as usize + 2],
                         at: 0,
                     },
-                    _ => State::Reverb {
+                    4 => State::Reverb {
                         channels: (0..ch)
                             .map(|c| {
                                 let line = |seconds: f64| {
@@ -383,6 +416,7 @@ impl Chain {
                             })
                             .collect(),
                     },
+                    _ => State::Colour(colour::Processor::new(s.kind, rate)),
                 };
                 Node {
                     settings: s,
@@ -419,6 +453,7 @@ impl Node {
                 x[c] = finite(frame[c] as f64);
             }
             match &mut self.state {
+                State::Colour(processor) => processor.process(&mut x, p, rate, ch),
                 State::Filter {
                     memory,
                     cutoff,
