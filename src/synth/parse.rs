@@ -171,7 +171,7 @@ struct LengthSpec {
 
 #[derive(Clone, Debug)]
 enum Token {
-    Note(char, i8, LengthSpec),
+    Note(char, i8, LengthSpec, Option<u8>),
     Rest(LengthSpec),
     Extend(LengthSpec),
     TieNext,
@@ -233,7 +233,19 @@ fn lex_body(cursor: &mut Cursor, out: &mut Vec<(Token, Pos)>) -> Parsed<()> {
                         break;
                     }
                 }
-                Token::Note(c, accidental, length_spec(cursor)?)
+                let length = length_spec(cursor)?;
+                let velocity = if cursor.eat('!') {
+                    let velocity_pos = cursor.pos();
+                    Some(ranged(
+                        velocity_pos,
+                        cursor.required("velocity after !")?,
+                        0..=127,
+                        "Velocity",
+                    )? as u8)
+                } else {
+                    None
+                };
+                Token::Note(c, accidental, length, velocity)
             }
             'r' => Token::Rest(length_spec(cursor)?),
             '^' => Token::Extend(length_spec(cursor)?),
@@ -325,6 +337,9 @@ fn parse_instrument(cursor: &mut Cursor) -> Parsed<(String, Instrument, Pos)> {
     let mut instrument = Instrument::default();
     let (mut wave, mut duties, mut noise) = ("pulse", None, None);
     let (mut arpeggio, mut arpeggio_step, mut duty_step) = (None, 16, 16);
+    let (mut drum_kind, mut drum_kit) = (None, None);
+    let mut drum_options = Vec::new();
+    let mut melodic_key = None;
     loop {
         let (pos, word) = cursor.word();
         if word.is_empty() {
@@ -351,7 +366,38 @@ fn parse_instrument(cursor: &mut Cursor) -> Parsed<(String, Instrument, Pos)> {
         let to_u32 = |v: i64| -> Parsed<u32> {
             u32::try_from(v).map_err(|_| value_pos.invalid(format!("{key} is out of range")))
         };
+        if !matches!(key, "volume" | "drum" | "kit") && !key.starts_with("drum-") {
+            melodic_key = Some(pos);
+        }
         match key {
+            "drum" => {
+                drum_kind = Some(match value {
+                    "kick" => super::DrumKind::Kick,
+                    "snare" => super::DrumKind::Snare,
+                    "closed-hat" => super::DrumKind::ClosedHat,
+                    "open-hat" => super::DrumKind::OpenHat,
+                    "tom" => super::DrumKind::Tom,
+                    "clap" => super::DrumKind::Clap,
+                    "crash" => super::DrumKind::Crash,
+                    _ => return Err(value_pos.syntax("Unknown drum kind")),
+                })
+            }
+            "kit" => {
+                drum_kit = Some(match value {
+                    "chiptune" => super::DrumKit::Chiptune,
+                    "electronic" => super::DrumKit::Electronic,
+                    _ => return Err(value_pos.syntax("Kit must be chiptune or electronic")),
+                })
+            }
+            "drum-pitch" | "drum-tone" | "drum-noise" | "drum-mix" | "drum-click" | "drum-seed"
+            | "drum-sweep" => {
+                let count = if key == "drum-sweep" { 2 } else { 1 };
+                let values = numbers(count..=count)?
+                    .into_iter()
+                    .map(to_u32)
+                    .collect::<Parsed<Vec<_>>>()?;
+                drum_options.push((key.to_owned(), values, value_pos));
+            }
             "wave" => match value {
                 "pulse" | "triangle" | "saw" | "noise" => wave = value,
                 _ => {
@@ -417,6 +463,34 @@ fn parse_instrument(cursor: &mut Cursor) -> Parsed<(String, Instrument, Pos)> {
             "arpeggio-step" => arpeggio_step = to_u32(numbers(1..=1)?[0])?,
             _ => return Err(pos.syntax(format!("Unknown instrument key {key}"))),
         }
+    }
+    if let Some(kind) = drum_kind {
+        if let Some(pos) = melodic_key {
+            return Err(pos.invalid("Drums cannot use melodic oscillator or modulation keys"));
+        }
+        let mut drum = super::Drum::new(kind, drum_kit.unwrap_or(super::DrumKit::Electronic));
+        for (key, values, pos) in drum_options {
+            let as_u8 = |v| u8::try_from(v).map_err(|_| pos.invalid("Drum value is out of range"));
+            let as_u16 =
+                |v| u16::try_from(v).map_err(|_| pos.invalid("Drum value is out of range"));
+            match key.as_str() {
+                "drum-pitch" => drum.pitch_hz = as_u16(values[0])?,
+                "drum-tone" => drum.tone_ms = values[0],
+                "drum-noise" => drum.noise_ms = values[0],
+                "drum-mix" => drum.noise_percent = as_u8(values[0])?,
+                "drum-click" => drum.click_percent = as_u8(values[0])?,
+                "drum-seed" => drum.seed = values[0],
+                "drum-sweep" => {
+                    drum.sweep_cents = as_u16(values[0])?;
+                    drum.sweep_ms = values[1];
+                }
+                _ => unreachable!(),
+            }
+        }
+        drum.validate().map_err(|e| name_pos.wrap(e))?;
+        instrument.drum = Some(drum);
+    } else if drum_kit.is_some() || !drum_options.is_empty() {
+        return Err(name_pos.invalid("kit and drum parameters require drum=KIND"));
     }
     instrument.waveform = match wave {
         "pulse" => Waveform::Pulse(match &duties {
@@ -537,16 +611,21 @@ impl<'a> Expander<'a> {
         };
         let wrap = |e| pos.wrap(e);
         match token {
-            Token::Note(letter, accidental, spec) => {
+            Token::Note(letter, accidental, spec, velocity) => {
                 let pitch = Pitch::from_name(*letter, *accidental, state.octave).map_err(wrap)?;
                 let len = length(spec, state);
                 if let Some(tie) = state.tie.take() {
+                    if velocity.is_some() {
+                        return Err(pos.invalid("A tied continuation cannot set velocity"));
+                    }
                     if state.last_pitch != Some(pitch) {
                         return Err(tie.syntax("'&' joins notes of different pitch"));
                     }
                     writer.tie(len).map_err(wrap)?;
                 } else {
-                    writer.note(pitch, len).map_err(wrap)?;
+                    writer
+                        .note_with_velocity(pitch, len, velocity.unwrap_or(127))
+                        .map_err(wrap)?;
                 }
                 state.last_pitch = Some(pitch);
             }

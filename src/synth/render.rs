@@ -1,3 +1,4 @@
+use super::drum::{DrumPlan, DrumVoice};
 use super::score::{Instrument, Score};
 use super::wave::{Aliasing, Duty, Oscillator, Waveform};
 use crate::math::cents_to_hz;
@@ -45,6 +46,7 @@ impl Score {
 
 #[derive(Clone, Debug)]
 struct Plan {
+    drum: Option<DrumPlan>,
     waveform: Waveform,
     attack: u64,
     decay: u64,
@@ -62,6 +64,7 @@ impl Plan {
         let step = |ms: u32| samples(ms).max(1);
         let e = instrument.envelope;
         Self {
+            drum: instrument.drum.map(|d| DrumPlan::new(d, rate)),
             waveform: instrument.waveform,
             attack: samples(e.attack_ms),
             decay: samples(e.decay_ms),
@@ -130,6 +133,8 @@ enum Stage {
 
 #[derive(Clone, Debug)]
 struct Voice {
+    drum: DrumVoice,
+    drumming: bool,
     oscillator: Oscillator,
     event: Option<Event>,
     held: bool,
@@ -143,6 +148,8 @@ struct Voice {
 impl Voice {
     fn new(aliasing: Aliasing) -> Self {
         Self {
+            drum: DrumVoice::new(aliasing),
+            drumming: false,
             oscillator: Oscillator::new(aliasing),
             event: None,
             held: false,
@@ -154,7 +161,7 @@ impl Voice {
             frequency: 0.0,
         }
     }
-    fn start(&mut self, event: Event) {
+    fn start(&mut self, event: Event, plans: &[Plan]) {
         self.event = Some(event);
         self.held = true;
         self.stage = Stage::Attack;
@@ -162,9 +169,18 @@ impl Voice {
         self.from = self.level;
         self.elapsed = 0;
         self.frequency = cents_to_hz(event.cents);
+        self.drumming = plans[event.instrument].drum.is_some();
+        if let Some(drum) = &plans[event.instrument].drum {
+            self.level = 0.0;
+            self.drum
+                .trigger(drum, crate::math::exp2((event.cents + 900.0) / 1200.0));
+        }
     }
     fn release(&mut self, plans: &[Plan]) {
         self.held = false;
+        if self.drumming {
+            return;
+        }
         if self.stage != Stage::Idle {
             let release = self.event.map_or(0, |e| plans[e.instrument].release);
             self.stage = if release == 0 {
@@ -208,10 +224,13 @@ impl Voice {
         let Some(event) = self.event else {
             return 0.0;
         };
+        let plan = &plans[event.instrument];
+        if let Some(drum) = &plan.drum {
+            return self.drum.sample(drum) * event.amplitude * plan.volume;
+        }
         if self.stage == Stage::Idle {
             return 0.0;
         }
-        let plan = &plans[event.instrument];
         let level = self.envelope(plan);
         let frequency = if plan.modulated() {
             cents_to_hz(plan.cents(event.cents, self.elapsed))
@@ -221,6 +240,13 @@ impl Voice {
         let waveform = plan.waveform(self.elapsed);
         self.elapsed += 1;
         self.oscillator.next(waveform, frequency, rate) * level * event.amplitude * plan.volume
+    }
+    fn active(&self) -> bool {
+        if self.drumming {
+            self.drum.active()
+        } else {
+            self.stage != Stage::Idle
+        }
     }
 }
 
@@ -298,7 +324,11 @@ impl Synth {
                             off: on + (end - on) * n.gate as u64 / 8,
                             cents: (n.pitch.midi() as f64 - 69.0) * 100.0,
                             instrument: n.instrument,
-                            amplitude: n.volume as f64 / 15.0,
+                            amplitude: if n.velocity == 127 {
+                                n.volume as f64 / 15.0
+                            } else {
+                                (n.volume as f64 / 15.0) * (n.velocity as f64 / 127.0)
+                            },
                         }
                     })
                     .collect();
@@ -306,7 +336,7 @@ impl Synth {
                 let loop_carry = loop_next
                     .checked_sub(1)
                     .map(|i| events[i])
-                    .filter(|e| e.off > loop_start)
+                    .filter(|e| e.off > loop_start && plans[e.instrument].drum.is_none())
                     .map(|e| Event {
                         on: loop_start,
                         ..e
@@ -324,7 +354,11 @@ impl Synth {
             rate: sample_rate,
             aliasing: options.aliasing,
             gain: options.gain as f64,
-            max_release: plans.iter().map(|p| p.release).max().unwrap_or(0),
+            max_release: plans
+                .iter()
+                .map(|p| p.release.max(p.drum.as_ref().map_or(0, |d| d.frames)))
+                .max()
+                .unwrap_or(0),
             plans,
             tracks,
             song_end,
@@ -382,7 +416,7 @@ impl Synth {
             if !self.ending {
                 self.schedule();
             }
-            if self.ending && self.tracks.iter().all(|t| t.voice.stage == Stage::Idle) {
+            if self.ending && self.tracks.iter().all(|t| !t.voice.active()) {
                 self.finished = true;
                 return written;
             }
@@ -415,7 +449,7 @@ impl Synth {
             for track in &mut self.tracks {
                 track.next = track.loop_next;
                 if let Some(event) = track.loop_carry {
-                    track.voice.start(event);
+                    track.voice.start(event, &self.plans);
                 }
             }
         }
@@ -425,7 +459,7 @@ impl Synth {
                 if event.on > position {
                     break;
                 }
-                track.voice.start(event);
+                track.voice.start(event, &self.plans);
                 track.next += 1;
             }
             let voice = &mut track.voice;

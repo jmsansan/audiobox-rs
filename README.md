@@ -535,6 +535,65 @@ Render the example song to a WAV file:
 cargo run --example chiptune --features synth -- song.wav
 ```
 
+### Synthesized drum kits
+
+The `synth` feature also provides kick, snare, closed/open hi-hat, tom, clap and crash
+instruments in `chiptune` and `electronic` kits. All sounds come from oscillators and
+noise; no recorded samples are included. Select a drum just like another instrument:
+
+```text
+tempo 120
+instrument kick drum=kick kit=electronic
+instrument snare drum=snare kit=electronic drum-tone=100 drum-noise=220
+instrument closed drum=closed-hat kit=chiptune
+instrument open drum=open-hat kit=chiptune
+channel kick = @kick l8 [c!127 r c!80 r]2
+channel snare = @snare [r4 c4!100]2
+channel hats = l8 [@closed c!90 c!50 @open c!80 r]2
+```
+
+`!0`..`!127` is a per-note velocity suffix, separate from channel `v0`..`v15`.
+Place it after the length and any dots (`c16.!96`). It defaults to 127 on each note,
+so a soft note does not change the next note's velocity. Ties keep the first attack's
+velocity and reject a new suffix on the continuation. The builder has
+`ChannelWriter::note_with_velocity`; `note` still uses 127. Existing scores retain
+their previous sample bits.
+
+Construct settings with `Drum::new(DrumKind::Kick, DrumKit::Electronic)` and
+`Instrument::drum(settings)`, or render one hit offline with `settings.render(rate,
+velocity)`. Both kits have independent finite tone/noise envelopes, pitch sweeps and
+fixed seeds. Chiptune uses triangle tones and clocked long/short 15-bit noise;
+electronic uses sine bodies, filtered noise and metallic oscillator banks. These
+presets have synthetic characters rather than modelling a specific drum machine.
+
+| Score key | Meaning |
+| --- | --- |
+| `drum-pitch=55` | Base frequency at C4, 20..=20000 Hz. Other notes transpose pitched components. |
+| `drum-tone=400` / `drum-noise=220` | Independent finite envelope lengths, 0..=10000 ms; zero mutes that component. |
+| `drum-sweep=2400,35` | Initial cents above the base (0..=4800) and time to reach it (0..=1000 ms). |
+| `drum-mix=70` | Noise percentage (0..=100), with the complementary tone level. Clap uses noise only. |
+| `drum-click=25` | Separate 3 ms filtered-noise transient level, 0..=100 percent. |
+| `drum-seed=123` | Fixed noise seed, 0..=4294967295. Zero maps to one; chip mode uses the low 15 bits. |
+
+Parameters omitted from text use the selected kit/kind preset, independently of key
+order. `volume` also works. Waveform, ADSR and melodic modulation keys are rejected
+on drum instruments. Their squared decay envelopes include a 1 ms attack; a clap
+adds short bursts at 0, 10 and 20 ms before its final tail at 30 ms. Very short
+envelopes can be silent at low sample rates. Metallic components can alias.
+
+Each channel remains monophonic: a new note replaces its previous hit and tail.
+Putting open/closed hats on one channel gives a natural choke; use separate channels
+for overlapping kick, snare and cymbals. Gate-off does not cut a drum's tail, and the
+last tail is included in the finite render length. A loop carry alone does not
+retrigger percussion. Every trigger resets phase, filters and noise seed; rendering
+the prepared `Synth` stays allocation-free and independent of buffer sizes.
+
+Render a pattern in each kit (optionally choose an output directory):
+
+```sh
+cargo run --example drum_kits --features synth -- target/drum-kits
+```
+
 ## Sound effects (`sfx` feature)
 
 `audiobox::sfx` renders game sound effects, such as jumps, coins, hits and menu blips,

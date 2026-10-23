@@ -4,6 +4,7 @@
 //! [`Instrument`]: a pulse, triangle, sawtooth or noise [`Waveform`], an ADSR
 //! [`Envelope`], a volume, and slide, vibrato, arpeggio and duty-sweep effects.
 //! Render it offline with [`Score::render`], or chunk by chunk with [`Synth`].
+//! [`Instrument::drum`] selects finite synthesized percussion in two [`DrumKit`]s.
 //!
 //! ```
 //! use audiobox::synth::Score;
@@ -50,6 +51,20 @@
 //! | `vibrato` | `depth,period[,delay]`: cents (≤ 1200), milliseconds, milliseconds | none |
 //! | `arpeggio` | Up to 16 semitone offsets, cycled from each note's start, such as `0,4,7` | none |
 //! | `arpeggio-step` | Milliseconds per arpeggio step | `16` |
+//! | `drum` | `kick`, `snare`, `closed-hat`, `open-hat`, `tom`, `clap`, `crash` | none |
+//! | `kit` | `chiptune` or `electronic`; requires `drum` | `electronic` |
+//! | `drum-pitch` | Base Hz at C4, 20..=20000 | preset |
+//! | `drum-tone` / `drum-noise` | Independent finite envelope lengths, 0..=10000 ms | preset |
+//! | `drum-sweep` | Initial cents above the base (0..=4800), sweep milliseconds (0..=1000) | preset |
+//! | `drum-mix` | Noise percentage, 0..=100; tone uses the complement | preset |
+//! | `drum-click` | Separate 3 ms noise transient level, 0..=100 percent | preset |
+//! | `drum-seed` | Fixed noise seed, 0..=4294967295 | `1` |
+//!
+//! Drums allow `volume`, `kit` and `drum-*` keys; melodic waveform, ADSR and modulation
+//! keys are rejected. Notes transpose pitched components relative to C4. Chiptune
+//! kick/tom/snare use triangle tones and clocked 15-bit noise; electronic tones use
+//! sines and filtered noise, with a six-oscillator metal bank for hats/cymbals.
+//! These are synthetic characters, not emulations of a particular console.
 //!
 //! ## Commands
 //!
@@ -58,6 +73,7 @@
 //! | Command | Meaning |
 //! | --- | --- |
 //! | `c d e f g a b` | A note. Follow with `+` or `#` for sharp, `-` for flat, then an optional length. |
+//! | `c16!96` | Per-note velocity 0..=127, independently of `v`. Omitted velocity is 127. Suffix follows the length/dots. |
 //! | `r` | A rest, with an optional length. |
 //! | length | `4` is a quarter, `8` an eighth, `3` a half-note triplet; dots add half: `4.`, `8..`. `%12` is 12 ticks. Without a number, the default length is used: `c.` dots it. |
 //! | `^8` | Lengthens the previous note or rest. `c4^8` lasts a quarter and an eighth. |
@@ -74,6 +90,8 @@
 //!
 //! A length must be a whole number of ticks: at the default 48 ticks per quarter,
 //! `64.` is rejected. Raise `ticks` for finer lengths.
+//! Velocity is not persistent: `c!64 d` gives velocities 64 and 127. A tied
+//! continuation cannot set velocity; it retains the first attack's velocity.
 //!
 //! The song's length is that of its longest channel, including trailing rests. When
 //! it ends, every channel continues from the loop point, or from the start if there
@@ -99,6 +117,18 @@
 //! frequency, so in the short mode, whose sequence repeats every 93 steps, it sounds
 //! at the note's pitch. In the long mode, higher notes give brighter hiss.
 //!
+//! Drums are one-shots with finite squared decay and a 1 ms attack (the 3 ms click
+//! has a one-sample attack). Snare tone and noise have separate envelopes; a clap
+//! has bursts at 0, 10 and 20 ms and a final noise tail at 30 ms. Drum gates/ties
+//! change score timing but do not stop the natural tail. A new note on that channel
+//! replaces the previous sound, so a closed hat cuts an open one on the same channel.
+//! Use separate channels for overlapping parts. Each trigger resets phase, filter
+//! memory and the configured seed, giving identical hits at equal pitch/velocity.
+//! Drums are not restarted by a loop carry without an actual written onset.
+//! Their final tails are included in [`Synth::max_frames`]. A one-frame envelope
+//! can be silent at low rates; presets use longer times. Metallic components may
+//! alias and are not subject to the melodic oscillator's band-limiting guarantee.
+//!
 //! ## Aliasing
 //!
 //! [`Aliasing::BandLimited`], the default, corrects the pulse and sawtooth steps with
@@ -113,6 +143,8 @@
 //! division and rounding, which IEEE 754 defines exactly; `sin`, `exp` and `powf` are
 //! replaced by the crate's own series. Times in milliseconds are rounded to whole
 //! samples, and note positions are computed from ticks with integer arithmetic.
+mod drum;
+pub use drum::{Drum, DrumKind, DrumKit};
 mod parse;
 mod render;
 mod score;

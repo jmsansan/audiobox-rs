@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 struct Counting;
 static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
+static FREES: AtomicUsize = AtomicUsize::new(0);
 thread_local! {
     // Only the rendering thread counts: the test harness allocates on its own threads.
     static COUNTING: Cell<bool> = const { Cell::new(false) };
@@ -27,6 +28,9 @@ unsafe impl GlobalAlloc for Counting {
         unsafe { System.alloc_zeroed(layout) }
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        if COUNTING.try_with(Cell::get).unwrap_or(false) {
+            FREES.fetch_add(1, Ordering::SeqCst);
+        }
         unsafe { System.dealloc(ptr, layout) }
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, size: usize) -> *mut u8 {
@@ -47,7 +51,19 @@ fn fill_does_not_allocate() {
          instrument hiss wave=noise adsr=0,60,0,0
          channel a = @lead o5 l16 L [c d e g]4
          channel b = @arp o3 l8 L [c g]4
-         channel c = l16 L [@hat o7 c @hiss o6 c]8",
+         instrument kick drum=kick kit=electronic
+         instrument snare drum=snare kit=chiptune
+         instrument open drum=open-hat
+         instrument closed drum=closed-hat kit=chiptune
+         instrument tom drum=tom
+         instrument clap drum=clap kit=chiptune
+         instrument crash drum=crash
+         channel c = l16 L [@hat o7 c @hiss o6 c]8
+         channel d = @kick l8 L [c!127 c!80]8
+         channel e = @snare l8 L [r c!96]8
+         channel f = l16 L [@open c!100 @closed c!40]16
+         channel g = l8 L [@tom c @clap c!64]8
+         channel h = @crash L c1",
     )
     .unwrap();
     let mut synth = Synth::new(
@@ -68,5 +84,6 @@ fn fill_does_not_allocate() {
     synth.fill(&mut buffer);
     COUNTING.set(false);
     assert_eq!(ALLOCATIONS.load(Ordering::SeqCst), 0);
+    assert_eq!(FREES.load(Ordering::SeqCst), 0);
     assert!(buffer.iter().any(|&s| s != 0.0));
 }

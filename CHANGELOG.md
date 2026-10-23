@@ -4,6 +4,14 @@
 
 ### Added
 
+- Synthesized drum instruments in chiptune/electronic kits: kick, snare, closed/open
+  hat, tom, clap and crash, with finite independent tone/noise envelopes, pitch
+  sweeps, click and seed controls. Available in scores or as standalone offline hits.
+- Per-note velocity (`c16!96`, `ChannelWriter::note_with_velocity`) defaults to 127;
+  unsuffixed legacy scores retain their sample bits. Drum tails survive gate-off,
+  retriggers replace them on their channel, and loop carries do not invent hits.
+- Drum envelope/pitch/lifecycle/determinism tests, callback allocation/free checks,
+  native/WASI checksum coverage and a `drum_kits` pattern example for both kits.
 - Chorus, flanger, phaser, bitcrusher/sample-rate reduction and cubic soft saturation
   in the existing bus effect chains. Whole tracks use a dedicated music bus.
 - Retained-phase LFO automation in Hz or explicit beat/BPM periods, bounded prepared
@@ -42,6 +50,8 @@
 
 ### Breaking
 
+- Full struct literals for `Instrument` and `Note` need `drum` and `velocity`,
+  respectively. Constructors/defaults provide no drum and velocity 127.
 - Full struct literals for `EncodeOptions` and `DecodeInfo` need the new `tags`
   field, or `..Default::default()`. Existing `metadata` map callers keep their keys.
 

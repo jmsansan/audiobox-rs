@@ -55,7 +55,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: cargo test --locked --offline --release --target wasm32-wasip1 --all-features --test deterministic --test synth --test sfx --test assets --test music --test metadata --test effects --test colour_effects
+      - run: cargo test --locked --offline --release --target wasm32-wasip1 --all-features --test deterministic --test synth --test sfx --test assets --test music --test metadata --test effects --test colour_effects --test drums
         env:
           CARGO_TARGET_WASM32_WASIP1_RUNNER: node --no-warnings scripts/wasi-run.mjs
 
