@@ -34,6 +34,7 @@
 //! | Sound effects | [`sfx`]: parameters, text form and seeded presets | `sfx` |
 //! | Game mixer | [`mixer`]: voices, buses, fades, loops and an allocation-free `render` | `mixer` |
 //! | Sound assets | [`assets`]: background loading and a budgeted decoded-audio cache | `assets` |
+//! | Adaptive music | [`music`]: beat/bar transitions, crossfades, cues and intensity layers | `music` |
 //!
 //! Enable the optional modules you use:
 //!
@@ -78,6 +79,9 @@ mod math;
 #[cfg(feature = "mixer")]
 #[cfg_attr(docsrs, doc(cfg(feature = "mixer")))]
 pub mod mixer;
+#[cfg(feature = "music")]
+#[cfg_attr(docsrs, doc(cfg(feature = "music")))]
+pub use mixer::music;
 pub mod mp3;
 pub mod pcm;
 #[cfg(feature = "sfx")]

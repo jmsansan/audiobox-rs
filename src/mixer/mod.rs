@@ -118,6 +118,9 @@
 //! on every platform: resampling, panning and fades use only basic IEEE arithmetic and
 //! the crate's own sine series.
 mod limiter;
+#[cfg(feature = "music")]
+#[cfg_attr(docsrs, doc(cfg(feature = "music")))]
+pub mod music;
 mod queue;
 mod status;
 mod voice;
@@ -552,9 +555,17 @@ pub enum MixerEvent {
     Limited(VoiceId),
     /// The voice's stream failed and the voice stopped.
     Failed(VoiceId, ErrorCode),
+    /// A whole music operation took effect at this output frame; a fade may continue.
+    #[cfg(feature = "music")]
+    MusicApplied(music::MusicId, u64),
+    /// A music operation was refused as a whole; the previous track is unchanged.
+    #[cfg(feature = "music")]
+    MusicRejected(music::MusicId, ErrorCode),
 }
 
 enum Action {
+    #[cfg(feature = "music")]
+    Music(Box<music::Request>),
     Play(Box<Voice>),
     Stop(VoiceId, u64, FadeCurve),
     Gain(VoiceId, f64, u64, FadeCurve),
@@ -577,6 +588,8 @@ struct Command {
 struct Returned {
     event: Option<MixerEvent>,
     voice: Option<Box<Voice>>,
+    #[cfg(feature = "music")]
+    music: Option<Box<music::Request>>,
 }
 
 struct Bus {
@@ -692,7 +705,17 @@ impl Mixer {
         let (command_tx, command_rx) = queue::queue(queue);
         // Per render, at most `slots + queue` voices end or are refused, and as many
         // are stolen, so the way back holds every event and voice of a render.
-        let returns = 2 * (slots + queue);
+        #[cfg(not(feature = "music"))]
+        let returns_per_command = 1;
+        #[cfg(feature = "music")]
+        let returns_per_command = music::MAX_LAYERS + 1;
+        // A musical command may start MAX_LAYERS voices, plus return its container.
+        // Reserve their worst-case returns too; all storage is made off audio.
+        let returns = queue
+            .checked_mul(returns_per_command)
+            .and_then(|n| n.checked_add(slots))
+            .and_then(|n| n.checked_mul(2))
+            .ok_or_else(|| Error::limit("Mixer return capacity overflow"))?;
         let (return_tx, return_rx) = queue::queue(returns);
         let clock = Arc::new(AtomicU64::new(0));
         let status = Arc::new(status::Table::new(slots));
@@ -813,9 +836,18 @@ impl Mixer {
     }
 
     fn receive(&mut self) {
-        while self.pending.len() < self.pending.capacity() {
+        // Refused music commands do not enter pending. They still consume this
+        // render's receive budget, even if a producer keeps refilling the queue.
+        let available = self.pending.capacity() - self.pending.len();
+        for _ in 0..available {
             match self.commands.pop() {
-                Some(command) => self.pending.push(command),
+                Some(command) => {
+                    #[cfg(feature = "music")]
+                    let Some(command) = self.quantize_music(command) else {
+                        continue;
+                    };
+                    self.pending.push(command);
+                }
                 None => break,
             }
         }
@@ -855,6 +887,8 @@ impl Mixer {
 
     fn apply(&mut self, frame: u64, action: Action) {
         match action {
+            #[cfg(feature = "music")]
+            Action::Music(request) => self.apply_music(frame, request),
             Action::Play(voice) => self.start(frame, voice),
             Action::Stop(id, len, curve) => {
                 if let Some(slot) = self.slot_of(id) {
@@ -1207,6 +1241,8 @@ impl Mixer {
             self.retired.push(Returned {
                 event: Some(event),
                 voice: None,
+                #[cfg(feature = "music")]
+                music: None,
             });
         }
     }
@@ -1218,6 +1254,8 @@ impl Mixer {
             self.retired.push(Returned {
                 event,
                 voice: Some(voice),
+                #[cfg(feature = "music")]
+                music: None,
             });
         }
     }
@@ -1230,6 +1268,8 @@ impl Mixer {
                 Returned {
                     event: None,
                     voice: None,
+                    #[cfg(feature = "music")]
+                    music: None,
                 },
             );
             match self.returns.push(item) {
@@ -1368,6 +1408,8 @@ impl MixerHandle {
     pub fn poll_event(&mut self) -> Option<MixerEvent> {
         while let Some(returned) = self.returns.pop() {
             drop(returned.voice);
+            #[cfg(feature = "music")]
+            drop(returned.music);
             if returned.event.is_some() {
                 return returned.event;
             }
@@ -1410,12 +1452,10 @@ pub struct Commands<'a> {
     handle: &'a mut MixerHandle,
     frame: Option<u64>,
 }
-impl Commands<'_> {
-    /// Starts a voice and returns its id. Fails if the sound has more than two
-    /// channels, a loop region is outside it, or the command queue is full.
-    pub fn play(self, sound: impl Into<Sound>, play: &Play) -> Result<VoiceId> {
-        let handle = self.handle;
-        let sound = sound.into();
+impl MixerHandle {
+    /// Build a voice on the control thread, before publishing any command.
+    fn prepare_voice(&mut self, sound: Sound, play: &Play) -> Result<Box<Voice>> {
+        let handle = self;
         let (rate, channels, frames) = match &sound {
             Sound::Memory(audio) => (
                 audio.sample_rate(),
@@ -1505,7 +1545,17 @@ impl Commands<'_> {
                 policy: limit.policy,
             });
         }
-        handle.send(self.frame, Action::Play(voice))?;
+        Ok(voice)
+    }
+}
+
+impl Commands<'_> {
+    /// Starts a voice and returns its id. Fails if the sound has more than two
+    /// channels, a loop region is outside it, or the command queue is full.
+    pub fn play(self, sound: impl Into<Sound>, play: &Play) -> Result<VoiceId> {
+        let voice = self.handle.prepare_voice(sound.into(), play)?;
+        let id = voice.id;
+        self.handle.send(self.frame, Action::Play(voice))?;
         Ok(id)
     }
     /// Stops a voice, fading it out first. Unknown or ended voices are ignored.

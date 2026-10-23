@@ -4,6 +4,11 @@
 
 ### Added
 
+- Optional `music` module (enables `mixer`): fixed-tempo beat/bar transport,
+  atomic track transitions and crossfades, one-shot cues, and synchronized intensity
+  layers. Queued operations are quantized on audio-thread receipt, and group
+  capacity failures preserve the previous track. Supports decoded sounds, streaming
+  decoders and synthesized scores, with an `adaptive_music` example.
 - Optional `assets` module: a single background file/byte loader with a bounded
   request queue, input/decode limits and one-shot polling/waiting handles returning
   shared `Arc<Audio>`. Available on native targets, independently of the mixer.

@@ -172,6 +172,8 @@ pub(super) struct InstanceLimit {
 }
 
 pub(super) struct Voice {
+    #[cfg(feature = "music")]
+    pub music: Option<super::music::LayerState>,
     pub id: VoiceId,
     /// Chosen to give way to a starting voice, while its start is decided.
     pub marked: bool,
@@ -261,6 +263,8 @@ impl Voice {
         };
         let loop_span = looping.and_then(|(start, end)| end.or(length).map(|end| (start, end)));
         Self {
+            #[cfg(feature = "music")]
+            music: None,
             marked: false,
             loop_span,
             id,
