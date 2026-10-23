@@ -189,6 +189,8 @@ pub struct DutySweep {
 /// The sound of a channel: a waveform, an envelope, a volume and pitch effects.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct Instrument {
+    /// Opt-in tracker sources, macros and quantization; `None` keeps legacy samples.
+    pub chip: Option<super::ChipInstrument>,
     /// A finite synthesized one-shot instead of a melodic oscillator/ADSR.
     pub drum: Option<super::Drum>,
     pub waveform: Waveform,
@@ -211,6 +213,7 @@ impl Instrument {
     /// The waveform at full volume with the default envelope and no effects.
     pub fn new(waveform: Waveform) -> Self {
         Self {
+            chip: None,
             drum: None,
             waveform,
             envelope: Envelope::default(),
@@ -229,6 +232,27 @@ impl Instrument {
         }
     }
     pub fn validate(&self) -> Result<()> {
+        if let Some(chip) = &self.chip {
+            chip.validate(self.waveform)?;
+            if self.drum.is_some()
+                || (self.arpeggio.is_some() && chip.arpeggio.is_some())
+                || (self.duty_sweep.is_some() && chip.duty.is_some())
+            {
+                return Err(Error::invalid(
+                    "Conflicting drum/tracker or duplicate modulation controls",
+                ));
+            }
+            if !matches!(chip.source, super::ChipSource::Waveform) && self.duty_sweep.is_some() {
+                return Err(Error::invalid("Duty sweeps need a waveform source"));
+            }
+            if matches!(chip.source, super::ChipSource::Noise { .. })
+                && (self.slide != 0 || self.vibrato.is_some() || self.arpeggio.is_some())
+            {
+                return Err(Error::invalid(
+                    "Fixed-period noise does not take melodic pitch controls",
+                ));
+            }
+        }
         if let Some(drum) = self.drum {
             drum.validate()?;
             if self.waveform != Waveform::default()

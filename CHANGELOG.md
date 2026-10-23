@@ -4,6 +4,12 @@
 
 ### Added
 
+- Opt-in tracker instruments: four-bit wavetables, volume/duty/arpeggio/fine-pitch
+  macros with rational frame/tick clocks, hold/loop endings, NTSC period noise,
+  low-rate unsigned PCM with text hex data, and optional four-bit gain/period pitch.
+  Legacy score checksums stay unchanged. Rendering and reset allocate/free nothing.
+- Tracker response, timing, PCM lifecycle, native/WASI checksum tests and a
+  `tracker_instruments` example exporting separate voices and a combined phrase.
 - Synthesized drum instruments in chiptune/electronic kits: kick, snare, closed/open
   hat, tom, clap and crash, with finite independent tone/noise envelopes, pitch
   sweeps, click and seed controls. Available in scores or as standalone offline hits.
@@ -50,8 +56,8 @@
 
 ### Breaking
 
-- Full struct literals for `Instrument` and `Note` need `drum` and `velocity`,
-  respectively. Constructors/defaults provide no drum and velocity 127.
+- Full struct literals for `Instrument` need `chip` and `drum`; `Note` needs
+  `velocity`. Constructors/defaults provide no chip/drum and velocity 127.
 - Full struct literals for `EncodeOptions` and `DecodeInfo` need the new `tags`
   field, or `..Default::default()`. Existing `metadata` map callers keep their keys.
 
