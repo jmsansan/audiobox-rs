@@ -272,10 +272,28 @@ pub(crate) fn encode_wav(audio: &Audio, options: &EncodeOptions) -> Result<Vec<u
         SampleFormat::Ulaw => 7,
         _ => 1,
     };
+    if let Some(mask) = options.wav_channel_mask {
+        if mask & !0x3ffff != 0
+            || mask.count_ones() as usize != audio.channels()
+            || !matches!(code, 1 | 3)
+        {
+            return Err(Error::invalid(
+                "WAVE speaker mask must match PCM/float channels and standard speaker bits",
+            ));
+        }
+    }
     let align = u16::try_from(audio.channels() * f.bytes())
         .map_err(|_| Error::encode("Block alignment overflow"))?;
     let mut desc = Vec::new();
-    put16(&mut desc, code, true);
+    put16(
+        &mut desc,
+        if options.wav_channel_mask.is_some() {
+            0xfffe
+        } else {
+            code
+        },
+        true,
+    );
     put16(&mut desc, audio.channels() as u16, true);
     put32(&mut desc, audio.rate, true);
     put32(
@@ -288,6 +306,13 @@ pub(crate) fn encode_wav(audio: &Audio, options: &EncodeOptions) -> Result<Vec<u
     );
     put16(&mut desc, align, true);
     put16(&mut desc, f.bits(), true);
+    if let Some(mask) = options.wav_channel_mask {
+        put16(&mut desc, 22, true);
+        put16(&mut desc, f.bits(), true);
+        put32(&mut desc, mask, true);
+        put16(&mut desc, code, true);
+        desc.extend_from_slice(&[0, 0, 0, 0, 0x10, 0, 0x80, 0, 0, 0xaa, 0, 0x38, 0x9b, 0x71]);
+    }
     let pcm = encode_pcm(audio, f, Endian::Little)?;
     let mut out = b"RIFF\0\0\0\0WAVE".to_vec();
     chunk(&mut out, b"fmt ", &desc, true)?;

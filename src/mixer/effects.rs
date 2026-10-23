@@ -304,7 +304,7 @@ struct Node {
 enum State {
     Colour(colour::Processor),
     Filter {
-        memory: [f64; 2],
+        memory: [f64; 8],
         cutoff: f64,
         coefficient: f64,
     },
@@ -316,7 +316,7 @@ enum State {
         release: Cache,
     },
     Delay {
-        ring: Vec<[f64; 2]>,
+        ring: Vec<f64>,
         at: usize,
     },
     Reverb {
@@ -385,7 +385,7 @@ impl Chain {
             .map(|s| {
                 let state = match s.kind {
                     0 | 1 => State::Filter {
-                        memory: [0.0; 2],
+                        memory: [0.0; 8],
                         cutoff: 0.0,
                         coefficient: 0.0,
                     },
@@ -397,7 +397,7 @@ impl Chain {
                         release: Cache::new(),
                     },
                     3 => State::Delay {
-                        ring: vec![[0.0; 2]; s.capacity.ceil() as usize + 2],
+                        ring: vec![0.0; (s.capacity.ceil() as usize + 2) * ch],
                         at: 0,
                     },
                     4 => State::Reverb {
@@ -416,7 +416,7 @@ impl Chain {
                             })
                             .collect(),
                     },
-                    _ => State::Colour(colour::Processor::new(s.kind, rate)),
+                    _ => State::Colour(colour::Processor::new(s.kind, rate, ch)),
                 };
                 Node {
                     settings: s,
@@ -448,7 +448,7 @@ impl Node {
         let kind = self.settings.kind;
         for (i, frame) in out.chunks_exact_mut(ch).enumerate() {
             let p = self.ramps.map(|r| r.value(clock + i as u64));
-            let mut x = [0.0; 2];
+            let mut x = [0.0; 8];
             for c in 0..ch {
                 x[c] = finite(frame[c] as f64);
             }
@@ -513,19 +513,20 @@ impl Node {
                     }
                 }
                 State::Delay { ring, at } => {
+                    let frames = ring.len() / ch;
                     let mut pos = *at as f64 - p[0];
                     if pos < 0.0 {
-                        pos += ring.len() as f64;
+                        pos += frames as f64;
                     }
                     let a = pos.floor() as usize;
-                    let b = (a + 1) % ring.len();
+                    let b = (a + 1) % frames;
                     let f = pos - a as f64;
                     for c in 0..ch {
-                        let delayed = ring[a][c] * (1.0 - f) + ring[b][c] * f;
-                        ring[*at][c] = finite(x[c] + delayed * p[1]);
+                        let delayed = ring[a * ch + c] * (1.0 - f) + ring[b * ch + c] * f;
+                        ring[*at * ch + c] = finite(x[c] + delayed * p[1]);
                         x[c] = x[c] * (1.0 - p[2]) + delayed * p[2];
                     }
-                    *at = (*at + 1) % ring.len();
+                    *at = (*at + 1) % frames;
                 }
                 State::Reverb { channels } => {
                     for c in 0..ch {

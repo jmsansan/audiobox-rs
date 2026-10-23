@@ -272,10 +272,74 @@ fn rendering_allocates_and_frees_nothing() {
         .unwrap();
 
     let mut buffer = vec![0.0f32; 2 * 480];
+    let (mut surround, mut spatial_handle) = Mixer::new(MixerConfig {
+        channels: 8,
+        limiter: Some(MasterLimiter {
+            lookahead_ms: 2.0,
+            ..Default::default()
+        }),
+        ..Default::default()
+    })
+    .unwrap();
+    spatial_handle
+        .set_effects(
+            BusId::MASTER,
+            &[
+                Effect::LowPass { cutoff_hz: 6000.0 },
+                Effect::Compressor(Compressor::default()),
+                Effect::Delay(Delay::default()),
+                Effect::Reverb(Reverb::default()),
+                Effect::Chorus(Chorus::default()),
+                Effect::Flanger(Flanger::default()),
+                Effect::Phaser(Phaser::default()),
+                Effect::Bitcrusher(Bitcrusher::default()),
+                Effect::Saturation(Saturation::default()),
+            ],
+        )
+        .unwrap();
+    let id = spatial_handle
+        .play(
+            same_rate.clone(),
+            &Play {
+                looping: Loop::Whole,
+                emitter: Some(Emitter {
+                    position: [1.0, 2.0, -3.0],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    spatial_handle
+        .at(100)
+        .set_emitter(
+            id,
+            Emitter {
+                position: [-1.0, 0.0, 2.0],
+                velocity: [0.0, 0.0, 30.0],
+                ..Default::default()
+            },
+            Fade::linear(0.1),
+        )
+        .unwrap();
+    spatial_handle
+        .at(200)
+        .set_listener(
+            Listener {
+                forward: [1.0, 0.0, 0.0],
+                ..Default::default()
+            },
+            Fade::linear(0.1),
+        )
+        .unwrap();
+    spatial_handle.at(300).pause(id, Fade::NONE).unwrap();
+    spatial_handle.at(500).resume(id, Fade::NONE).unwrap();
+    let mut surround_buffer = vec![0.0; 8 * 480];
     let mut loudest = 0.0f32;
     COUNTING.set(true);
     for _ in 0..200 {
         mixer.render(&mut buffer);
+        surround.render(&mut surround_buffer);
         loudest = buffer.iter().fold(loudest, |m, s| m.max(s.abs()));
     }
     COUNTING.set(false);

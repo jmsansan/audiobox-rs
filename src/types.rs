@@ -138,6 +138,10 @@ pub struct EncodeOptions {
     /// Structured publishing tags, supported by WAV, FLAC and MP3. Native map keys
     /// remain available through `metadata`; supplying the same field twice is an error.
     pub tags: crate::Tags,
+    /// Optional WAVEFORMATEXTENSIBLE speaker mask for PCM/float WAV. Its set-bit
+    /// count must equal the audio channels; only the standard low 18 bits are valid.
+    /// Other output formats reject it. None preserves the existing WAV encoding.
+    pub wav_channel_mask: Option<u32>,
     /// MP3 bitrate in kbit/s.
     pub bitrate: u32,
     /// FLAC compression level, 0 through 8.
@@ -151,6 +155,7 @@ impl Default for EncodeOptions {
             metadata: AudioMetadata::new(),
             tags: crate::Tags::default(),
             bitrate: 192,
+            wav_channel_mask: None,
             compression_level: 5,
         }
     }
