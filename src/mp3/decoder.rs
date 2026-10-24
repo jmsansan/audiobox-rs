@@ -609,6 +609,38 @@ impl Mp3State {
     }
 }
 
+// Keep geometric growth fallible and cap speculative capacity at the same limits
+// as decoded samples. Exact per-frame growth can copy all prior PCM on every frame.
+fn reserve_output(
+    output: &mut Vec<f32>,
+    next: usize,
+    options: &DecodeOptions,
+    channels: usize,
+    rate: u32,
+    message: &'static str,
+) -> Result<()> {
+    if next <= output.capacity() {
+        return Ok(());
+    }
+    let limits = &options.limits;
+    let ceiling = limits
+        .max_frames
+        .min(limits.max_decoded_bytes / channels / size_of::<f32>())
+        .min((limits.max_duration_seconds * rate as f64).floor() as usize);
+    let grown = output.capacity().saturating_add(output.capacity() / 2);
+    let target = next.max(grown.min(ceiling));
+    // The caller already checked `next`. Retain its semantics at floating-point
+    // duration boundaries even if the speculative target cannot be used.
+    let target = if limits.check(target, channels, rate).is_ok() {
+        target
+    } else {
+        next
+    };
+    output
+        .try_reserve_exact(target - output.len())
+        .map_err(|_| Error::limit(message))
+}
+
 pub(crate) fn decode(bytes: &[u8], options: &DecodeOptions) -> Result<Audio> {
     let (metadata, tags) = crate::metadata::id3::read(bytes)?;
     let (at, first) = find(bytes, tag_size(bytes))
@@ -647,8 +679,14 @@ pub(crate) fn decode(bytes: &[u8], options: &DecodeOptions) -> Result<Audio> {
             .ok_or_else(|| Error::limit("MP3 sample count overflow"))?;
         options.limits.check(next, channels, rate)?;
         for (c, samples) in output.iter_mut().zip(buffer.iter()) {
-            c.try_reserve_exact(n)
-                .map_err(|_| Error::limit("Cannot allocate MP3 output"))?;
+            reserve_output(
+                c,
+                next,
+                options,
+                channels,
+                rate,
+                "Cannot allocate MP3 output",
+            )?;
             c.extend_from_slice(&samples[..n]);
         }
         frames = next;
@@ -656,17 +694,20 @@ pub(crate) fn decode(bytes: &[u8], options: &DecodeOptions) -> Result<Audio> {
     if frames == 0 {
         return Err(Error::decode("No decodable MP3 frames"));
     }
-    options.limits.check(
-        frames
-            .checked_add(FLUSH)
-            .ok_or_else(|| Error::limit("MP3 flush overflow"))?,
-        channels,
-        rate,
-    )?;
+    let next = frames
+        .checked_add(FLUSH)
+        .ok_or_else(|| Error::limit("MP3 flush overflow"))?;
+    options.limits.check(next, channels, rate)?;
     state.flush(&mut buffer);
     for (c, samples) in output.iter_mut().zip(buffer.iter()) {
-        c.try_reserve_exact(FLUSH)
-            .map_err(|_| Error::limit("Cannot allocate MP3 filter tail"))?;
+        reserve_output(
+            c,
+            next,
+            options,
+            channels,
+            rate,
+            "Cannot allocate MP3 filter tail",
+        )?;
         c.extend_from_slice(&samples[..FLUSH]);
     }
     let tag = tag.unwrap_or_default();
@@ -675,9 +716,14 @@ pub(crate) fn decode(bytes: &[u8], options: &DecodeOptions) -> Result<Audio> {
         .len()
         .saturating_sub(tag.padding.saturating_sub(DECODER_DELAY))
         .max(start);
-    let data = output.into_iter().map(|c| c[start..end].to_vec()).collect();
+    // Slide the retained samples within their existing allocation. Do not shrink:
+    // that would add another allocation/copy (and an infallible failure path).
+    for c in &mut output {
+        c.copy_within(start..end, 0);
+        c.truncate(end - start);
+    }
     Audio::decoded(
-        data,
+        output,
         rate,
         DecodeInfo {
             format: Some(AudioFormat::Mp3),

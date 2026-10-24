@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Fixed
+
+- Whole-file MP3 decoding now grows PCM buffers geometrically within decode limits
+  and trims gapless samples in place, avoiding per-frame exact growth and a second
+  PCM allocation during trimming. Incremental decoding and decoded sample bits are
+  unchanged.
+
 ## 0.4.0 — 2026-10-23
 
 ### Added
