@@ -14,6 +14,14 @@
 
 ### Fixed
 
+- `analyze::spectrogram` checks its input once and reuses one window and transform
+  buffer for every column, instead of re-checking the remaining input and
+  rebuilding the workspace per column. Its cost now grows linearly with the
+  input: 180 s took 0.5 s instead of 32 s at FFT 2048 / hop 512 (#79). Columns,
+  times, frequencies, errors and their order are unchanged, bit for bit.
+- `Audio::true_peak_db` adds the four oversampling phases side by side away from
+  the edges, without per-tap bounds checks: 2.2 times faster with the same
+  result, bit for bit (#79).
 - Whole-file MP3 decoding now grows PCM buffers geometrically within decode limits
   and trims gapless samples in place, avoiding per-frame exact growth and a second
   PCM allocation during trimming. Incremental decoding and decoded sample bits are
