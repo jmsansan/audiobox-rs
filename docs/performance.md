@@ -84,7 +84,8 @@ CSV columns:
   caches. On Linux it is the high-water mark (`VmHWM`). On macOS and other Unix
   systems it is the current size from `ps`. Windows leaves it empty: use
   `scripts/profile-mp3.ps1` for a per-process `PeakWorkingSet64`.
-- `checksum`: a hash of the case's output. `--compare` flags changed outputs, so an
+- `checksum`: a hash of the case's whole output, including the frames after a
+  seek, which must also equal the frames delivered at that position. `--compare` flags changed outputs, so an
   optimization that changes samples cannot pass unnoticed.
 
 Each CSV begins with `#` provenance lines: crate version, commit (marked
@@ -175,8 +176,8 @@ second):
 | Spectrogram 1024/128 (mono) | 442 ms | 126,731 ms | 1.4×rt at 180 s |
 | Loudness / true peak | 14 / 70 ms | 255 / 1,267 ms | Linear |
 | Resample / tempo / pitch | 103 / 115 / 288 ms | 1.8 / 1.9 / 5.1 s | Linear |
-| Disk FLAC: open, sustained read, seek to middle | 1.5 / 40 / 17 ms | 1.4 / 724 / 299 ms | Seeks replay from the start |
-| Disk MP3: open, sustained read, seek to middle | 2.0 / 53 / 23 ms | 2.7 / 933 / 407 ms | MP3 seeks replay from the start (documented) |
+| Disk FLAC: open, sustained read, seek to middle | 1.4 / 38 / 17 ms | 1.5 / 764 / 308 ms | Seeks replay from the start |
+| Disk MP3: open, sustained read, seek to middle | 1.9 / 50 / 23 ms | 2.7 / 998 / 435 ms | MP3 seeks replay from the start (documented) |
 | Asset load, miss / hit | 34 ms / 11 µs | 617 ms / 17 µs | The 180 s miss peaks at 103 MB: PCM plus the encoded file |
 
 Callbacks of 256 frames at 48 kHz (deadline 5,333 µs), 10 s of output:
@@ -213,7 +214,7 @@ the default 1,024).
    blocks in place (118 MB moved at 180 s); #63 measured frequent relocation on
    Windows for the same pattern. The asset loader inherits this through `decode`.
 3. **Disk seeks replay from the start** (#83). A seek to the middle of 180 s
-   costs 299 ms for FLAC and 407 ms for MP3. Sustained reads keep up with
+   costs 308 ms for FLAC and 435 ms for MP3. Sustained reads keep up with
    in-memory decoding.
 4. **Spatial voices cost 20 times a plain voice** (#80). Per frame they evaluate
    eight direction ramps, a norm, `level()` and, with Doppler, `exp2` for the
