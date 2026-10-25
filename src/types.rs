@@ -114,6 +114,40 @@ impl Limits {
         }
         Ok(())
     }
+    /// Makes room for `next` samples in one channel of whole-file output, which the
+    /// caller has checked against these limits. Capacity grows by half at a time,
+    /// fallibly, up to the limits and `cap`, a length the stream cannot exceed: exact
+    /// growth per frame can copy all prior samples on every frame.
+    pub(crate) fn reserve_output(
+        &self,
+        output: &mut Vec<f32>,
+        next: usize,
+        channels: usize,
+        rate: u32,
+        cap: usize,
+        message: &'static str,
+    ) -> Result<()> {
+        if next <= output.capacity() {
+            return Ok(());
+        }
+        let ceiling = self
+            .max_frames
+            .min(self.max_decoded_bytes / channels / size_of::<f32>())
+            .min((self.max_duration_seconds * rate as f64).floor() as usize)
+            .min(cap);
+        let grown = output.capacity().saturating_add(output.capacity() / 2);
+        let target = next.max(grown.min(ceiling));
+        // Retain the caller's check at floating-point duration boundaries even if the
+        // speculative target cannot be used.
+        let target = if self.check(target, channels, rate).is_ok() {
+            target
+        } else {
+            next
+        };
+        output
+            .try_reserve_exact(target - output.len())
+            .map_err(|_| Error::limit(message))
+    }
 }
 
 pub type AudioMetadata = BTreeMap<String, String>;

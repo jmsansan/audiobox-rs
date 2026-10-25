@@ -22,6 +22,12 @@
 - `Audio::true_peak_db` adds the four oversampling phases side by side away from
   the edges, without per-tap bounds checks: 2.2 times faster with the same
   result, bit for bit (#79).
+- Whole-file FLAC decoding, and the asset loader through it, grows its PCM buffers
+  by half at a time within decode limits instead of exactly per frame. Growth stops
+  at a declared STREAMINFO length, which already bounded the stream, so such files
+  end with an exactly sized output. At 180 s: 38 instead of 4,218 reallocations
+  and 263 MB instead of 73 GB of requested bytes (#82). Decoded samples, errors and
+  limits are unchanged.
 - Whole-file MP3 decoding now grows PCM buffers geometrically within decode limits
   and trims gapless samples in place, avoiding per-frame exact growth and a second
   PCM allocation during trimming. Incremental decoding and decoded sample bits are

@@ -457,9 +457,18 @@ pub(crate) fn decode(bytes: &[u8], options: &DecodeOptions) -> Result<Audio> {
         if total != 0 && next > total {
             return Err(Error::decode("FLAC exceeds declared sample count"));
         }
+        // A declared total is a hard bound (more samples are an error above), so
+        // growth stops there: such a stream ends with an exactly sized output.
+        let cap = if total != 0 { total } else { usize::MAX };
         for (c, samples) in out.iter_mut().zip(&frame.samples) {
-            c.try_reserve_exact(n)
-                .map_err(|_| Error::limit("Cannot allocate FLAC output"))?;
+            options.limits.reserve_output(
+                c,
+                next,
+                channels,
+                rate,
+                cap,
+                "Cannot allocate FLAC output",
+            )?;
             c.extend(samples[..n].iter().map(|&s| to_float(s, info.bits)));
         }
         pcm_hash.update(&frame.raw);
