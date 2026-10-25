@@ -79,6 +79,9 @@ impl Score {
 #[derive(Clone, Debug)]
 struct Plan {
     wide: Option<WidePlan>,
+    /// Size of the track's voice pool for this instrument's notes: synthwave voices,
+    /// or the opt-in voices of a wavetable source. Zero uses the single legacy voice.
+    voices: usize,
     chip: Option<ChipPlan>,
     drum: Option<DrumPlan>,
     waveform: Waveform,
@@ -98,7 +101,13 @@ impl Plan {
         let step = |ms: u32| samples(ms).max(1);
         let e = instrument.envelope;
         Self {
-            wide: instrument.synthwave.map(|s| WidePlan::new(s, rate, tempo)),
+            // A wavetable source with synthwave `voices` keeps its chip rendering and
+            // only borrows the voice pool; validation admits no other combination.
+            wide: instrument
+                .synthwave
+                .filter(|_| instrument.chip.is_none())
+                .map(|s| WidePlan::new(s, rate, tempo)),
+            voices: instrument.synthwave.map_or(0, |s| s.voices as usize),
             chip: instrument
                 .chip
                 .as_ref()
@@ -217,11 +226,21 @@ impl Voice {
             && self
                 .event
                 .is_some_and(|old| old.instrument == event.instrument && old.off == event.on);
+        // A pooled voice that is free starts from silence, even if a release without
+        // a tail left its last level behind. A pooled wavetable note always attacks
+        // from silence, also on a stolen voice: stealing cuts the old note.
+        let plan = &plans[event.instrument];
+        if plan.voices > 0 && (!active || plan.wide.is_none()) {
+            self.level = 0.0;
+        }
         if let Some(plan) = &plans[event.instrument].wide {
-            if !active {
-                self.level = 0.0;
-            }
-            self.wide.trigger(plan, event.cents, active, legato);
+            // Glide starts from the synthwave pitch, which only a synthwave note sets:
+            // a voice last used by a pooled wavetable note has none to glide from.
+            let gliding = active
+                && self
+                    .event
+                    .is_some_and(|old| plans[old.instrument].wide.is_some());
+            self.wide.trigger(plan, event.cents, gliding, legato);
         }
         self.event = Some(event);
         self.held = true;
@@ -365,11 +384,11 @@ struct Track {
 }
 impl Track {
     fn trigger(&mut self, event: Event, plans: &[Plan], clock: u64) {
-        if let Some(wide) = &plans[event.instrument].wide {
+        let limit = plans[event.instrument].voices;
+        if limit > 0 {
             if self.voice.held {
                 self.voice.release(plans);
             }
-            let limit = wide.settings.voices as usize;
             for voice in self.poly.iter_mut().skip(limit) {
                 voice.stage = Stage::Idle;
                 voice.held = false;
@@ -503,7 +522,7 @@ impl Synth {
                     .filter(|e| {
                         e.off > loop_start
                             && plans[e.instrument].drum.is_none()
-                            && plans[e.instrument].wide.is_none()
+                            && plans[e.instrument].voices == 0
                     })
                     .map(|e| Event {
                         on: loop_start,
@@ -511,20 +530,13 @@ impl Synth {
                     });
                 let poly_count = events
                     .iter()
-                    .filter_map(|e| {
-                        plans[e.instrument]
-                            .wide
-                            .as_ref()
-                            .map(|p| p.settings.voices as usize)
-                    })
+                    .map(|e| plans[e.instrument].voices)
                     .max()
                     .unwrap_or(0);
                 let poly_carry = events
                     .iter()
                     .filter(|e| {
-                        e.on < loop_start
-                            && e.off > loop_start
-                            && plans[e.instrument].wide.is_some()
+                        e.on < loop_start && e.off > loop_start && plans[e.instrument].voices > 0
                     })
                     .map(|e| Event {
                         on: loop_start,

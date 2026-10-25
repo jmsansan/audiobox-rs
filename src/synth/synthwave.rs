@@ -91,7 +91,9 @@ impl Lfo {
     }
 }
 /// Opt-in synthwave controls, combined with an instrument's waveform and amplitude
-/// ADSR. Supports pulse/square, saw and triangle. Mutually exclusive with chip/drum.
+/// ADSR. Supports pulse/square, saw and triangle. Mutually exclusive with chip/drum,
+/// except that a wavetable chip source takes `voices` alone, with every other field at
+/// its default, for per-note voices.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct Synthwave {
     /// Oscillators per note, 1..=8, normalized by their count.
