@@ -144,9 +144,21 @@ struct Phase {
     ns: Vec<u64>,
     work: Work,
     allocs: Option<Allocs>,
-    /// Per-callback times of the tracked-off runs, and each callback's deadline.
+    /// Per-block times of the tracked-off runs, and each block's deadline, if any.
     callbacks: Vec<u64>,
     deadline_ns: u64,
+    /// Reads that found no data yet, for disk streams drained as fast as possible.
+    retries: u64,
+}
+
+/// A phase timed block by block: at most `max` blocks of `channels`-channel audio at
+/// `rate`, each due within `deadline` frames (0 when blocks have no fixed size).
+struct Blocks {
+    name: &'static str,
+    max: usize,
+    channels: usize,
+    rate: u32,
+    deadline: usize,
 }
 
 struct Recorder {
@@ -183,34 +195,40 @@ impl Recorder {
         }
         value
     }
-    /// Times every call of `block` separately, as an audio callback of `frames` frames
-    /// at `rate`. `control` runs before each block, untimed and uncounted, for the work
-    /// a game thread does between callbacks: commands, event polling.
-    fn callbacks(
+    /// Times every call of `block` separately, as an audio callback. `block(i, buffer)`
+    /// fills `buffer` and returns how many samples it wrote, or `None` to stop.
+    /// `control` runs before each block for the work a game thread does between
+    /// callbacks (commands, event polling), and the runner hashes every written sample
+    /// after it: neither is timed or counted.
+    fn blocks(
         &mut self,
-        name: &'static str,
-        count: usize,
-        frames: usize,
-        rate: u32,
+        b: Blocks,
+        buffer: &mut [f32],
         mut control: impl FnMut(usize),
-        mut block: impl FnMut(usize),
+        mut block: impl FnMut(usize, &mut [f32]) -> Option<usize>,
     ) {
-        let mut times = Vec::with_capacity(count);
+        let mut times = Vec::with_capacity(b.max);
+        let mut samples = 0;
         if self.tracked {
             start_tracking();
         }
-        for i in 0..count {
+        for i in 0..b.max {
             TRACK.store(false, Relaxed);
             control(i);
             TRACK.store(self.tracked, Relaxed);
             let start = Instant::now();
-            block(i);
+            let written = block(i, buffer);
             times.push(start.elapsed().as_nanos() as u64);
+            TRACK.store(false, Relaxed);
+            let Some(n) = written else { break };
+            samples += n;
+            self.hash_samples(&buffer[..n]);
+            TRACK.store(self.tracked, Relaxed);
         }
         let tracked = self.tracked.then(stop_tracking);
-        let p = self.entry(name);
-        p.work = work(count * frames, rate);
-        p.deadline_ns = frames as u64 * 1_000_000_000 / rate as u64;
+        let p = self.entry(b.name);
+        p.work = work(samples / b.channels, b.rate);
+        p.deadline_ns = b.deadline as u64 * 1_000_000_000 / b.rate as u64;
         match tracked {
             Some(a) => p.allocs = Some(a),
             None => {
@@ -374,20 +392,22 @@ fn codec_cases(cases: &mut Vec<Case>, seconds: f64, tag: &str) {
                         (n, work(n, RATE))
                     });
                     r.hash_samples(&buffer[..first * 2]);
-                    let mut total = 0;
-                    let mut hash = Vec::new();
-                    r.phase("steady", || {
-                        loop {
-                            let n = decoder.read(&mut buffer).unwrap();
-                            if n == 0 {
-                                break;
-                            }
-                            total += n;
-                            hash.push(buffer[0]);
-                        }
-                        ((), work(total, RATE))
-                    });
-                    r.hash_samples(&hash);
+                    let steady = Blocks {
+                        name: "steady",
+                        max: (seconds * RATE as f64) as usize / 1024 + 64,
+                        channels: 2,
+                        rate: RATE,
+                        deadline: 0,
+                    };
+                    r.blocks(
+                        steady,
+                        &mut buffer,
+                        |_| {},
+                        |_, out| {
+                            let n = decoder.read(out).unwrap();
+                            (n > 0).then_some(n * 2)
+                        },
+                    );
                     r.phase("drop", || (drop(decoder), NONE));
                 })
             }));
@@ -422,9 +442,13 @@ fn analysis_cases(cases: &mut Vec<Case>, seconds: f64, tag: &str) {
                             work(samples.len(), RATE),
                         )
                     });
+                    for &t in &s.times {
+                        r.hash_bytes(&t.to_bits().to_le_bytes());
+                    }
                     for row in &s.magnitudes {
-                        r.checksum = r.checksum.wrapping_add(row.len() as u64);
-                        r.hash_samples(&[row[row.len() / 3] as f32]);
+                        for &m in row {
+                            r.hash_bytes(&m.to_bits().to_le_bytes());
+                        }
                     }
                 })
             },
@@ -434,7 +458,9 @@ fn analysis_cases(cases: &mut Vec<Case>, seconds: f64, tag: &str) {
         let audio = music(seconds, RATE, 2);
         Box::new(move |r: &mut Recorder| {
             let l = r.phase("compute", || (audio.loudness(), work(audio.frames(), RATE)));
-            r.hash_samples(&[l.integrated as f32]);
+            for v in [l.integrated, l.range, l.peak_momentary] {
+                r.hash_bytes(&v.to_bits().to_le_bytes());
+            }
         })
     }));
     cases.push(case(format!("analysis/true-peak/{tag}"), move || {
@@ -443,7 +469,7 @@ fn analysis_cases(cases: &mut Vec<Case>, seconds: f64, tag: &str) {
             let p = r.phase("compute", || {
                 (audio.true_peak_db(), work(audio.frames(), RATE))
             });
-            r.hash_samples(&[p as f32]);
+            r.hash_bytes(&p.to_bits().to_le_bytes());
         })
     }));
     type Transform = fn(&Audio) -> Audio;
@@ -496,19 +522,19 @@ fn synth_cases(cases: &mut Vec<Case>, seconds: f64, tag: &str) {
                 });
                 r.phase("first-block", || (synth.fill(&mut out), work(BLOCK, RATE)));
                 r.hash_samples(&out);
-                let mut hash = 0.0f32;
-                r.callbacks(
-                    "steady",
-                    frames / BLOCK,
-                    BLOCK,
-                    RATE,
+                let steady = Blocks {
+                    name: "steady",
+                    max: frames / BLOCK,
+                    channels,
+                    rate: RATE,
+                    deadline: BLOCK,
+                };
+                r.blocks(
+                    steady,
+                    &mut out,
                     |_| {},
-                    |_| {
-                        synth.fill(&mut out);
-                        hash += out[BLOCK / 2];
-                    },
+                    |_, out| Some(synth.fill(out) * channels),
                 );
-                r.hash_samples(&[hash]);
                 r.phase("drop", || (drop(synth), NONE));
             })
         }));
@@ -624,33 +650,36 @@ fn mixer_case(cases: &mut Vec<Case>, name: &str, seconds: f64, tag: &str, setup:
                 };
                 ids.push(handle.play(tone.clone(), &play).unwrap());
             }
-            let mut hash = 0.0f32;
             if setup.irregular {
-                let count = callbacks * BLOCK / (sizes.iter().sum::<usize>() / sizes.len());
-                let mut frames_done = 0;
-                r.callbacks(
-                    "render",
-                    count,
-                    0,
-                    RATE,
+                // Irregular blocks have no single deadline: report throughput only.
+                let render = Blocks {
+                    name: "render",
+                    max: callbacks * BLOCK / (sizes.iter().sum::<usize>() / sizes.len()),
+                    channels,
+                    rate: RATE,
+                    deadline: 0,
+                };
+                r.blocks(
+                    render,
+                    &mut out,
                     |_| {},
-                    |i| {
-                        let n = sizes[i % sizes.len()];
-                        mixer.render(&mut out[..n * channels]);
-                        hash += out[0];
-                        frames_done += n;
+                    |i, out| {
+                        let n = sizes[i % sizes.len()] * channels;
+                        mixer.render(&mut out[..n]);
+                        Some(n)
                     },
                 );
-                // Irregular blocks have no single deadline: report throughput only.
-                let p = r.entry("render");
-                p.work = work(frames_done, RATE);
-                p.deadline_ns = 0;
             } else {
-                r.callbacks(
-                    "render",
-                    callbacks,
-                    BLOCK,
-                    RATE,
+                let render = Blocks {
+                    name: "render",
+                    max: callbacks,
+                    channels,
+                    rate: RATE,
+                    deadline: BLOCK,
+                };
+                r.blocks(
+                    render,
+                    &mut out,
                     |i| {
                         let frame = i as u64 * BLOCK as u64;
                         if setup.automation && i % 4 == 0 {
@@ -696,13 +725,12 @@ fn mixer_case(cases: &mut Vec<Case>, name: &str, seconds: f64, tag: &str, setup:
                             }
                         }
                     },
-                    |_| {
+                    |_, out| {
                         mixer.render(&mut out[..BLOCK * channels]);
-                        hash += out[1];
+                        Some(BLOCK * channels)
                     },
                 );
             }
-            r.hash_samples(&[hash]);
             r.phase("drop", || {
                 drop(mixer);
                 while handle.poll_event().is_some() {}
@@ -812,19 +840,22 @@ fn mixer_cases(cases: &mut Vec<Case>, seconds: f64, tag: &str) {
             };
             let synth = Synth::new(&score, RATE, &options).unwrap();
             handle.play(Sound::from(synth), &Play::default()).unwrap();
-            let mut hash = 0.0f32;
-            r.callbacks(
-                "render",
-                callbacks,
-                BLOCK,
-                RATE,
+            let render = Blocks {
+                name: "render",
+                max: callbacks,
+                channels: 2,
+                rate: RATE,
+                deadline: BLOCK,
+            };
+            r.blocks(
+                render,
+                &mut out,
                 |_| {},
-                |_| {
-                    mixer.render(&mut out);
-                    hash += out[0];
+                |_, out| {
+                    mixer.render(out);
+                    Some(out.len())
                 },
             );
-            r.hash_samples(&[hash]);
         })
     }));
 }
@@ -839,9 +870,12 @@ fn stream_cases(cases: &mut Vec<Case>, seconds: f64, tag: &str) {
     for (format, label) in [(AudioFormat::Flac, "flac"), (AudioFormat::Mp3, "mp3")] {
         cases.push(case(format!("stream/file-{label}/{tag}"), move || {
             let path = temp_dir().join(format!("stream-{label}-{seconds}.{label}"));
-            let bytes = encode(&music(seconds, RATE, 2), format).unwrap();
+            let audio = music(seconds, RATE, 2);
+            let bytes = encode(&audio, format).unwrap();
             std::fs::write(&path, bytes).unwrap();
             let mut out = vec![0.0f32; BLOCK * 2];
+            // MP3 adds encoder delay and padding: leave room for a few frames more.
+            let mut pcm = vec![0.0f32; (audio.frames() + 8192) * 2];
             Box::new(move |r: &mut Recorder| {
                 let (mut stream, handle) =
                     r.phase("open", || (FileStream::open(&path).unwrap(), NONE));
@@ -857,17 +891,18 @@ fn stream_cases(cases: &mut Vec<Case>, seconds: f64, tag: &str) {
                     (n, work(n, RATE))
                 });
                 r.hash_samples(&out[..first * 2]);
+                // Delivered frames go to storage made before timing and are hashed
+                // after it: every sample is checked, none of it timed or counted.
+                pcm[..first * 2].copy_from_slice(&out[..first * 2]);
                 let mut total = first;
                 let mut underruns = 0u64;
-                // A running sum in sample order does not depend on how reads split.
-                let mut sum = 0.0f64;
                 r.phase("sustained", || {
                     loop {
                         match stream.read(&mut out) {
                             Ok(0) => break,
                             Ok(n) => {
+                                pcm[total * 2..(total + n) * 2].copy_from_slice(&out[..n * 2]);
                                 total += n;
-                                sum = out[..n * 2].iter().fold(sum, |a, &s| a + s as f64);
                             }
                             Err(e) if e.code == ErrorCode::Underrun => {
                                 underruns += 1;
@@ -878,11 +913,10 @@ fn stream_cases(cases: &mut Vec<Case>, seconds: f64, tag: &str) {
                     }
                     ((), work(total - first, RATE))
                 });
-                r.hash_samples(&[sum as f32]);
-                r.checksum = r.checksum.wrapping_add(total as u64);
-                // Underruns while draining as fast as possible show reader-bound
-                // throughput, not a playback failure; report them in the summary.
-                r.entry("sustained").deadline_ns = underruns;
+                r.hash_samples(&pcm[..total * 2]);
+                // Retries while draining as fast as possible show reader-bound
+                // throughput, not a playback failure.
+                r.entry("sustained").retries = underruns;
                 let middle = total as u64 / 2;
                 r.phase("seek", || {
                     stream.seek(middle).unwrap();
@@ -935,22 +969,31 @@ fn stream_cases(cases: &mut Vec<Case>, seconds: f64, tag: &str) {
             .collect();
         let budget = sounds.iter().map(|s| s.frames() * 4).sum::<usize>() / 3;
         Box::new(move |r: &mut Recorder| {
-            let mut hits = 0u64;
+            let (mut hits, mut evicting) = (0u64, 0u64);
             r.phase("insert-get", || {
                 let mut cache = AudioCache::new(budget);
                 for round in 0..20 {
-                    for (i, s) in sounds.iter().enumerate() {
-                        let key = AssetKey::Name(format!("s{}", (i * 7 + round) % 64));
+                    for i in 0..64 {
+                        let k = (i * 7 + round) % 64;
+                        let key = AssetKey::Name(format!("s{k}"));
                         if cache.get(&key).is_some() {
                             hits += 1;
-                        } else {
-                            let _ = cache.insert(key, s.clone());
+                            continue;
                         }
+                        // A miss loads a fresh copy, as a decode would, so the cache holds
+                        // the only reference and may evict it later.
+                        let before = cache.len();
+                        cache.insert(key, Arc::new((*sounds[k]).clone())).unwrap();
+                        evicting += u64::from(cache.len() <= before);
                     }
                 }
                 ((), NONE)
             });
-            r.checksum = r.checksum.wrapping_add(hits);
+            assert!(
+                hits > 0 && evicting > 0,
+                "{hits} hits, {evicting} evicting inserts"
+            );
+            r.checksum = r.checksum.wrapping_add(hits << 32 | evicting);
         })
     }));
 }
@@ -1134,9 +1177,8 @@ fn report(case: &str, phases: &mut [Phase], checksum: u64, rss: Option<u64>) -> 
                 format!("{:.1}", us(p.deadline_ns)),
                 c.iter().filter(|&&t| t > p.deadline_ns).count().to_string(),
             )
-        } else if c.is_empty() && p.deadline_ns > 0 {
-            // A sustained stream phase stores its underrun retries here.
-            (String::new(), format!("underruns={}", p.deadline_ns))
+        } else if p.retries > 0 {
+            (String::new(), format!("underruns={}", p.retries))
         } else {
             (String::new(), String::new())
         };
