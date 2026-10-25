@@ -14,6 +14,11 @@
 
 ### Fixed
 
+- Mixer voices with 3D emitters render about three times faster: the direction gains
+  are no longer copied per frame, their gains, norm and level are computed once per
+  segment while unchanged, and `exp2(pitch / 12)` is reused while only Doppler
+  changes the speed. Bursts of scheduled starts also gain about 12%. Output is
+  unchanged, bit for bit (#80).
 - `analyze::spectrogram` checks its input once and reuses one window and transform
   buffer for every column, instead of re-checking the remaining input and
   rebuilding the workspace per column. Its cost now grows linearly with the
