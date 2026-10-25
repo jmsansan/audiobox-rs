@@ -151,10 +151,11 @@ These come from the 0.4.1 issues and apply to every change recorded here:
 
 ## Baseline: 0.4.0 plus the #63 fix (2026-10-25)
 
-Commit `ad23d65` (`main` after #84, with the runner added). Apple M2 Pro (10
-logical CPUs), macOS 26.6.2, AC power, rustc 1.98.0, release profile, every
-feature. Each case ran one warm-up, five timed runs and one counted run. No other
-builds or tests ran, but the machine was not isolated. The full results are in
+The library code is `main` at `ad23d65` (after #84). The runner came from the
+commit that added it. Host: Apple M2 Pro (10 logical CPUs), macOS 26.6.2, AC power,
+rustc 1.98.0, release profile, every feature. Each case ran one warm-up, five timed
+runs and one counted run; the 180 s spectrograms ran once. No other builds or tests
+ran, but the machine was not isolated. The full results are in
 [`performance/baseline-0.4.0-native.csv`](performance/baseline-0.4.0-native.csv)
 and, for WebAssembly under Node.js 24.22 WASI on the same host,
 [`performance/baseline-0.4.0-wasm.csv`](performance/baseline-0.4.0-wasm.csv)
@@ -166,30 +167,34 @@ second):
 | Case | 10 s input | 180 s input | Notes |
 | --- | ---: | ---: | --- |
 | WAV decode | 4.5 ms | 80 ms | Linear |
-| FLAC decode | 33 ms | 607 ms | 234 / 4,218 reallocations; 73 GB requested in total at 180 s |
-| MP3 decode | 46 ms | 841 ms | Geometric growth since #63 |
-| FLAC encode | 48 ms | 884 ms | 48,291 allocations at 180 s |
-| MP3 encode | 314 ms | 5,678 ms | 32×rt; 37,509 allocations at 180 s |
-| Spectrogram 2048/512 (mono) | 129 ms | 32,762 ms | Quadratic: 254 times the time for 18 times the input |
-| Spectrogram 1024/128 (mono) | 441 ms | 149,645 ms | 1.2×rt at 180 s |
-| Loudness / true peak | 14 / 70 ms | 258 / 1,261 ms | Linear |
-| Resample / tempo / pitch | 101 / 103 / 276 ms | 1.8 / 1.9 / 5.0 s | Linear |
-| Disk FLAC: open, sustained read, seek to middle | 1.4 / 39 / 18 ms | 5.2 / 1,884 / 791 ms | The reader delivers 96×rt at 180 s; in-memory decode gives 300×rt |
-| Disk MP3: open, sustained read, seek to middle | 1.9 / 51 / 24 ms | 2.7 / 981 / 414 ms | MP3 seeks replay from the start (documented) |
-| Asset load, miss / hit | 33 ms / 7 µs | 600 ms / 17 µs | The 180 s miss peaks at 103 MB: PCM plus the encoded file |
+| FLAC decode | 33 ms | 613 ms | 234 / 4,218 reallocations; 73 GB requested in total at 180 s |
+| MP3 decode | 47 ms | 859 ms | Geometric growth since #63 |
+| FLAC encode | 47 ms | 844 ms | 48,291 allocations at 180 s |
+| MP3 encode | 331 ms | 5,637 ms | 32×rt; 37,509 allocations at 180 s |
+| Spectrogram 2048/512 (mono) | 129 ms | 31,904 ms | Quadratic: 247 times the time for 18 times the input |
+| Spectrogram 1024/128 (mono) | 442 ms | 126,731 ms | 1.4×rt at 180 s |
+| Loudness / true peak | 14 / 70 ms | 255 / 1,267 ms | Linear |
+| Resample / tempo / pitch | 103 / 115 / 288 ms | 1.8 / 1.9 / 5.1 s | Linear |
+| Disk FLAC: open, sustained read, seek to middle | 1.5 / 40 / 17 ms | 1.4 / 724 / 299 ms | Seeks replay from the start |
+| Disk MP3: open, sustained read, seek to middle | 2.0 / 53 / 23 ms | 2.7 / 933 / 407 ms | MP3 seeks replay from the start (documented) |
+| Asset load, miss / hit | 34 ms / 11 µs | 617 ms / 17 µs | The 180 s miss peaks at 103 MB: PCM plus the encoded file |
 
 Callbacks of 256 frames at 48 kHz (deadline 5,333 µs), 10 s of output:
 
 | Case | p50 | p99 | Per voice (p50) |
 | --- | ---: | ---: | ---: |
-| Empty mixer | 1.3 µs | 1.5 µs | — |
-| 16 / 64 voices, matched rate | 25 / 97 µs | 32 / 111 µs | 1.5 µs |
-| 64 voices resampled from 44.1 kHz / pitched | 370 / 380 µs | 406 / 418 µs | 5.8 µs |
-| 16 voices through six bus effects and a look-ahead limiter | 144 µs | 176 µs | — |
-| 16 voices with gain ramps every 4 callbacks | 75 µs | 97 µs | 4.7 µs |
-| 32 3D emitters with Doppler, 5.1 output | 918 µs | 1,036 µs | 28.7 µs |
-| 16 one-shot starts per callback, stealing at 32 voices | 372 µs | 425 µs | — |
-| Chip score / drum score / synthwave score (synth `fill`) | 30 / 26 / 260 µs | 42 / 44 / 444 µs | — |
+| Empty mixer | 1.3 µs | 1.6 µs | — |
+| 16 / 64 voices, matched rate | 25 / 98 µs | 29 / 135 µs | 1.5 µs |
+| 64 voices resampled from 44.1 kHz / pitched | 371 / 388 µs | 515 / 489 µs | 5.8 µs |
+| 16 voices through six bus effects and a look-ahead limiter | 144 µs | 183 µs | — |
+| 16 voices with gain ramps every 4 callbacks | 75 µs | 107 µs | 4.7 µs |
+| 32 3D emitters with Doppler, 5.1 output | 919 µs | 1,145 µs | 28.7 µs |
+| 16 one-shot starts per callback, stealing at 32 voices | 375 µs | 513 µs | — |
+| Chip score / drum score / synthwave score (synth `fill`) | 31 / 26 / 271 µs | 49 / 47 / 481 µs | — |
+
+The 60 s mixer runs gave the same medians: spatial p50 916 µs, bursts 372 µs.
+Single callbacks reached a few milliseconds when the OS preempted the process; a
+p99.9 or maximum from this host is an observation, not a bound.
 
 Every prepared callback allocated and freed nothing. Mixer preparation made
 36,915 allocations (6.3 MB) with every feature, 4,147 (1.1 MB) without `music`,
@@ -198,26 +203,22 @@ which allocates when created on macOS and not with futexes or on WebAssembly. Wi
 `music`, the return queue reserves `MAX_LAYERS + 1` returns per command (17 times
 the default 1,024).
 
-The 60 s mixer runs in the same pass met OS interference: single callbacks up to
-71 ms, while their medians matched the 10 s runs. Rerun alone, `burst-steal/60s`
-gave p50 372 µs and p99 428 µs, 14.4×rt. Long-run tails from this pass are not
-evidence of a library regression.
-
 ### Demonstrated bottlenecks, ranked
 
 1. **Spectrogram rescans the input per column** (#79). Every column re-validates
    the entire remaining input and builds a new window and buffers. At 180 s that
-   is 33 s and 150 s for one spectrogram.
+   is 32 s and 127 s for one spectrogram.
 2. **FLAC whole-file output grows exactly per frame** (#82). Reallocations and
    requested bytes grow with the square of the length. macOS mostly grows these
    blocks in place (118 MB moved at 180 s); #63 measured frequent relocation on
    Windows for the same pattern. The asset loader inherits this through `decode`.
-3. **Disk FLAC seeks replay from the start** (#83). A seek to the middle of 180 s
-   costs 791 ms, and the reader thread sustains a third of in-memory decode speed.
+3. **Disk seeks replay from the start** (#83). A seek to the middle of 180 s
+   costs 299 ms for FLAC and 407 ms for MP3. Sustained reads keep up with
+   in-memory decoding.
 4. **Spatial voices cost 20 times a plain voice** (#80). Per frame they evaluate
    eight direction ramps, a norm, `level()` and, with Doppler, `exp2` for the
    speed.
-5. **Synthwave voices** (#81) take 260 µs per callback at p50, 18×rt for one
+5. **Synthwave voices** (#81) take 271 µs per callback at p50, 18×rt for one
    three-part score. Frequency, filter coefficients and LFOs are recomputed every
    sample.
 6. **Starting and stealing voices** (#80): 16 starts per callback cost about
