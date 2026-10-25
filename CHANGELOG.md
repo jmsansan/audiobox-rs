@@ -19,6 +19,10 @@
   segment while unchanged, and `exp2(pitch / 12)` is reused while only Doppler
   changes the speed. Bursts of scheduled starts also gain about 12%. Output is
   unchanged, bit for bit (#80).
+- Synthwave voices reuse their frequency and filter coefficient while the inputs
+  hold still, and compute LFO phases in 64 bits when the product fits. A unison pad
+  with a fixed filter renders about five times faster, and a mixed score about 22%
+  faster. Output is unchanged, bit for bit (#81).
 - `analyze::spectrogram` checks its input once and reuses one window and transform
   buffer for every column, instead of re-checking the remaining input and
   rebuilding the workspace per column. Its cost now grows linearly with the
