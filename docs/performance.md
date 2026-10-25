@@ -85,8 +85,9 @@ CSV columns:
   systems it is the current size from `ps`. Windows leaves it empty: use
   `scripts/profile-mp3.ps1` for a per-process `PeakWorkingSet64`.
 - `checksum`: a hash of the case's whole output, including the frames after a
-  seek, which must also equal the frames delivered at that position. `--compare` flags changed outputs, so an
-  optimization that changes samples cannot pass unnoticed.
+  seek, which must also equal the frames delivered at that position. `--compare`
+  flags changed outputs, so an optimization that changes samples cannot pass
+  unnoticed.
 
 Each CSV begins with `#` provenance lines: crate version, commit (marked
 `(modified)` with uncommitted changes), rustc, profile, features, target, CPU,
