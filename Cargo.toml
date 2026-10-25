@@ -37,6 +37,11 @@ file-stream = []
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
+[[bench]]
+name = "engine"
+harness = false
+required-features = ["sfx", "mixer"]
+
 [[example]]
 name = "chiptune"
 required-features = ["synth"]

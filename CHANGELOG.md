@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added
+
+- A manual benchmark runner for release baselines (#78):
+  `cargo bench --bench engine --all-features`. It covers codecs, analysis and DSP,
+  synth and SFX, mixer callbacks, disk streaming and assets, natively and under
+  WebAssembly. It reports phases, allocations and callback percentiles, and
+  `--compare` checks whether outputs changed. `docs/performance.md` describes the
+  protocol, profiling on each platform and the 0.4.0 baseline. The runner is not
+  part of the published crate.
+
 ### Fixed
 
 - Whole-file MP3 decoding now grows PCM buffers geometrically within decode limits
