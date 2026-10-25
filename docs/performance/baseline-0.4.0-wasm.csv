@@ -9,7 +9,7 @@
 # runs: 1 warm-up + 3 timed + 1 allocation-counted
 # scale: quick (10 s)
 # unix-time: 1792933301
-# library: identical to main ad23d65; runtime: Node.js v24.22.0 WASI preview 1 (scripts/wasi-run.mjs), same host
+# library: identical to main 1021933; runtime: Node.js v24.22.0 WASI preview 1 (scripts/wasi-run.mjs), same host
 case,phase,runs,frames,rate,median_ms,min_ms,max_ms,mframes_per_s,realtime_x,allocs,reallocs,frees,requested_bytes,moved_bytes,peak_live_bytes,callbacks,p50_us,p99_us,p999_us,max_us,deadline_us,over_deadline,process_rss_bytes,checksum
 codec/wav-decode/10s,decode,3,480000,48000,6.7583,6.6493,6.8191,71.024,1479.7,5,0,2,5760056,0,5760056,0,,,,,,,,cdfc56551d609d25
 codec/wav-decode/10s,drop,3,0,0,0.0006,0.0002,0.0015,0.000,0.0,0,0,3,0,0,0,0,,,,,,,,cdfc56551d609d25

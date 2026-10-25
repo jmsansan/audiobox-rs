@@ -426,6 +426,23 @@ fn codec_cases(cases: &mut Vec<Case>, seconds: f64, tag: &str) {
             }));
         }
     }
+    // 24-bit FLAC: wider samples, residuals and MD5 input than the 16-bit default.
+    cases.push(case(format!("codec/flac24-decode/{tag}"), move || {
+        let options = EncodeOptions {
+            sample_format: SampleFormat::S24,
+            ..EncodeOptions::default()
+        };
+        let bytes =
+            encode_with_options(&music(seconds, RATE, 2), AudioFormat::Flac, &options).unwrap();
+        Box::new(move |r: &mut Recorder| {
+            let audio = r.phase("decode", || {
+                let a = decode(&bytes).unwrap();
+                let w = work(a.frames(), a.sample_rate());
+                (a, w)
+            });
+            r.hash_audio(&audio);
+        })
+    }));
     if seconds <= 10.0 {
         cases.push(case(format!("codec/aiff-decode/{tag}"), move || {
             let bytes = encode(&music(seconds, RATE, 2), AudioFormat::Aiff).unwrap();
