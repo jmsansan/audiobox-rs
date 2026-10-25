@@ -73,25 +73,48 @@ fn fft(real: &mut [f64], imag: &mut [f64]) {
         len *= 2;
     }
 }
-pub fn spectrum(samples: &[f32], sample_rate: u32, fft_size: usize) -> Result<Spectrum> {
+fn check_fft(sample_rate: u32, fft_size: usize) -> Result<()> {
     if sample_rate == 0 || fft_size < 2 || !fft_size.is_power_of_two() || fft_size > 1 << 20 {
         return Err(Error::invalid(
             "FFT size must be a power of two from 2 to 1048576",
         ));
     }
+    Ok(())
+}
+fn check_finite(samples: &[f32]) -> Result<()> {
     if samples.iter().any(|s| !s.is_finite()) {
         return Err(Error::invalid("FFT samples must be finite"));
     }
-    let mut real = vec![0.0; fft_size];
-    let mut imag = vec![0.0; fft_size];
+    Ok(())
+}
+/// The Hann window of `fft_size` points and the sum of its values, which scales magnitudes.
+fn hann(fft_size: usize) -> (Vec<f64>, f64) {
     let mut sum = 0.0;
-    for (i, v) in real.iter_mut().enumerate() {
-        let w = 0.5 - 0.5 * (2.0 * PI * i as f64 / (fft_size - 1) as f64).cos();
-        sum += w;
+    let window = (0..fft_size)
+        .map(|i| {
+            let w = 0.5 - 0.5 * (2.0 * PI * i as f64 / (fft_size - 1) as f64).cos();
+            sum += w;
+            w
+        })
+        .collect();
+    (window, sum)
+}
+/// Windows the first `real.len()` samples, zero-padded, transforms them in the given
+/// buffers and returns the one-sided magnitudes.
+fn transform(
+    samples: &[f32],
+    window: &[f64],
+    sum: f64,
+    real: &mut [f64],
+    imag: &mut [f64],
+) -> Vec<f64> {
+    let fft_size = real.len();
+    for (i, (v, w)) in real.iter_mut().zip(window).enumerate() {
         *v = samples.get(i).copied().unwrap_or(0.0) as f64 * w;
     }
-    fft(&mut real, &mut imag);
-    let magnitudes = (0..=fft_size / 2)
+    imag.fill(0.0);
+    fft(real, imag);
+    (0..=fft_size / 2)
         .map(|i| {
             real[i].hypot(imag[i]) / sum
                 * if i == 0 || i == fft_size / 2 {
@@ -100,22 +123,34 @@ pub fn spectrum(samples: &[f32], sample_rate: u32, fft_size: usize) -> Result<Sp
                     2.0
                 }
         })
-        .collect();
-    let frequencies = (0..=fft_size / 2)
+        .collect()
+}
+fn frequencies(sample_rate: u32, fft_size: usize) -> Vec<f64> {
+    (0..=fft_size / 2)
         .map(|i| i as f64 * sample_rate as f64 / fft_size as f64)
-        .collect();
+        .collect()
+}
+/// The magnitude spectrum of the first `fft_size` samples, Hann-windowed and
+/// zero-padded. Every sample of `samples` must be finite, including those after the
+/// window.
+pub fn spectrum(samples: &[f32], sample_rate: u32, fft_size: usize) -> Result<Spectrum> {
+    check_fft(sample_rate, fft_size)?;
+    check_finite(samples)?;
+    let (window, sum) = hann(fft_size);
+    let mut real = vec![0.0; fft_size];
+    let mut imag = vec![0.0; fft_size];
     Ok(Spectrum {
-        frequencies,
-        magnitudes,
+        frequencies: frequencies(sample_rate, fft_size),
+        magnitudes: transform(samples, &window, sum, &mut real, &mut imag),
     })
 }
+/// Spectra of `samples` every `hop` samples, each as [`spectrum`] of the samples from
+/// that point on. Every sample must be finite.
 pub fn spectrogram(samples: &[f32], rate: u32, fft_size: usize, hop: usize) -> Result<Spectrogram> {
     if hop == 0 {
         return Err(Error::invalid("Spectrogram hop must be positive"));
     }
-    let initial = spectrum(&[], rate, fft_size)?;
-    let mut times = Vec::new();
-    let mut magnitudes = Vec::new();
+    check_fft(rate, fft_size)?;
     let columns = samples.len().div_ceil(hop);
     if columns
         .checked_mul(fft_size / 2 + 1)
@@ -123,12 +158,21 @@ pub fn spectrogram(samples: &[f32], rate: u32, fft_size: usize, hop: usize) -> R
     {
         return Err(Error::limit("Spectrogram exceeds allocation limit"));
     }
+    // Each column's suffix is part of the whole input: checking it once gives the
+    // same result as checking every suffix, without rescanning the input per column.
+    check_finite(samples)?;
+    // The window and transform buffers serve every column; only the output grows.
+    let (window, sum) = hann(fft_size);
+    let mut real = vec![0.0; fft_size];
+    let mut imag = vec![0.0; fft_size];
+    let mut times = Vec::with_capacity(columns);
+    let mut magnitudes = Vec::with_capacity(columns);
     for i in (0..samples.len()).step_by(hop) {
         times.push(i as f64 / rate as f64);
-        magnitudes.push(spectrum(&samples[i..], rate, fft_size)?.magnitudes);
+        magnitudes.push(transform(&samples[i..], &window, sum, &mut real, &mut imag));
     }
     Ok(Spectrogram {
-        frequencies: initial.frequencies,
+        frequencies: frequencies(rate, fft_size),
         times,
         magnitudes,
     })
@@ -174,6 +218,20 @@ impl Audio {
         }
         for c in &self.data {
             for i in 0..c.len() {
+                // Away from the edges every tap is in range: the four phases then add the
+                // same terms in the same order without bounds checks, side by side.
+                if i >= 16 && i + 16 <= c.len() {
+                    let mut sums = [0.0f64; 4];
+                    for (k, &x) in c[i - 16..i + 16].iter().enumerate() {
+                        for (phase, sum) in sums.iter_mut().enumerate() {
+                            *sum += x as f64 * kernel[k * 4 + phase];
+                        }
+                    }
+                    for sum in sums {
+                        peak = peak.max(sum.abs());
+                    }
+                    continue;
+                }
                 for phase in 0..4 {
                     let mut sum = 0.0;
                     for k in 0..32 {

@@ -232,3 +232,52 @@ the default 1,024).
 
 Each owning issue profiles its items before changing them. Items that yield no
 safe improvement are recorded with their profiles.
+
+## 0.4.1 changes
+
+Each entry compares the change with `main` before it, on the baseline host with the
+same runner. `--compare` reported identical output checksums for every case listed.
+Other workloads on the host (an iOS simulator) interfered with some later runs.
+Where they did, the tables use rounds without interference and per-callback
+medians, and say so.
+
+### Analysis and DSP (#79)
+
+`analyze::spectrogram` called `spectrum` on every column's suffix. Each call
+re-checked every remaining sample for finiteness, which is quadratic in the input,
+and built a new window and buffers. The spectrogram now checks the input once,
+after the same hop, FFT size and output-limit checks as before. It then transforms
+every column with one window and one pair of buffers, through the same arithmetic
+`spectrum` uses. `tests/analysis.rs` compares every column with `spectrum` of its
+suffix bit for bit, across empty, short, silent and noisy inputs and hops from 1
+to longer than the input. It checks that a non-finite sample far past the first
+window still fails and that the errors keep their order. It also counts allocations
+per column (old code: four, now one) and runs a million-column spectrogram that the
+old code would take hours to finish.
+
+`Audio::true_peak_db` evaluated a 32-tap kernel for each of four phases, with a
+bounds check per tap. Away from the edges, every tap is in range, so the four sums
+now run side by side over the same samples, each still adding its terms in the
+original order. The edges keep the old loop. A test compares the result bit for
+bit with the 0.4.0 algorithm at lengths around the 16-sample edges.
+
+| Case | Before | After | Ratio |
+| --- | ---: | ---: | ---: |
+| Spectrogram 2048/512, 10 s | 138 ms | 30.5 ms | 0.22 |
+| Spectrogram 1024/128, 10 s | 455 ms | 55.1 ms | 0.12 |
+| Spectrogram 2048/512, 180 s | 31,904 ms (baseline, one run) | 521 ms | 0.016 |
+| Spectrogram 1024/128, 180 s | 126,731 ms (baseline, one run) | 945 ms | 0.0075 |
+| True peak, 10 s / 180 s | 72.9 / 1,309 ms | 32.8 / 592 ms | 0.45 |
+| Loudness, filter, limit, resample, tempo, pitch (controls) | | | 0.96–1.08 |
+
+Allocations fell from 3,758 to 944 and from 15,006 to 3,756 at 10 s: one
+magnitude vector per column, which is the required output. Peak memory is
+unchanged, because the output dominates it.
+
+Loudness, the offline filters and limiter, resampling, tempo and pitch are
+unchanged. Sampled profiles (macOS `sample`, 180 s inputs) put 99% of resampling in
+`sinc_sample`, the 64 or more interpolated taps per output sample. Tempo spends all
+of its time in the WSOLA search and overlap-add loop. Pitch splits about 76/24
+between resampling and tempo. The determinism contract fixes that arithmetic and
+its order, and these transforms allocate only their output and a few working
+buffers. Loudness and the filters already run at 700–1,700×rt.
