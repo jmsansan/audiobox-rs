@@ -35,7 +35,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::collections::BTreeMap;
 use std::hint::black_box;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU64, AtomicUsize, Ordering::Relaxed};
 use std::time::Instant;
 
 // Allocation counters for every thread, enabled only around tracked phases. Reader
@@ -44,8 +44,9 @@ static TRACK: AtomicBool = AtomicBool::new(false);
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);
 static REALLOCS: AtomicUsize = AtomicUsize::new(0);
 static FREES: AtomicUsize = AtomicUsize::new(0);
-static REQUESTED: AtomicUsize = AtomicUsize::new(0);
-static MOVED: AtomicUsize = AtomicUsize::new(0);
+// Cumulative byte totals pass 4 GiB on quadratic growth: 64 bits on every target.
+static REQUESTED: AtomicU64 = AtomicU64::new(0);
+static MOVED: AtomicU64 = AtomicU64::new(0);
 static LIVE: AtomicIsize = AtomicIsize::new(0);
 static PEAK: AtomicIsize = AtomicIsize::new(0);
 
@@ -53,7 +54,7 @@ struct Counting;
 fn grow(size: usize, old: usize) {
     let live = LIVE.fetch_add(size as isize - old as isize, Relaxed) + size as isize - old as isize;
     PEAK.fetch_max(live, Relaxed);
-    REQUESTED.fetch_add(size, Relaxed);
+    REQUESTED.fetch_add(size as u64, Relaxed);
 }
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
@@ -77,7 +78,7 @@ unsafe impl GlobalAlloc for Counting {
         if TRACK.load(Relaxed) && !next.is_null() {
             REALLOCS.fetch_add(1, Relaxed);
             if next != p {
-                MOVED.fetch_add(layout.size().min(size), Relaxed);
+                MOVED.fetch_add(layout.size().min(size) as u64, Relaxed);
             }
             grow(size, layout.size());
         }
@@ -99,15 +100,17 @@ struct Allocs {
     allocs: usize,
     reallocs: usize,
     frees: usize,
-    requested: usize,
-    moved: usize,
+    requested: u64,
+    moved: u64,
     /// Highest net bytes allocated during the phase and not yet freed.
     peak: usize,
 }
 fn start_tracking() {
-    for c in [&ALLOCS, &REALLOCS, &FREES, &REQUESTED, &MOVED] {
+    for c in [&ALLOCS, &REALLOCS, &FREES] {
         c.store(0, Relaxed);
     }
+    REQUESTED.store(0, Relaxed);
+    MOVED.store(0, Relaxed);
     LIVE.store(0, Relaxed);
     PEAK.store(0, Relaxed);
     TRACK.store(true, Relaxed);
@@ -918,7 +921,7 @@ fn stream_cases(cases: &mut Vec<Case>, seconds: f64, tag: &str) {
                 // throughput, not a playback failure.
                 r.entry("sustained").retries = underruns;
                 let middle = total as u64 / 2;
-                r.phase("seek", || {
+                let n = r.phase("seek", || {
                     stream.seek(middle).unwrap();
                     let n = loop {
                         match stream.read(&mut out) {
@@ -929,6 +932,28 @@ fn stream_cases(cases: &mut Vec<Case>, seconds: f64, tag: &str) {
                     };
                     (n, work(n, RATE))
                 });
+                // The first 256 frames after the seek, completed outside timing, are the
+                // ones the sustained read delivered there. A fixed window keeps the hash
+                // independent of how many frames the reader had ready.
+                assert!(n > 0, "end of stream after seeking to {middle}");
+                let at = middle as usize * 2;
+                let mut window = out[..n * 2].to_vec();
+                while window.len() < BLOCK * 2 {
+                    match stream.read(&mut out) {
+                        Ok(0) => panic!("end of stream after seeking to {middle}"),
+                        Ok(k) => window.extend_from_slice(&out[..k * 2]),
+                        Err(e) if e.code == ErrorCode::Underrun => std::thread::yield_now(),
+                        Err(e) => panic!("{e}"),
+                    }
+                }
+                window.truncate(BLOCK * 2);
+                let bits = |s: &[f32]| s.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+                assert_eq!(
+                    bits(&window),
+                    bits(&pcm[at..at + BLOCK * 2]),
+                    "after seeking to {middle}"
+                );
+                r.hash_samples(&window);
                 r.phase("drop", || {
                     drop(stream);
                     (drop(handle), NONE)
@@ -1329,6 +1354,11 @@ fn main() {
         recorder.tracked = true;
         recorder.checksum = 0xcbf2_9ce4_8422_2325;
         run(&mut recorder);
+        assert_eq!(
+            recorder.checksum, warm.checksum,
+            "{}: counted run changed the output",
+            c.name
+        );
         drop(run);
         let checksum = recorder.checksum;
         for row in report(&c.name, &mut recorder.phases, checksum, process_rss()) {
