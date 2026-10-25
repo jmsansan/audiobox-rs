@@ -32,15 +32,30 @@ fn crc16(bytes: &[u8]) -> u16 {
     }
     crc
 }
+/// Counts the zeros before the next one bit and consumes them and the one, up to 32
+/// bits at a time. Errors as reading bit by bit would: truncated data before the
+/// one, or more than 2^24 zeros, whichever comes first.
 fn unary(br: &mut Bits<'_>) -> Result<u64> {
     let mut n = 0u64;
-    while br.read(1)? == 0 {
-        n += 1;
+    loop {
+        let take = br.remaining().min(32);
+        if take == 0 {
+            return Err(Error::decode("Truncated bitstream"));
+        }
+        let window = br.peek(take);
+        let zeros = (window.leading_zeros() as usize)
+            .saturating_sub(32 - take)
+            .min(take);
+        n += zeros as u64;
         if n > 1 << 24 {
             return Err(Error::decode("Runaway FLAC unary code"));
         }
+        if zeros < take {
+            br.pos += zeros + 1;
+            return Ok(n);
+        }
+        br.pos += take;
     }
-    Ok(n)
 }
 fn number(br: &mut Bits<'_>) -> Result<u64> {
     let first = br.read(8)? as u8;
@@ -421,15 +436,15 @@ impl FlacFrame {
             return Err(Error::decode("FLAC frame CRC mismatch"));
         }
         self.raw.clear();
+        let width = bits.div_ceil(8);
         for i in 0..n {
             for c in 0..channels {
                 let s = self.samples[c][i];
                 if s < -(1i64 << (bits - 1)) || s >= (1i64 << (bits - 1)) {
                     return Err(Error::decode("FLAC sample exceeds bit depth"));
                 }
-                for j in 0..bits.div_ceil(8) {
-                    self.raw.push((s >> (8 * j)) as u8);
-                }
+                // The low `width` bytes, little-endian: what MD5 hashes.
+                self.raw.extend_from_slice(&s.to_le_bytes()[..width]);
             }
         }
         Ok((n, start + br.pos / 8))
@@ -704,17 +719,26 @@ impl Md5 {
     }
     pub fn update(&mut self, mut bytes: &[u8]) {
         self.length += bytes.len() as u64;
-        while !bytes.is_empty() {
+        if self.filled > 0 {
             let n = (64 - self.filled).min(bytes.len());
             self.pending[self.filled..self.filled + n].copy_from_slice(&bytes[..n]);
             self.filled += n;
             bytes = &bytes[n..];
-            if self.filled == 64 {
-                let block = self.pending;
-                self.block(&block);
-                self.filled = 0;
+            if self.filled < 64 {
+                return;
             }
+            let block = self.pending;
+            self.block(&block);
+            self.filled = 0;
         }
+        // Whole blocks straight from the input, without staging them.
+        let mut blocks = bytes.chunks_exact(64);
+        for block in &mut blocks {
+            self.block(block.try_into().unwrap());
+        }
+        let rest = blocks.remainder();
+        self.pending[..rest.len()].copy_from_slice(rest);
+        self.filled = rest.len();
     }
     fn block(&mut self, chunk: &[u8; 64]) {
         let mut m = [0u32; 16];
@@ -722,32 +746,45 @@ impl Md5 {
             m[i] = u32::from_le_bytes(b.try_into().unwrap());
         }
         let [mut a, mut b, mut c, mut d] = self.state;
-        let shifts = [
-            [7, 12, 17, 22],
-            [5, 9, 14, 20],
-            [4, 11, 16, 23],
-            [6, 10, 15, 21],
-        ];
-        for i in 0..64 {
-            let (f, g) = if i < 16 {
-                ((b & c) | (!b & d), i)
-            } else if i < 32 {
-                ((d & b) | (!d & c), (5 * i + 1) % 16)
-            } else if i < 48 {
-                (b ^ c ^ d, (3 * i + 5) % 16)
-            } else {
-                (c ^ (b | !d), (7 * i) % 16)
+        // The 64 steps of RFC 1321, unrolled so that every rotation, message index and
+        // constant is fixed: the same arithmetic as the loop form, in the same order.
+        macro_rules! step {
+            ($f:expr, $i:expr, $g:expr, $s:expr) => {{
+                let next = b.wrapping_add(
+                    a.wrapping_add($f)
+                        .wrapping_add(MD5_K[$i])
+                        .wrapping_add(m[$g])
+                        .rotate_left($s),
+                );
+                a = d;
+                d = c;
+                c = b;
+                b = next;
+            }};
+        }
+        macro_rules! round {
+            ($f:expr, $g:expr, [$s0:expr, $s1:expr, $s2:expr, $s3:expr], $base:expr) => {
+                step!($f, $base, $g($base), $s0);
+                step!($f, $base + 1, $g($base + 1), $s1);
+                step!($f, $base + 2, $g($base + 2), $s2);
+                step!($f, $base + 3, $g($base + 3), $s3);
             };
-            let next = b.wrapping_add(
-                a.wrapping_add(f)
-                    .wrapping_add(MD5_K[i])
-                    .wrapping_add(m[g])
-                    .rotate_left(shifts[i / 16][i % 4]),
-            );
-            a = d;
-            d = c;
-            c = b;
-            b = next;
+        }
+        let g0 = |i: usize| i;
+        let g1 = |i: usize| (5 * i + 1) % 16;
+        let g2 = |i: usize| (3 * i + 5) % 16;
+        let g3 = |i: usize| (7 * i) % 16;
+        for base in [0, 4, 8, 12] {
+            round!((b & c) | (!b & d), g0, [7, 12, 17, 22], base);
+        }
+        for base in [16, 20, 24, 28] {
+            round!((d & b) | (!d & c), g1, [5, 9, 14, 20], base);
+        }
+        for base in [32, 36, 40, 44] {
+            round!(b ^ c ^ d, g2, [4, 11, 16, 23], base);
+        }
+        for base in [48, 52, 56, 60] {
+            round!(c ^ (b | !d), g3, [6, 10, 15, 21], base);
         }
         for (s, v) in self.state.iter_mut().zip([a, b, c, d]) {
             *s = s.wrapping_add(v);
@@ -771,5 +808,124 @@ impl Md5 {
             out[i * 4..i * 4 + 4].copy_from_slice(&s.to_le_bytes());
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Md5, unary};
+    use crate::io::Bits;
+
+    /// The bit-at-a-time unary reader of 0.4.0: zeros before a one, with its errors.
+    fn reference_unary(bytes: &[u8], pos: &mut usize) -> Result<u64, &'static str> {
+        let mut n = 0u64;
+        loop {
+            if *pos >= bytes.len() * 8 {
+                return Err("Truncated bitstream");
+            }
+            let bit = (bytes[*pos / 8] >> (7 - *pos % 8)) & 1;
+            *pos += 1;
+            if bit == 1 {
+                return Ok(n);
+            }
+            n += 1;
+            if n > 1 << 24 {
+                return Err("Runaway FLAC unary code");
+            }
+        }
+    }
+
+    #[test]
+    fn unary_codes_match_bit_by_bit_reading_and_its_errors() {
+        let mut seed = 0x9e37_79b9u32;
+        let mut inputs: Vec<Vec<u8>> = (0..300)
+            .map(|k| {
+                (0..k % 40)
+                    .map(|_| {
+                        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                        // Mostly zero bits, so that codes run across bytes and windows.
+                        let b = (seed >> 24) as u8;
+                        if b < 200 { 0 } else { b }
+                    })
+                    .collect()
+            })
+            .collect();
+        // Runaway codes: exactly 2^24 zeros is a valid code, one more is an error.
+        let mut at_limit = vec![0u8; (1 << 24) / 8];
+        at_limit.push(0x80);
+        inputs.push(at_limit);
+        inputs.push(vec![0u8; (1 << 24) / 8 + 1]);
+        inputs.push(vec![0u8; (1 << 24) / 8 + 64]);
+        for bytes in &inputs {
+            for start in 0..bytes.len().min(3) * 8 + 1 {
+                let mut br = Bits::new(bytes);
+                br.pos = start;
+                let mut pos = start;
+                loop {
+                    let got = unary(&mut br).map_err(|e| e.message.clone());
+                    let want = reference_unary(bytes, &mut pos).map_err(String::from);
+                    assert_eq!(got, want, "{} bytes from bit {start}", bytes.len());
+                    if got.is_err() {
+                        break;
+                    }
+                    assert_eq!(br.pos, pos);
+                }
+            }
+        }
+    }
+
+    fn hex(digest: [u8; 16]) -> String {
+        digest.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    #[test]
+    fn md5_matches_rfc_1321_for_every_split() {
+        // The RFC 1321 test suite, A.5.
+        let suite = [
+            ("", "d41d8cd98f00b204e9800998ecf8427e"),
+            ("a", "0cc175b9c0f1b6a831c399e269772661"),
+            ("abc", "900150983cd24fb0d6963f7d28e17f72"),
+            ("message digest", "f96b697d7cb7938d525a2f31aaf161d0"),
+            (
+                "abcdefghijklmnopqrstuvwxyz",
+                "c3fcd3d76192e4007dfb496cca67e13b",
+            ),
+            (
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789",
+                "d174ab98d277d9f5a5611c2c9f419d9f",
+            ),
+            (
+                "12345678901234567890123456789012345678901234567890123456789012345678901234567890",
+                "57edf4a22be3c955ac49da2e2107b67a",
+            ),
+        ];
+        for (text, expected) in suite {
+            // Every way of feeding the input: whole, byte by byte, and in uneven
+            // pieces crossing the 64-byte block boundary.
+            for piece in 1..=130 {
+                let mut md5 = Md5::new();
+                for chunk in text.as_bytes().chunks(piece) {
+                    md5.update(chunk);
+                }
+                assert_eq!(hex(md5.digest()), expected, "{text:?} in pieces of {piece}");
+            }
+        }
+        // A long input fed in mixed piece sizes, against the same input in one piece.
+        let data: Vec<u8> = (0..10_000u32)
+            .map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8)
+            .collect();
+        let mut whole = Md5::new();
+        whole.update(&data);
+        let mut mixed = Md5::new();
+        let mut rest = &data[..];
+        for n in (1..).map(|k| k * 7 % 150 + 1) {
+            if rest.is_empty() {
+                break;
+            }
+            let n = n.min(rest.len());
+            mixed.update(&rest[..n]);
+            rest = &rest[n..];
+        }
+        assert_eq!(whole.digest(), mixed.digest());
     }
 }

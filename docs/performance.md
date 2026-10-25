@@ -423,3 +423,61 @@ scheduling in `fill` and the oscillators, about a third each. The drum kit spend
 62% in `DrumVoice::sample`, and the presets nearly all in `Effect::render_with`.
 Legacy voices already reuse their frequency when nothing modulates it. These run at
 170–260×rt.
+
+### File streaming and assets (#83)
+
+Measured in the baseline: opening a disk stream takes 1.4–2.7 ms. The first frames
+are available in about 2 µs, because opening prefills the PCM ring. Sustained reads
+keep up with in-memory decoding (FLAC 249×rt, MP3 189×rt at 10 s). A cache hit in
+the asset loader takes 11–17 µs. Twenty rounds of 64 lookups and inserts against a
+budget of a third of the set, each miss inserting a fresh copy, take about 3 ms.
+The costs that grow are seeks (308 ms for FLAC and 435 ms for MP3 to the middle of
+180 s), because both disk decoders replay from the start, and a cache miss, which
+is a whole decode.
+
+A sampled profile of repeated disk FLAC seeks put a quarter of the decoding work in
+`Md5::update`. Disk FLAC keeps its MD5 running through a replay, so that reading on
+to the end still verifies the whole file, as it did before. The rest went to
+`Bits::read` (most), frame and subframe decoding, and residuals. The bit reader
+read one bit at a time, and unary codes called it once per bit. The changes:
+
+- `Bits::read` and `Bits::peek` take up to 32 bits from an 8-byte big-endian load
+  and a shift. They return the same values, keep the same bounds checks, and give
+  zeros past the end for `peek`. MP3 decoding uses the same reader.
+- FLAC unary codes count leading zeros in 32-bit windows. They return the same
+  counts and the same errors, in the same order: truncated data before the one,
+  or more than 2^24 zeros.
+- MD5 hashes whole 64-byte blocks straight from the input and runs its 64 steps
+  unrolled with fixed rotations and indices. The PCM bytes it hashes are packed
+  with one slice copy per sample instead of one push per byte.
+
+Unit tests compare `read` and `peek` with the 0.4.0 bit-at-a-time reader on random
+data and widths, including every end-of-data case. They compare the unary decoder
+with the old one, including the 2^24 limit and truncation. They also check MD5
+against the RFC 1321 suite, fed in every split from 1 to 130 bytes. FLAC files keep
+their MD5 checks, and the FFmpeg interoperability tests pass.
+
+Seeking itself is unchanged in design. A sync-code bisection or index would skip
+frames without decoding them, but it would change which corrupt-file errors a seek
+reports and drop the MD5 check after a seek. #83 rules out a new seek architecture
+or a public index for this release. When a file carries a SEEKTABLE, the in-memory
+decoder already uses it; this crate's encoder writes none.
+
+Also observed and left as is: when a FLAC frame straddles the end of the disk
+window, the reader fails to decode it, refills the window and decodes it again.
+That is one 19-byte error message on the reader thread per boundary (22 over
+180 s), never on the audio thread.
+
+Medians over three alternating rounds of base and change (three runs each):
+
+| Case | Before | After | Ratio |
+| --- | ---: | ---: | ---: |
+| Disk FLAC seek to the middle, 10 s / 180 s | 17.3 / 300 ms | 11.8 / 201 ms | 0.68 / 0.67 |
+| Disk FLAC sustained read, 10 s / 180 s | 38.2 / 758 ms | 27.5 / 509 ms | 0.73 / 0.71 |
+| FLAC decode, 10 s / 180 s | 33.1 / 607 ms | 22.3 / 412 ms | 0.68 |
+| FLAC streaming decode, 180 s | 595 ms | 400 ms | 0.67 |
+| Asset load miss (FLAC), 10 s / 180 s | 33.5 / 614 ms | 22.5 / 420 ms | 0.67 / 0.68 |
+| FLAC encode, 10 s / 180 s (MD5) | 47.0 / 846 ms | 42.3 / 771 ms | 0.91 |
+| MP3 decode, streaming decode, disk read and seek (bit reader) | | | 0.94–0.98 |
+
+Outputs and allocation counts are unchanged in every case.
