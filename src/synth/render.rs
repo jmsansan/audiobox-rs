@@ -234,7 +234,13 @@ impl Voice {
             self.level = 0.0;
         }
         if let Some(plan) = &plans[event.instrument].wide {
-            self.wide.trigger(plan, event.cents, active, legato);
+            // Glide starts from the synthwave pitch, which only a synthwave note sets:
+            // a voice last used by a pooled wavetable note has none to glide from.
+            let gliding = active
+                && self
+                    .event
+                    .is_some_and(|old| plans[old.instrument].wide.is_some());
+            self.wide.trigger(plan, event.cents, gliding, legato);
         }
         self.event = Some(event);
         self.held = true;

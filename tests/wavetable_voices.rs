@@ -233,3 +233,24 @@ fn a_stolen_voice_attacks_from_silence() {
     );
     assert!(peak(7_200..9_600) > full * 0.9);
 }
+
+#[test]
+fn a_synthwave_glide_does_not_start_from_a_wavetable_note() {
+    // Both notes are C4 on one voice: the synthwave note must not glide from a pitch
+    // the wavetable note never set.
+    let s = Score::parse(
+        "tempo 120\ninstrument table wavetable=fff000 voices=1\n\
+         instrument lead wave=triangle voices=1 glide=400 adsr=0,0,100,0\n\
+         channel a = q8 o4 @table c4 @lead c4 r4",
+    )
+    .unwrap();
+    let out = s.render(48_000).unwrap();
+    let x = out.channel_data(0).unwrap();
+    // Count rising zero crossings over the first 100 ms of the second note.
+    let start = 24_000;
+    let crossings = (start + 1..start + 4_800)
+        .filter(|&i| x[i - 1] < 0.0 && x[i] >= 0.0)
+        .count();
+    // C4 is 261.6 Hz: about 26 cycles in 100 ms. A glide from A4 would show ~40.
+    assert!((25..=27).contains(&crossings), "{crossings} cycles");
+}
