@@ -9,7 +9,7 @@
 # runs: 1 warm-up + 5 timed + 1 allocation-counted
 # scale: 10 s and 180 s (mixer 60 s)
 # unix-time: 1792931567
-# library: identical to main ad23d65 (0.4.0 plus #63); the commit above adds only the runner
+# library: identical to main 1021933 (0.4.0 plus #63); the commit above adds only the runner
 # note: analysis/spectrogram-*/180s rows ran with --runs 1 (about 32 s and 127 s per run), same commit
 # note: stream/* rows reran after the runner began checking post-seek frames (runner-only change)
 # host: Apple M2 Pro, macOS 26.6.2, AC power; no other builds or tests during runs; not an isolated machine

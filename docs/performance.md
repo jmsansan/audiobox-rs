@@ -153,8 +153,8 @@ These come from the 0.4.1 issues and apply to every change recorded here:
 
 ## Baseline: 0.4.0 plus the #63 fix (2026-10-25)
 
-The library code is `main` at `ad23d65` (after #84). The runner came from the
-commit that added it. Host: Apple M2 Pro (10 logical CPUs), macOS 26.6.2, AC power,
+The library code is `main` at `1021933` (the #84 merge). The run used the runner's
+commit, which changes nothing in `src/`. Host: Apple M2 Pro (10 logical CPUs), macOS 26.6.2, AC power,
 rustc 1.98.0, release profile, every feature. Each case ran one warm-up, five timed
 runs and one counted run; the 180 s spectrograms ran once. No other builds or tests
 ran, but the machine was not isolated. The full results are in
@@ -481,3 +481,66 @@ Medians over three alternating rounds of base and change (three runs each):
 | MP3 decode, streaming decode, disk read and seek (bit reader) | | | 0.94–0.98 |
 
 Outputs and allocation counts are unchanged in every case.
+
+## 0.4.1 comparison
+
+`main` at `1021933` (0.4.0 plus #63) against `main` at `feef3f0`, which has every
+change above. Both run the same runner, with the 24-bit FLAC cases added for this
+comparison, one after the other on the baseline host: three runs per case, then a
+second pass of the 10 s cases. The raw results are in
+[`performance/final-0.4.0-native.csv`](performance/final-0.4.0-native.csv) and
+[`performance/final-0.4.1-native.csv`](performance/final-0.4.1-native.csv), with
+WebAssembly equivalents. Every case produced identical output checksums.
+
+| Area | Case | 0.4.0 | 0.4.1 | Ratio | Issue |
+| --- | --- | ---: | ---: | ---: | --- |
+| Analysis | Spectrogram 2048/512, 180 s | 31,904 ms (baseline, one run) | 515 ms | 0.016 | #79 |
+| Analysis | Spectrogram 1024/128, 180 s | 126,731 ms (baseline, one run) | 944 ms | 0.0075 | #79 |
+| Analysis | Spectrogram 1024/128, 10 s | 428 ms | 52.0 ms | 0.12 | #79 |
+| Analysis | True peak, 180 s | 1,260 ms | 584 ms | 0.46 | #79 |
+| Codecs | FLAC decode, 16-bit / 24-bit, 180 s | 593 / 730 ms | 399 / 397 ms | 0.67 / 0.54 | #82, #83 |
+| Codecs | FLAC whole-file reallocations, 180 s | 4,218 | 38 | — | #82 |
+| Codecs | FLAC streaming decode, 180 s | 585 ms | 388 ms | 0.66 | #83 |
+| Codecs | FLAC encode, 180 s | 813 ms | 768 ms | 0.95 | #83 |
+| Codecs | MP3 decode, 10 s mono / 180 s stereo | 25.6 / 828 ms | 22.6 / 803 ms | 0.88 / 0.97 | #83 |
+| Streaming | Disk FLAC seek to the middle, 180 s | 302 ms | 201 ms | 0.67 | #83 |
+| Streaming | Disk FLAC sustained read, 180 s | 714 ms | 541 ms | 0.76 | #83 |
+| Assets | Load miss (FLAC), 10 s / 180 s | 32.6 / 598 ms | 21.7 / 423 ms | 0.67 / 0.71 | #82, #83 |
+| Mixer | 32 Doppler emitters on 5.1, 60 s | 7,018 ms | 3,064 ms | 0.44 | #80 |
+| Mixer | 16 starts per callback with stealing, 60 s | 4,121 ms | 3,612 ms | 0.88 | #80 |
+| Mixer | 16 / 64 matched voices, 60 s | 289 / 1,113 ms | 259 / 999 ms | 0.90 | (see #80) |
+| Synth | Unison pad with fixed filter, 180 s | 5,281 ms | 1,074 ms | 0.20 | #81 |
+| Synth | Synthwave score, 180 s | 9,693 ms | 7,527 ms | 0.78 | #81 |
+
+Unchanged within noise (0.95–1.04, all identical outputs): WAV and AIFF, MP3 encoding
+and streaming, disk MP3, loudness, the offline filters, limiter, resampling, tempo
+and pitch, bus effects, resampled and pitched voices, the synth stream through the
+mixer, the chip and drum scores, LFO-modulated pads and the SFX presets. The cache
+churn case (about 3 ms) moved between 0.91 and 1.10 between passes: noise at that
+size. Callbacks still allocate and free nothing. Allocation counts are unchanged
+everywhere except the spectrogram and the FLAC reallocations.
+
+WebAssembly (Node.js WASI, 10 s) shows the same pattern with different
+magnitudes: spectrograms 0.15–0.27, true peak 0.34, FLAC decode 0.86 (24-bit
+0.68), spatial mixing 0.48, bursts 0.90, the static pad 0.29, the synthwave score
+0.83.
+
+Limits of this comparison:
+
+- **One host:** an M2 Pro on macOS. Windows and Linux were not measured locally.
+  The FLAC reallocation fix removes copies that this allocator mostly avoided by
+  growing in place, so its time effect is expected on allocators that relocate,
+  as #63 measured on Windows, but was not measured here.
+- **Per-callback figures are observations of one run on one OS state,** not
+  real-time guarantees. Other workloads (an iOS simulator) interfered with some
+  intermediate measurements; the final runs met none.
+
+Findings left open, with their profiles above:
+
+- MP3 and FLAC encoding (quantization and `pow`, predictor trials).
+- Chorus and phaser modulation.
+- Resampling and WSOLA arithmetic, fixed by the determinism contract.
+- Seek replay for disk FLAC and MP3. Skipping it needs a seek design that keeps the
+  error and MD5 contracts.
+- Mixer preparation allocations with `music` on macOS.
+- The reader's retried decode at window boundaries.
