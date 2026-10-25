@@ -211,3 +211,25 @@ fn only_wavetables_take_voices_and_only_voices() {
     });
     assert!(instrument.validate().is_err());
 }
+
+#[test]
+fn a_stolen_voice_attacks_from_silence() {
+    // One voice, adjacent full gates: the second note takes the first note's voice.
+    let s = Score::parse(
+        "tempo 600\ninstrument t wavetable=fffffff0 adsr=50,0,100,500 voices=1\nchannel a=@t q8 c4 c4 r1",
+    )
+    .unwrap();
+    let out = s.render(48_000).unwrap();
+    let x = out.channel_data(0).unwrap();
+    // At 600 BPM a quarter note is 4,800 frames; the 50 ms attack is 2,400.
+    let peak = |range: std::ops::Range<usize>| range.map(|i| x[i].abs()).fold(0.0, f32::max);
+    let full = peak(2_400..4_800);
+    assert!(full > 0.1);
+    // The second note starts quietly and rises through its attack again.
+    assert!(
+        peak(4_800..4_900) < full * 0.1,
+        "{} vs {full}",
+        peak(4_800..4_900)
+    );
+    assert!(peak(7_200..9_600) > full * 0.9);
+}

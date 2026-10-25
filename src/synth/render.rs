@@ -227,8 +227,10 @@ impl Voice {
                 .event
                 .is_some_and(|old| old.instrument == event.instrument && old.off == event.on);
         // A pooled voice that is free starts from silence, even if a release without
-        // a tail left its last level behind.
-        if plans[event.instrument].voices > 0 && !active {
+        // a tail left its last level behind. A pooled wavetable note always attacks
+        // from silence, also on a stolen voice: stealing cuts the old note.
+        let plan = &plans[event.instrument];
+        if plan.voices > 0 && (!active || plan.wide.is_none()) {
             self.level = 0.0;
         }
         if let Some(plan) = &plans[event.instrument].wide {

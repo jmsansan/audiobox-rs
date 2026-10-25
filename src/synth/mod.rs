@@ -138,7 +138,8 @@
 //!   and the ADSR from silence, at the note's own velocity. The previous note keeps
 //!   its voice and plays its release independently, to its end.
 //! - Without a free voice, the oldest releasing voice is taken, then the oldest
-//!   held one. Taking a sounding voice restarts it immediately and can click.
+//!   held one. Its note is cut and the new note attacks from silence, which can
+//!   click.
 //! - Note-off, gates, ties, velocity, macros, quantization and loop carries apply
 //!   per voice as on the single voice. Chords (`{c e g}`) are allowed up to `N`
 //!   notes. Switching to an instrument without voices releases the held pooled
