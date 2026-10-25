@@ -609,38 +609,6 @@ impl Mp3State {
     }
 }
 
-// Keep geometric growth fallible and cap speculative capacity at the same limits
-// as decoded samples. Exact per-frame growth can copy all prior PCM on every frame.
-fn reserve_output(
-    output: &mut Vec<f32>,
-    next: usize,
-    options: &DecodeOptions,
-    channels: usize,
-    rate: u32,
-    message: &'static str,
-) -> Result<()> {
-    if next <= output.capacity() {
-        return Ok(());
-    }
-    let limits = &options.limits;
-    let ceiling = limits
-        .max_frames
-        .min(limits.max_decoded_bytes / channels / size_of::<f32>())
-        .min((limits.max_duration_seconds * rate as f64).floor() as usize);
-    let grown = output.capacity().saturating_add(output.capacity() / 2);
-    let target = next.max(grown.min(ceiling));
-    // The caller already checked `next`. Retain its semantics at floating-point
-    // duration boundaries even if the speculative target cannot be used.
-    let target = if limits.check(target, channels, rate).is_ok() {
-        target
-    } else {
-        next
-    };
-    output
-        .try_reserve_exact(target - output.len())
-        .map_err(|_| Error::limit(message))
-}
-
 pub(crate) fn decode(bytes: &[u8], options: &DecodeOptions) -> Result<Audio> {
     let (metadata, tags) = crate::metadata::id3::read(bytes)?;
     let (at, first) = find(bytes, tag_size(bytes))
@@ -679,12 +647,12 @@ pub(crate) fn decode(bytes: &[u8], options: &DecodeOptions) -> Result<Audio> {
             .ok_or_else(|| Error::limit("MP3 sample count overflow"))?;
         options.limits.check(next, channels, rate)?;
         for (c, samples) in output.iter_mut().zip(buffer.iter()) {
-            reserve_output(
+            options.limits.reserve_output(
                 c,
                 next,
-                options,
                 channels,
                 rate,
+                usize::MAX,
                 "Cannot allocate MP3 output",
             )?;
             c.extend_from_slice(&samples[..n]);
@@ -700,12 +668,12 @@ pub(crate) fn decode(bytes: &[u8], options: &DecodeOptions) -> Result<Audio> {
     options.limits.check(next, channels, rate)?;
     state.flush(&mut buffer);
     for (c, samples) in output.iter_mut().zip(buffer.iter()) {
-        reserve_output(
+        options.limits.reserve_output(
             c,
             next,
-            options,
             channels,
             rate,
+            usize::MAX,
             "Cannot allocate MP3 filter tail",
         )?;
         c.extend_from_slice(&samples[..FLUSH]);

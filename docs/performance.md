@@ -281,3 +281,45 @@ of its time in the WSOLA search and overlap-add loop. Pitch splits about 76/24
 between resampling and tempo. The determinism contract fixes that arithmetic and
 its order, and these transforms allocate only their output and a few working
 buffers. Loudness and the filters already run at 700–1,700×rt.
+
+### In-memory codecs (#82)
+
+Whole-file FLAC decoding called `try_reserve_exact(n)` per frame and channel, as
+MP3 did before #63, so reallocations and requested bytes grew with the square of
+the length. It now uses the same fallible geometric growth as MP3, moved into
+`Limits::reserve_output`. Speculative capacity stops at the decode limits and, when
+STREAMINFO declares a total, at that total. More samples than declared were already
+an error, so a declared total is a hard bound, and such streams end with exactly
+sized channels: peak memory does not change. A declared total is never reserved up
+front, so a false one cannot force a large allocation. The asset loader decodes
+through the same function.
+
+`tests/flac_output_alloc.rs` checks the reallocation count over 30 s, exact capacity
+with a declared total, geometric growth within limits without one, frame-limit
+boundaries, false declared totals (too large: still a decode error, without a large
+allocation; too small: still an error), injected allocation failure (`LimitExceeded`)
+and bit identity with the incremental decoder. The two growth tests fail on the old
+code.
+
+| Case | Reallocations | Requested bytes | Moved (estimate) | Peak live | Time |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| FLAC decode 10 s, before / after | 234 / 24 | 230 MB / 15.2 MB | 6.5 / 0.6 MB | 3.9 / 3.9 MB | 33.6 / 34.0 ms |
+| FLAC decode 180 s, before / after | 4,218 / 38 | 73.0 GB / 263 MB | 243 / 59 MB | 69.2 / 69.2 MB | 621 / 619 ms |
+| Asset load (FLAC) 180 s, before / after | 4,238 / 58 | 73.0 GB / 330 MB | 271 / 68 MB | 102.8 / 102.8 MB | 641 / 656 ms |
+
+On this macOS allocator, large blocks mostly grow in place, so wall time does not
+change: the removed copying shows up on allocators that relocate, as #63 measured
+on Windows. MP3 decode, the encoders, WAV, AIFF and streaming decode are controls.
+Their outputs and allocation counts are unchanged.
+
+The encoders are unchanged. Sampled profiles at 180 s:
+
+- **FLAC:** the predictor trials and residual sizing in `encode` and `sub_writer`
+  take most of the time, MD5 14%, and memory copies about 2%. Its 48,291
+  allocations (one residual vector per trial) are not where the time goes.
+- **MP3:** quantization takes 60% and the platform `pow` inside it 20%, with the
+  analysis transform at 15%.
+
+Making these faster means restructuring or reordering their arithmetic, while
+keeping the encoded bytes identical. That is a follow-up candidate, not a 0.4.1
+patch.
