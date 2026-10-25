@@ -320,6 +320,16 @@ channel bass=@bass o2 l8 L [c c >c< g]4
 channel pad=@pad o4 L {c e g}1 {f a >c}1
 channel lead=@lead o5 l8 L [c e g >c< g e d g]2";
 
+/// One unison pad with a fixed filter: every per-sample parameter holds still.
+const PAD_STATIC: &str = "tempo 110
+instrument pad wave=saw unison=5 detune=18 spread=90 voices=6 adsr=20,150,70,300 filter=lowpass cutoff=1800 resonance=90
+channel pad=@pad o4 L {c e g}1 {f a >c}1";
+
+/// The same pad with pitch and cutoff LFOs, which change every sample.
+const PAD_LFO: &str = "tempo 110
+instrument pad wave=saw unison=5 detune=18 spread=90 voices=6 adsr=20,150,70,300 filter=lowpass cutoff=1800 resonance=90 lfo-pitch=5000,12 lfo-cutoff=beats,4,1,600
+channel pad=@pad o4 L {c e g}1 {f a >c}1";
+
 const DRUMS: &str = "tempo 120
 instrument k drum=kick kit=electronic
 instrument s drum=snare kit=electronic drum-seed=123
@@ -503,6 +513,8 @@ fn synth_cases(cases: &mut Vec<Case>, seconds: f64, tag: &str) {
     for (name, text, stereo) in [
         ("chip", CHIP, false),
         ("synthwave", SYNTHWAVE, true),
+        ("pad-static", PAD_STATIC, true),
+        ("pad-lfo", PAD_LFO, true),
         ("drums", DRUMS, false),
     ] {
         cases.push(case(format!("synth/{name}/{tag}"), move || {

@@ -379,3 +379,47 @@ Unchanged, with reasons:
 - **Mixer preparation:** 37,000 allocations and 6.3 MB with `music` on macOS. It
   runs off the audio thread, once per mixer. Changing it means a different queue
   slot design or return sizing, which is not a patch-level change.
+
+### Synth and SFX (#81)
+
+A sampled profile of the synthwave score spent about 70% in `WideVoice::sample` and
+17% in `Oscillator::next`. Per sample and voice, `WideVoice::sample` converts the
+pitch to a frequency (`exp2`) and the filter cutoff to a coefficient (`exp2`, a sine
+and a cosine). Each LFO computes its phase with a 128-bit multiply and remainder
+(`__umodti3` showed in the profile). Many of these inputs hold still for most of a
+note: the pitch without glide or a pitch LFO, and the cutoff after its envelope
+settles and without a cutoff LFO. Three changes, each producing the same values:
+
+- Each voice keeps the last pitch input and its frequency, and reuses the frequency
+  while the input is unchanged (compared by bits).
+- Each voice keeps the last filter inputs (cutoff cents, base cutoff, rate) and
+  their coefficient, and reuses it while all three are unchanged.
+- An LFO computes its integer phase in 64 bits when the product fits, which gives
+  the same integer as the 128-bit form. Reaching the 128-bit fallback would take
+  about 10¹⁵ samples.
+
+Existing synthwave, synth, chip and drum checksums are unchanged, natively and on
+WASI. A new test renders static, gliding and LFO-modulated voices, a filter
+envelope and a returning pitch, pinned to the hash `main` produced before the
+change.
+
+The runner gained two cases to separate unmodulated from modulated sound: one
+unison pad with a fixed filter, and the same pad with pitch and cutoff LFOs. Medians
+of individual 256-frame callbacks over three alternating rounds of base and change,
+10 s each. Callbacks still allocate nothing.
+
+| Case | Before p50 | After p50 | Ratio |
+| --- | ---: | ---: | ---: |
+| Unison pad, fixed filter (no modulation) | 136 µs | 28.0 µs | 0.21 |
+| Synthwave score (bass, pad with cutoff LFO, lead with pitch LFO) | 264 µs | 206 µs | 0.78 |
+| Same pad with pitch and cutoff LFOs | 203 µs | 201 µs | 0.99 |
+| Chip score / drum kit / SFX presets (controls) | 29.8 / 25.8 µs / 36 ms | 29.8 / 26.2 µs / 37 ms | 1.00 |
+
+Modulated parameters change every sample and are still computed every sample: the
+LFO pad gains only the cheaper phase. Preparation (`parse`, `prepare`) costs under
+0.1 ms for these scores. The chip, drum and SFX renderers are unchanged. Sampled
+profiles of the chip score split it between voice sampling, the per-frame
+scheduling in `fill` and the oscillators, about a third each. The drum kit spends
+62% in `DrumVoice::sample`, and the presets nearly all in `Effect::render_with`.
+Legacy voices already reuse their frequency when nothing modulates it. These run at
+170–260×rt.

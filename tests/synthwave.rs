@@ -332,3 +332,32 @@ fn synthwave_samples_have_a_cross_platform_pinned_hash() {
     }
     assert_eq!(hash, 1747078165250861946);
 }
+
+/// Static, gliding and LFO-modulated voices, a filter envelope and a returning
+/// pitch: the reused frequency, filter coefficient and LFO phase of 0.4.1 must
+/// render exactly what 0.4.0 rendered.
+#[test]
+fn reused_parameters_render_as_before() {
+    let audio = render(
+        "tempo 120
+instrument pad wave=saw unison=4 detune=20 spread=80 voices=4 adsr=10,100,70,200 filter=bandpass cutoff=900 resonance=150 keytrack=50
+instrument bass wave=pulse voices=1 glide=40 legato=on adsr=2,80,60,50 filter=lowpass cutoff=300 resonance=200 filter-env=3000 filter-adsr=0,150,10,60
+instrument lead wave=triangle voices=2 lfo-pitch=6000,25 lfo-cutoff=beats,1,2,900 filter=highpass cutoff=400 lfo-amplitude=3000,40 lfo-pan=beats,3,4,60
+channel pad=@pad o4 {c e g}2 {c e g}4 {d f a}4
+channel bass=@bass o2 l8 c c g >c< c c g c
+channel lead=@lead o5 l8 r4 e g e c",
+    );
+    let bits: Vec<u32> = audio
+        .all_channels()
+        .iter()
+        .flatten()
+        .map(|s| s.to_bits())
+        .collect();
+    let hash = bits
+        .iter()
+        .flat_map(|b| b.to_le_bytes())
+        .fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+            (h ^ b as u64).wrapping_mul(0x100_0000_01b3)
+        });
+    assert_eq!(hash, 0x8bccebaa38a879ca);
+}

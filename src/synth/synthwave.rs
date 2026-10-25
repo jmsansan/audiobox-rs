@@ -79,7 +79,15 @@ impl Lfo {
                 rate as u128 * 60 * numerator as u128,
             ),
         };
-        sin_turns(((clock as u128 * num) % den) as f64 / den as f64) * self.depth as f64
+        // The phase's integer numerator, in 64 bits while the product fits: the same
+        // value as the 128-bit form, without a 128-bit division per sample.
+        let phase = match ((clock as u128).checked_mul(num), u64::try_from(den)) {
+            (Some(product), Ok(den64)) if product <= u64::MAX as u128 => {
+                (product as u64 % den64) as u128
+            }
+            _ => (clock as u128 * num) % den,
+        };
+        sin_turns(phase as f64 / den as f64) * self.depth as f64
     }
 }
 /// Opt-in synthwave controls, combined with an instrument's waveform and amplitude
@@ -237,6 +245,10 @@ pub(super) struct WideVoice {
     from: f64,
     target: f64,
     glide_age: u64,
+    /// The last frequency's input cents (as bits) and result, reused while unchanged.
+    hz: (u64, f64),
+    /// The last filter coefficient's inputs (cents bits, base cutoff, rate) and `g`.
+    coefficient: (u64, u32, u32, f64),
 }
 impl WideVoice {
     pub fn new() -> Self {
@@ -250,6 +262,8 @@ impl WideVoice {
             from: 0.0,
             target: 0.0,
             glide_age: 0,
+            hz: (f64::NAN.to_bits(), 0.0),
+            coefficient: (f64::NAN.to_bits(), 0, 0, 0.0),
         }
     }
     pub fn trigger(&mut self, plan: &WidePlan, cents: f64, active: bool, legato: bool) {
@@ -296,7 +310,11 @@ impl WideVoice {
         };
         self.glide_age = self.glide_age.saturating_add(1);
         let lfo = |l: Option<Lfo>| l.map_or(0.0, |l| l.value(clock, plan.rate, plan.tempo));
-        let hz = crate::math::cents_to_hz(self.pitch + cents_offset + lfo(s.pitch_lfo));
+        let cents = self.pitch + cents_offset + lfo(s.pitch_lfo);
+        if self.hz.0 != cents.to_bits() {
+            self.hz = (cents.to_bits(), crate::math::cents_to_hz(cents));
+        }
+        let hz = self.hz.1;
         let mut out = [0.0; 2];
         for i in 0..s.unison as usize {
             let sample =
@@ -321,10 +339,14 @@ impl WideVoice {
             let cents = f.envelope_cents as f64 * self.filter_level
                 + (self.pitch + 900.0) * f.keytrack as f64 / 100.0
                 + lfo(s.cutoff_lfo);
-            let cutoff =
-                (f.cutoff_hz as f64 * exp2(cents / 1200.0)).clamp(1.0, plan.rate as f64 * 0.45);
-            let turns = cutoff / (2.0 * plan.rate as f64);
-            let g = sin_turns(turns) / cos_turns(turns);
+            let key = (cents.to_bits(), f.cutoff_hz, plan.rate);
+            if (self.coefficient.0, self.coefficient.1, self.coefficient.2) != key {
+                let cutoff =
+                    (f.cutoff_hz as f64 * exp2(cents / 1200.0)).clamp(1.0, plan.rate as f64 * 0.45);
+                let turns = cutoff / (2.0 * plan.rate as f64);
+                self.coefficient = (key.0, key.1, key.2, sin_turns(turns) / cos_turns(turns));
+            }
+            let g = self.coefficient.3;
             let k = 100.0 / f.resonance as f64;
             for (state, value) in self.filters.iter_mut().zip(&mut out) {
                 *value = state.sample(*value, f.mode, g, k);
