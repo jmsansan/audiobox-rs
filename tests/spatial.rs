@@ -655,3 +655,62 @@ fn explicit_wave_masks_preserve_channel_order_and_default_encoding() {
         );
     }
 }
+
+/// Held and moving emitters, a pitch ramp during Doppler, gain ramps and a pause:
+/// the cached per-segment work of 0.4.1 must render exactly what 0.4.0 rendered.
+fn held_and_moving(chunk: usize) -> Vec<f32> {
+    let (mut m, mut h) = Mixer::new(config(6)).unwrap();
+    let left = (0..24000).map(|i| (i % 97) as f32 / 97.0 - 0.5).collect();
+    let right = (0..24000).map(|i| (i % 61) as f32 / 61.0 - 0.5).collect();
+    let stereo = Audio::new(vec![left, right], RATE).unwrap();
+    let held = h
+        .play(
+            stereo,
+            &Play {
+                emitter: Some(point([-2.0, 0.0, -3.0])),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let moving = h
+        .play(
+            constant(),
+            &Play {
+                rate: 1.25,
+                emitter: Some(Emitter {
+                    velocity: [25.0, 0.0, 0.0],
+                    ..point([-5.0, 0.0, -1.0])
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    h.at(200)
+        .set_emitter(
+            moving,
+            Emitter {
+                velocity: [25.0, 0.0, 0.0],
+                ..point([5.0, 0.0, -1.0])
+            },
+            Fade::linear(0.02),
+        )
+        .unwrap();
+    h.at(500)
+        .set_pitch(moving, 3.0, Fade::linear(0.01))
+        .unwrap();
+    h.at(900).set_gain(held, 0.5, Fade::linear(0.003)).unwrap();
+    h.at(1100)
+        .set_emitter(moving, point([5.0, 0.0, -1.0]), Fade::linear(0.005))
+        .unwrap();
+    h.at(1300).pause(held, Fade::linear(0.002)).unwrap();
+    h.at(1700).resume(held, Fade::linear(0.002)).unwrap();
+    render(&mut m, 2400, chunk)
+}
+#[test]
+fn held_emitters_and_doppler_with_pitch_ramps_render_as_before() {
+    let expected = held_and_moving(2400);
+    for chunk in [1, 7, 64, 256] {
+        assert_eq!(held_and_moving(chunk), expected);
+    }
+    assert_eq!(fnv(&expected), 0x3e9e630ad3e1ba9e);
+}

@@ -211,6 +211,9 @@ pub(super) struct Voice {
     last_step: u64,
     /// Source frames per output frame at speed 1.
     base_ratio: f64,
+    /// The last pitch's bits and `exp2(pitch / 12)`: Doppler changes the speed every
+    /// frame while the pitch usually stays put, and the result is the same.
+    pitch_factor: (u64, f64),
     /// The exact table for speed 1, or `None` when the source is at the output rate.
     table: Option<Arc<SincTable>>,
     bank: Arc<SincBank>,
@@ -295,6 +298,7 @@ impl Voice {
             base_step: step,
             last_step: step,
             base_ratio,
+            pitch_factor: (f64::NAN.to_bits(), 0.0),
             table,
             bank,
             bank_index: None,
@@ -447,7 +451,10 @@ impl Voice {
         }
         // Every accepted rate (1/16..=8), pitch (±48 semitones) and pitch variation
         // (±24 more) combines to 1/1024..=512, which the fixed-point step represents.
-        let speed = (rate * exp2(pitch / 12.0) * doppler).clamp(1.0 / 1024.0, 512.0);
+        if self.pitch_factor.0 != pitch.to_bits() {
+            self.pitch_factor = (pitch.to_bits(), exp2(pitch / 12.0));
+        }
+        let speed = (rate * self.pitch_factor.1 * doppler).clamp(1.0 / 1024.0, 512.0);
         self.step = ((self.base_step as f64 * speed).round() as u64).max(1);
         self.bank_index = Some(SincBank::index(self.base_ratio * speed));
     }
@@ -496,6 +503,17 @@ impl Voice {
             && !self.pan.changing(local)
             && !self.pause.changing(local);
         let fixed = (constant && self.emitter.is_none()).then(|| self.gains(local, out_channels));
+        // An emitter whose level and directions hold through the segment uses the same
+        // gains, norm and level on every frame: compute them once.
+        let still = (constant
+            && self.emitter.is_some()
+            && !self.direction[..out_channels]
+                .iter()
+                .any(|r| r.changing(local)))
+        .then(|| {
+            let (gains, norm) = self.directions(local, out_channels);
+            (gains, norm, self.level(first))
+        });
         let speeding =
             self.rate.changing(local) || self.pitch.changing(local) || self.doppler.changing(local);
         self.update_speed(local);
@@ -511,17 +529,15 @@ impl Voice {
                 return;
             };
             if self.emitter.is_some() {
-                let gains = self.direction.map(|r| r.value(time));
-                let norm = gains[..out_channels]
-                    .iter()
-                    .map(|g| g * g)
-                    .sum::<f64>()
-                    .sqrt();
+                let (gains, norm, level) = still.unwrap_or_else(|| {
+                    let (gains, norm) = self.directions(time, out_channels);
+                    (gains, norm, self.level(first + j as u64))
+                });
                 let value = if self.channels == 1 {
                     left
                 } else {
                     (left + right) * 0.5
-                } * self.level(first + j as u64);
+                } * level;
                 if norm > 0.0 {
                     for c in 0..out_channels {
                         out[j * out_channels + c] += (value * gains[c] / norm) as f32;
@@ -552,6 +568,20 @@ impl Voice {
                 return;
             }
         }
+    }
+    /// The emitter's direction gains for the output channels at voice time `time`, and
+    /// their norm. Channels beyond `out_channels` stay zero and are never read.
+    fn directions(&self, time: u64, out_channels: usize) -> ([f64; 8], f64) {
+        let mut gains = [0.0; 8];
+        for (g, r) in gains.iter_mut().zip(&self.direction[..out_channels]) {
+            *g = r.value(time);
+        }
+        let norm = gains[..out_channels]
+            .iter()
+            .map(|g| g * g)
+            .sum::<f64>()
+            .sqrt();
+        (gains, norm)
     }
     /// Gains applied to the source's left and right samples (equal for mono).
     ///

@@ -323,3 +323,59 @@ The encoders are unchanged. Sampled profiles at 180 s:
 Making these faster means restructuring or reordering their arithmetic, while
 keeping the encoded bytes identical. That is a follow-up candidate, not a 0.4.1
 patch.
+
+### Mixer callbacks (#80)
+
+A sampled profile of 32 Doppler emitters on 5.1 spent 20% of `Voice::render` in
+`memmove`, copying the eight direction ramps per frame
+(`self.direction.map(...)`). Ramp evaluations took 17% and `update_speed` 8%, which
+recomputes `exp2(pitch / 12)` every frame while Doppler changes the speed. The
+burst case's profile put admission (`Mixer::start`) at about 1.5%. Its time went to
+rendering voices in the extra segments that scheduled starts create, each of which
+calls `update_speed` and `gains` again.
+
+Three changes, each computing the same values from the same inputs:
+
+- The voice keeps the last pitch and its `exp2(pitch / 12)` and reuses the factor
+  while the pitch is unchanged.
+- Direction gains are evaluated for the output channels only, in place, without
+  copying the ramps.
+- When an emitter's level and direction ramps hold for a segment (none changing
+  at its start), the gains, norm and level are computed once for the segment.
+  Every sample still evaluates `value * gain / norm` as before.
+
+The existing spatial checksums (native and WASI) are unchanged. A new test renders
+held and moving emitters with a pitch ramp during Doppler, gain ramps and a pause
+in blocks of 1 to 2,400 frames, pinned to the hash `main` produced before the change.
+
+Medians of individual 256-frame callbacks (deadline 5,333 µs) over three
+alternating rounds of base and change, 10 s each. Wall-time medians of some rounds
+met interference from other workloads on the host; per-callback medians did not
+move between rounds.
+
+| Case | Before p50 | After p50 | Ratio |
+| --- | ---: | ---: | ---: |
+| 32 Doppler emitters, 5.1 | 921 µs | 310 µs | 0.34 |
+| 16 starts per callback, stealing | 371 µs | 327 µs | 0.88 |
+| 64 pitched voices | 399 µs | 386 µs | 0.97 |
+| 16 / 64 voices, matched rate | 25.2 / 98.3 µs | 22.9 / 88.0 µs | 0.91 / 0.90 |
+| 16 voices with gain automation | 75.8 µs | 73.3 µs | 0.97 |
+| 64 resampled voices, 16 through effects, synth stream, empty | | | 0.98–1.01 |
+
+The matched-rate cases do not run the changed code. Their 9–10% gain, steady
+across rounds, comes from code generation around the reorganized loop and is not
+promised. Callbacks still allocate and free nothing.
+
+Unchanged, with reasons:
+
+- **Resampled and pitched voices:** their 16-tap interpolation is fixed by the
+  determinism contract.
+- **Effects:** six effects and the look-ahead limiter add about 120 µs per
+  callback on 16 voices. A sampled profile puts 63% of that case in the chorus and
+  phaser (`colour::Processor`), which evaluate their LFOs, modulated delay reads
+  and all-pass coefficients for every sample. The LFO phase advances every sample,
+  so no result repeats. The limiter, delay, reverb, compressor and filters take
+  about 11% together.
+- **Mixer preparation:** 37,000 allocations and 6.3 MB with `music` on macOS. It
+  runs off the audio thread, once per mixer. Changing it means a different queue
+  slot design or return sizing, which is not a patch-level change.
