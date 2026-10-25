@@ -4,6 +4,13 @@
 
 ### Added
 
+- Opt-in per-note voices for wavetable instruments (#85): `voices=N` (1..=16) on a
+  `wavetable=` instrument, or a wavetable `ChipInstrument` with
+  `Synthwave { voices, ..Default::default() }`. Each note starts on its own voice at
+  phase zero with a fresh attack, and the previous note finishes its release.
+  Allocation and stealing follow the synthwave voices. Other synthwave settings and
+  other chip sources are rejected with a diagnostic. Scores without `voices` render
+  as before.
 - A manual benchmark runner for release baselines (#78):
   `cargo bench --bench engine --all-features`. It covers codecs, analysis and DSP,
   synth and SFX, mixer callbacks, disk streaming and assets, natively and under

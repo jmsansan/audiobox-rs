@@ -93,3 +93,7 @@ required-features = ["events", "sfx"]
 [[example]]
 name = "synthwave"
 required-features = ["synth"]
+
+[[example]]
+name = "keyboard_voices"
+required-features = ["synth"]

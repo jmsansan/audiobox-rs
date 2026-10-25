@@ -126,6 +126,33 @@
 //! [pulse](https://www.nesdev.org/wiki/APU_Pulse) and
 //! [triangle](https://www.nesdev.org/wiki/APU_Triangle) for the hardware tables.
 //!
+//! ### Per-note wavetable voices (opt-in)
+//!
+//! A wavetable instrument normally plays every note of its channel on one voice,
+//! like tracker hardware: a new note restarts the table from its first value at
+//! whatever level the envelope had reached, and replaces the previous note's
+//! release. Adding `voices=N` (1..=16) gives the channel a pool of `N` voices for
+//! that instrument instead, using the synthwave allocator described below:
+//!
+//! - Each note starts on a free voice: the table from its first value (phase zero)
+//!   and the ADSR from silence, at the note's own velocity. The previous note keeps
+//!   its voice and plays its release independently, to its end.
+//! - Without a free voice, the oldest releasing voice is taken, then the oldest
+//!   held one. Taking a sounding voice restarts it immediately and can click.
+//! - Note-off, gates, ties, velocity, macros, quantization and loop carries apply
+//!   per voice as on the single voice. Chords (`{c e g}`) are allowed up to `N`
+//!   notes. Switching to an instrument without voices releases the held pooled
+//!   notes and lets their tails finish.
+//! - A note that starts while nothing else sounds renders exactly as on the
+//!   single voice, so only overlapping notes change.
+//!
+//! Only wavetable sources take `voices`, and no other synthwave setting:
+//! other synthwave keys, the waveform source with macros, PCM and period noise
+//! are rejected with a diagnostic. In [`Instrument`] terms, set the wavetable
+//! [`ChipInstrument`] and `synthwave: Some(Synthwave { voices, ..Default::default() })`.
+//! This is per-note articulation for keyboard-like parts, not a model of an
+//! acoustic instrument. Without `voices`, rendering is unchanged.
+//!
 //! ```
 //! use audiobox::synth::Score;
 //! let score: Score = "
@@ -160,7 +187,8 @@
 //! `lfo-pitch`, `lfo-cutoff`, `lfo-amplitude` and `lfo-pan` accept `millihertz,depth`
 //! or `beats,numerator,denominator,depth`. [`Lfo`] documents units/bounds. These sine
 //! LFOs follow total output frames (including loops) and reset only with the synth.
-//! Chip/drum sources cannot combine with synthwave. Each note normalizes its unison
+//! Chip/drum sources cannot combine with synthwave, except that a wavetable takes
+//! `voices` alone (see per-note wavetable voices above). Each note normalizes its unison
 //! oscillators by count and uses fixed initial phases and linear stereo panning.
 //!
 //! Chords use `{c e g}4!90`, sharing length/gate/velocity. Only notes, accidentals

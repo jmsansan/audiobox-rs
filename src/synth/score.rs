@@ -237,10 +237,22 @@ impl Instrument {
     pub fn validate(&self) -> Result<()> {
         if let Some(wide) = self.synthwave {
             wide.validate()?;
-            if self.chip.is_some()
-                || self.drum.is_some()
-                || matches!(self.waveform, Waveform::Noise(_))
-            {
+            // A wavetable source may take a voice pool, opting in to per-note voices;
+            // the rest of synthwave renders its own oscillators and stays exclusive.
+            let wavetable_voices = matches!(
+                self.chip.as_ref().map(|c| &c.source),
+                Some(super::ChipSource::Wavetable(_))
+            ) && wide
+                == super::Synthwave {
+                    voices: wide.voices,
+                    ..Default::default()
+                };
+            if self.chip.is_some() && !wavetable_voices {
+                return Err(Error::invalid(
+                    "A chip source takes only voices= from synthwave, and only with a wavetable",
+                ));
+            }
+            if self.drum.is_some() || matches!(self.waveform, Waveform::Noise(_)) {
                 return Err(Error::invalid(
                     "Synthwave requires a melodic waveform without chip/drum sources",
                 ));

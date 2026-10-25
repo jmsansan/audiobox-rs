@@ -82,6 +82,8 @@ fn fill_does_not_allocate() {
          instrument n wave=noise noise=short noise-period=0 macro-volume=15,0 macro-volume-loop=0
          instrument s sample=00040f08 sample-rate=1000 sample-loop=on
          instrument one sample=0f070300 sample-rate=1000 adsr=2,0,100,10
+         instrument wv wavetable=0123456789abcdef voices=3 adsr=2,40,50,200
+         channel wv=@wv l16 L [{c e} g c {d f}]12
          channel p=@p l16 L [c e g]16
          channel w=@w l8 L [c g]12
          channel n=@n l16 L [c r]24
