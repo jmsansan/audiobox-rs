@@ -21,6 +21,12 @@
 
 ### Fixed
 
+- FLAC decoding is about a third faster, and so are disk FLAC seeks, sustained disk
+  reads and FLAC asset loads (a seek to the middle of 180 s: 201 ms instead of
+  300 ms). The bit reader takes up to 32 bits at once instead of one, unary codes
+  count leading zeros, and the MD5 check hashes whole blocks with unrolled rounds.
+  MP3 decoding shares the bit reader and gains 2–6%, FLAC encoding 9%. Output,
+  errors and MD5 checks are unchanged (#83).
 - Mixer voices with 3D emitters render about three times faster: the direction gains
   are no longer copied per frame, their gains, norm and level are computed once per
   segment while unchanged, and `exp2(pitch / 12)` is reused while only Doppler
