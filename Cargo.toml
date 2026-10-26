@@ -51,6 +51,10 @@ name = "prepared_synth"
 required-features = ["synth"]
 
 [[example]]
+name = "synth_controls"
+required-features = ["synth"]
+
+[[example]]
 name = "sfx"
 required-features = ["sfx"]
 

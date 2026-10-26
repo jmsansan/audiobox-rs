@@ -610,6 +610,13 @@ syntax and samples. Beat LFOs preserve phase and tick macros follow the changing
 clock on held notes. See [prepared timing, ordering and limits](docs/prepared-synth-timing.md)
 and run `cargo run --example prepared_synth --features synth` for a stereo WAV.
 
+Also in 0.5 development, `Synth::prepare_controls` schedules bounded held-note
+expression/pan, synthwave cutoff/Q, pitch and configured LFO-depth changes.
+Linear/geometric ramps retain voice/filter/envelope state and use source frames;
+per-instrument and per-note targets have explicit order and results. See the
+[capability, ramp and capacity contract](docs/synth-controls.md), or run
+`cargo run --example synth_controls --features synth` for a held-note sweep.
+
 ```rust
 use audiobox::synth::Score;
 

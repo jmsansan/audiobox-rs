@@ -17,6 +17,10 @@
 //! follow that clock relative to the note's start. Repeats/sections are expanded
 //! by the caller, and a tie is one extended note. Multiple bounded sources align
 //! through the existing mixer; no unrestricted Score channel expansion is needed.
+//! [`Synth::prepare_controls`] adds opt-in, bounded source-frame value ramps on
+//! supported parameters while retaining held-note DSP state. [`ControlParameter`]
+//! defines capabilities/units; [`ControlTarget`] selects track/instrument or note.
+//! Structural edits still belong in prepared instruments at note boundaries.
 //!
 //! ```
 //! use audiobox::synth::Score;
@@ -307,9 +311,14 @@
 //! replaced by the crate's own series. Times in milliseconds are rounded to whole
 //! samples, and note positions are computed from ticks with integer arithmetic.
 mod chip;
+mod controls;
 pub use chip::{
     ChipInstrument, ChipSample, ChipSource, MAX_MACRO_VALUES, MAX_SAMPLE_VALUES, Macro, MacroStep,
     NTSC_CLOCK, NTSC_NOISE_PERIODS, PitchTable, Wavetable, noise_clock,
+};
+pub use controls::{
+    ControlCurve, ControlEvent, ControlId, ControlParameter, ControlReport, ControlStatus,
+    ControlTarget, MAX_SYNTH_CONTROLS,
 };
 mod drum;
 pub use drum::{Drum, DrumKind, DrumKit};

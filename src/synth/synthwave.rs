@@ -1,4 +1,5 @@
 //! Opt-in polyphonic, stereo instruments. Legacy instruments keep their sample bits.
+use super::controls::{ControlParameter, Values};
 use super::prepared::BeatClock;
 use super::{Envelope, Oscillator, Waveform};
 use crate::math::{cos_turns, exp2, sin_turns};
@@ -267,7 +268,7 @@ pub(super) struct WideVoice {
     /// The last frequency's input cents (as bits) and result, reused while unchanged.
     hz: (u64, f64),
     /// The last filter coefficient's inputs (cents bits, base cutoff, rate) and `g`.
-    coefficient: (u64, u32, u32, f64),
+    coefficient: (u64, u64, u32, f64),
 }
 impl WideVoice {
     pub fn new() -> Self {
@@ -319,6 +320,7 @@ impl WideVoice {
         cents_offset: f64,
         clock: u64,
         musical: Option<BeatClock>,
+        controls: Option<Values>,
     ) -> [f64; 2] {
         let s = plan.settings;
         self.pitch = if plan.glide == 0 {
@@ -329,12 +331,21 @@ impl WideVoice {
                     * (self.glide_age.min(plan.glide) as f64 / plan.glide as f64)
         };
         self.glide_age = self.glide_age.saturating_add(1);
-        let lfo = |l: Option<Lfo>| {
+        let get = |p| controls.and_then(|c| c.get(p));
+        let lfo = |l: Option<Lfo>, parameter: ControlParameter| {
             l.map_or(0.0, |l| {
-                l.value_clock(clock, plan.rate, plan.tempo, musical)
+                if let Some(depth) = get(parameter) {
+                    Lfo { depth: 1, ..l }.value_clock(clock, plan.rate, plan.tempo, musical) * depth
+                } else {
+                    l.value_clock(clock, plan.rate, plan.tempo, musical)
+                }
             })
         };
-        let cents = self.pitch + cents_offset + lfo(s.pitch_lfo);
+        let mut cents =
+            self.pitch + cents_offset + lfo(s.pitch_lfo, ControlParameter::PitchLfoDepth);
+        if let Some(offset) = get(ControlParameter::PitchCents) {
+            cents += offset;
+        }
         if self.hz.0 != cents.to_bits() {
             self.hz = (cents.to_bits(), crate::math::cents_to_hz(cents));
         }
@@ -362,24 +373,32 @@ impl WideVoice {
             };
             let cents = f.envelope_cents as f64 * self.filter_level
                 + (self.pitch + 900.0) * f.keytrack as f64 / 100.0
-                + lfo(s.cutoff_lfo);
-            let key = (cents.to_bits(), f.cutoff_hz, plan.rate);
+                + lfo(s.cutoff_lfo, ControlParameter::CutoffLfoDepth);
+            let base = get(ControlParameter::CutoffHz).unwrap_or(f.cutoff_hz as f64);
+            let key = (cents.to_bits(), base.to_bits(), plan.rate);
             if (self.coefficient.0, self.coefficient.1, self.coefficient.2) != key {
-                let cutoff =
-                    (f.cutoff_hz as f64 * exp2(cents / 1200.0)).clamp(1.0, plan.rate as f64 * 0.45);
+                let cutoff = (base * exp2(cents / 1200.0)).clamp(1.0, plan.rate as f64 * 0.45);
                 let turns = cutoff / (2.0 * plan.rate as f64);
                 self.coefficient = (key.0, key.1, key.2, sin_turns(turns) / cos_turns(turns));
             }
             let g = self.coefficient.3;
-            let k = 100.0 / f.resonance as f64;
+            let k = get(ControlParameter::ResonanceQ)
+                .map_or_else(|| 100.0 / f.resonance as f64, |q| 1.0 / q);
             for (state, value) in self.filters.iter_mut().zip(&mut out) {
                 *value = state.sample(*value, f.mode, g, k);
             }
         }
         let amp = s.amplitude_lfo.map_or(1.0, |l| {
-            1.0 - (l.depth as f64 + l.value_clock(clock, plan.rate, plan.tempo, musical)) / 200.0
+            1.0 - (get(ControlParameter::AmplitudeLfoDepth).unwrap_or(l.depth as f64)
+                + lfo(Some(l), ControlParameter::AmplitudeLfoDepth))
+                / 200.0
         });
-        let pan = ((s.pan as f64 + lfo(s.pan_lfo)) / 100.0).clamp(-1.0, 1.0);
+        let pan_lfo = lfo(s.pan_lfo, ControlParameter::PanLfoDepth);
+        let pan = if let Some(p) = get(ControlParameter::Pan) {
+            (p + pan_lfo / 100.0).clamp(-1.0, 1.0)
+        } else {
+            ((s.pan as f64 + pan_lfo) / 100.0).clamp(-1.0, 1.0)
+        };
         out[0] *= amp * (1.0 - pan.max(0.0));
         out[1] *= amp * (1.0 + pan.min(0.0));
         self.age += 1;
@@ -460,16 +479,16 @@ mod tests {
         );
         let mut voice = WideVoice::new();
         voice.trigger(&plan, 0.0, false, false);
-        voice.sample(&plan, Waveform::Triangle, 0.0, 0, None);
+        voice.sample(&plan, Waveform::Triangle, 0.0, 0, None, None);
         voice.trigger(&plan, 1200.0, true, true);
         for frame in 0..=100 {
-            voice.sample(&plan, Waveform::Triangle, 0.0, frame, None);
+            voice.sample(&plan, Waveform::Triangle, 0.0, frame, None, None);
             assert!((voice.pitch - frame as f64 * 12.0).abs() < 1e-9);
         }
-        voice.sample(&plan, Waveform::Triangle, 0.0, 101, None);
+        voice.sample(&plan, Waveform::Triangle, 0.0, 101, None, None);
         assert_eq!(voice.pitch, 1200.0);
         voice.trigger(&plan, -1200.0, true, true);
-        voice.sample(&plan, Waveform::Triangle, 0.0, 102, None);
+        voice.sample(&plan, Waveform::Triangle, 0.0, 102, None, None);
         assert_eq!(voice.pitch, 1200.0);
     }
     #[test]
@@ -514,7 +533,7 @@ mod tests {
                 let mut voice = WideVoice::new();
                 voice.trigger(&plan, -6900.0, false, false);
                 for n in 0..4000 {
-                    let frame = voice.sample(&plan, Waveform::Sawtooth, 0.0, n, None);
+                    let frame = voice.sample(&plan, Waveform::Sawtooth, 0.0, n, None, None);
                     assert!(
                         frame.iter().all(|x| x.is_finite() && x.abs() < 1000.0),
                         "rate={rate} {mode:?}: {frame:?}"
