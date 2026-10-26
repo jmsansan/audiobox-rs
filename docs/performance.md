@@ -162,9 +162,9 @@ commit, which changes nothing in `src/`. Host: Apple M2 Pro (10 logical CPUs), m
 rustc 1.98.0, release profile, every feature. Each case ran one warm-up, five timed
 runs and one counted run; the 180 s spectrograms ran once. No other builds or tests
 ran, but the machine was not isolated. The full results are in
-[`performance/baseline-0.4.0-native.csv`](performance/baseline-0.4.0-native.csv)
+[`performance/baseline-0.4.0-native.csv`](https://github.com/jmsansan/audiobox-rs/blob/v0.5.1/docs/performance/baseline-0.4.0-native.csv)
 and, for WebAssembly under Node.js 24.22 WASI on the same host,
-[`performance/baseline-0.4.0-wasm.csv`](performance/baseline-0.4.0-wasm.csv)
+[`performance/baseline-0.4.0-wasm.csv`](https://github.com/jmsansan/audiobox-rs/blob/v0.5.1/docs/performance/baseline-0.4.0-wasm.csv)
 (quick scale, three runs).
 
 Selected medians (stereo 48 kHz unless stated; "×rt" is audio seconds per wall
@@ -492,8 +492,8 @@ Outputs and allocation counts are unchanged in every case.
 change above. Both run the same runner, with the 24-bit FLAC cases added for this
 comparison, one after the other on the baseline host: three runs per case, then a
 second pass of the 10 s cases. The raw results are in
-[`performance/final-0.4.0-native.csv`](performance/final-0.4.0-native.csv) and
-[`performance/final-0.4.1-native.csv`](performance/final-0.4.1-native.csv), with
+[`performance/final-0.4.0-native.csv`](https://github.com/jmsansan/audiobox-rs/blob/v0.5.1/docs/performance/final-0.4.0-native.csv) and
+[`performance/final-0.4.1-native.csv`](https://github.com/jmsansan/audiobox-rs/blob/v0.5.1/docs/performance/final-0.4.1-native.csv), with
 WebAssembly equivalents. Every case produced identical output checksums.
 
 | Area | Case | 0.4.0 | 0.4.1 | Ratio | Issue |

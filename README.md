@@ -1403,6 +1403,7 @@ cargo +1.85.0 test --all-features
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
 AUDIOBOX_FFMPEG_TESTS=1 cargo test --test interop   # needs FFmpeg
 python3 scripts/build-site.py && node --test site/tests/engine.test.mjs
+python3 scripts/check-package.py               # distribution content/size + packaged tests
 cargo publish --dry-run
 ```
 
@@ -1410,9 +1411,16 @@ The interoperability tests use an installed FFmpeg **only in tests**. Their CI j
 runs on published releases and manual dispatches of the **Rust** workflow, so
 routine push/PR checks do not wait for FFmpeg installation. Normal CI checks the
 MSRV and codec regressions; the website is built on pull requests and deployed
-from `main`. The `.crate` contains the Rust implementation,
-tests, examples, this README, the changelog and the MIT license; it excludes the
-website and build output.
+from `main`. The `.crate` uses an explicit allowlist: library sources, Cargo
+manifests/lockfile, guides, Rust examples, the declared benchmark, README,
+changelog and all MIT/BSD license/provenance notices. Integration tests, audio/PCM
+fixtures, generators, CI scripts, the website and build output stay in Git only.
+Library unit tests generate their own inputs and also run from the unpacked crate.
+
+From a repository checkout, `python3 scripts/check-package.py` verifies the actual
+archive's contents and a compressed size budget of 1 MiB, then checks all shipped
+Rust targets and runs the packaged library tests and doctests with all features.
+Changes to this budget or allowlist should be intentional and reviewed.
 
 To release: update `CHANGELOG.md` and the version in `Cargo.toml`, run the checks,
 merge to `main`, run `cargo publish`, then tag `vX.Y.Z` and publish a GitHub release.

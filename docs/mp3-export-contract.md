@@ -21,7 +21,7 @@ generation must not be mistaken for a codec difference.
 ## Fixture matrix
 
 `tests/mp3_contract.rs` compares 246 original synthetic cases against
-[`tests/fixtures/mp3-contract.csv`](../tests/fixtures/mp3-contract.csv). Sources use
+[`tests/fixtures/mp3-contract.csv`](https://github.com/jmsansan/audiobox-rs/blob/v0.5.1/tests/fixtures/mp3-contract.csv). Sources use
 integer LCG state, rational/dyadic samples and explicitly recorded f32 scale bits;
 they do not call platform transcendental functions or normalize/resample input.
 All fixtures belong to this MIT-licensed repository. Tagged cases reuse the

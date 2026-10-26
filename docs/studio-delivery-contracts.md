@@ -1,9 +1,9 @@
-# Analysis and file contracts for Studio (0.5 development)
+# Analysis and file contracts for Studio (0.5)
 
 This covers engine issues #97, #99, #102, #103 and #104. Studio owns musical
 regions, project containment, target thresholds and delivery decisions. The engine
 owns these generic measurements, input limits and resampling rules. These APIs
-are in development for 0.5; the crate version remains 0.4.1 until release.
+are available starting with audiobox 0.5.0.
 
 ## Measuring the final PCM
 

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.1 — 2026-10-26
+
+### Fixed
+
+- Keep integration tests, encoded audio/PCM references and generators out of the
+  published crate. They remain in Git and continue to run in repository CI.
+  Library unit tests are self-contained, so the unpacked crate supports tests
+  without downloading fixtures. Sources, examples, guides and all licenses stay
+  included; development-data links point to the versioned repository.
+- Check the actual distribution archive and a 1 MiB compressed budget in CI,
+  including all-feature library/doctest and target checks from the unpacked crate.
+  Audio APIs and production DSP are unchanged.
+
 ## 0.5.0 — 2026-10-26
 
 ### Added
