@@ -4,6 +4,13 @@
 
 ### Added
 
+- MP3 export reproducibility contract and 246-case comparison matrix (#100):
+  separate source PCM, encoded-byte and decoded-PCM fingerprints cover mono/stereo,
+  every encoder rate, representative bitrates, short/quiet inputs, tags/cover and
+  adjacent-f32 quantizer decision neighbors. CI retains native/MSRV/WASI reports
+  and compiler metadata. Arbitrary-input cross-host MP3 byte identity is not
+  promised; Studio can select WAV/FLAC for that policy. Codec math is unchanged.
+
 - Prepared group buses and shared effect sends (#69): `BusRouting` / `BusSend`
   replace named-bus main outputs and add pre/post-fader sends, stereo balance,
   mute and solo path selection. Audio and sidechain edges share cycle validation;
@@ -70,8 +77,8 @@
 - FLAC encoder Rice candidate costs use 64-bit arithmetic, avoiding overflow and
   excessive output allocation for 32-bit samples on WebAssembly/32-bit hosts.
 - LUFS normalization rejects measurement overflow rather than treating it as
-  silence. Normalization/export contracts and the remaining general MP3 byte
-  contract audit (#100) are documented in `docs/normalization.md`.
+  silence. Normalization/export contracts are documented in `docs/normalization.md`;
+  the separate MP3 fixture contract (#100) is in `docs/mp3-export-contract.md`.
 
 ### Breaking
 
