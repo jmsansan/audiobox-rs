@@ -3,7 +3,7 @@ name: Rust
 on:
   push:
     branches: [main]
-    paths: ['Cargo.toml', 'Cargo.lock', 'src/**', 'tests/**', 'examples/*.rs', 'README.md', '.github/workflows/ci.yml']
+    paths: ['Cargo.toml', 'Cargo.lock', 'src/**', 'tests/**', 'docs/*.md', 'examples/*.rs', 'benches/engine.rs', 'README.md', 'CHANGELOG.md', 'LICENSE', 'scripts/check-package.py', '.github/workflows/ci.yml']
   pull_request:
   release:
     types: [published]
@@ -50,6 +50,13 @@ jobs:
         with:
           name: mp3-contract-${{ matrix.os }}
           path: target/mp3-contract/
+
+  distribution:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: python3 scripts/check-package.py
 
   msrv:
     runs-on: ubuntu-latest

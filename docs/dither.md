@@ -114,8 +114,8 @@ engine benchmark generated a 10-second stereo 48 kHz fixture before timing, then
 ran one warm-up, five timed exports and a separate allocation-counted export.
 Baseline 0.4.1 was extracted from `7477cb1` (its CSV has no Git identity because
 it was an archive); the development branch ran immediately after it, with no
-concurrent test suites. Raw results: [before](performance/dither-before-windows.csv)
-and [after](performance/dither-after-windows.csv).
+concurrent test suites. Raw results: [before](https://github.com/jmsansan/audiobox-rs/blob/v0.5.1/docs/performance/dither-before-windows.csv)
+and [after](https://github.com/jmsansan/audiobox-rs/blob/v0.5.1/docs/performance/dither-after-windows.csv).
 
 | 16-bit export | 0.4.1, no dither | Development, no dither | Development, TPDF seed 7 |
 | --- | ---: | ---: | ---: |

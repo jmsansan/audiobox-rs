@@ -1,6 +1,6 @@
 [package]
 name = "audiobox"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2024"
 rust-version = "1.85"
 authors = ["Jose Sanchez <jose.sansan@proton.me>"]
@@ -12,7 +12,7 @@ documentation = "https://docs.rs/audiobox"
 readme = "README.md"
 keywords = ["audio", "gamedev", "mp3", "flac", "synthesizer"]
 categories = ["multimedia::audio", "multimedia::encoding", "game-development", "encoding", "wasm"]
-include = ["/Cargo.toml", "/Cargo.lock", "/src/**", "/tests/**", "/docs/*.md", "/benches/engine.rs", "/examples/*.rs", "/README.md", "/CHANGELOG.md", "/LICENSE"]
+include = ["/Cargo.toml", "/Cargo.lock", "/src/**", "/docs/*.md", "/benches/engine.rs", "/examples/*.rs", "/README.md", "/CHANGELOG.md", "/LICENSE"]
 
 [features]
 default = []

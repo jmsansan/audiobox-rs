@@ -150,7 +150,7 @@ cargo bench --bench engine --all-features -- dsp/normalize-lufs/10s dsp/normaliz
 Windows x86_64, AMD Ryzen 7 1700X, Rust 1.98.1 release, all features; one warm-up,
 five timed runs and a separate allocation-counted run. The 10-second stereo
 48 kHz fixture is prepared before timing. Raw results are in
-[performance/normalization-windows.csv](performance/normalization-windows.csv).
+[performance/normalization-windows.csv](https://github.com/jmsansan/audiobox-rs/blob/v0.5.1/docs/performance/normalization-windows.csv).
 
 | Operation | Median | Allocations | Additional peak live bytes during the phase |
 | --- | ---: | ---: | ---: |

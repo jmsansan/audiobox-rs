@@ -166,7 +166,7 @@ records allocations/peak workspace in a separate run.
 
 Windows x86_64, AMD Ryzen 7 1700X, Rust 1.98.1 release, all features; one warm-up,
 five timed runs and a separate allocation-counted run, without concurrent tests.
-Raw results: [performance/true-peak-windows.csv](performance/true-peak-windows.csv).
+Raw results: [performance/true-peak-windows.csv](https://github.com/jmsansan/audiobox-rs/blob/v0.5.1/docs/performance/true-peak-windows.csv).
 The sample-peak baseline retains the existing benchmark fixture; the new case
 boosts that fixture by 3x before timing to exercise reduction.
 

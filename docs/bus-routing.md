@@ -174,7 +174,7 @@ main outputs and forward shared sends; voices are looped and prepared beforehand
 These routing-only cases install no insert effects.
 The flat baseline has 255 named buses and no audio graph. Timings exclude fixture
 and descriptor construction. Full phases, allocation counts, bytes and metadata
-are in [the raw CSV](performance/group-routing-windows.csv).
+are in [the raw CSV](https://github.com/jmsansan/audiobox-rs/blob/v0.5.1/docs/performance/group-routing-windows.csv).
 
 | Named buses / routes / voices | Graph prep ms | Apply ms | Render 10 s, median ms | Callback p50 us | p99 us | Max us | Graph peak bytes |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |

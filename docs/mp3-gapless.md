@@ -116,8 +116,8 @@ The median difference is about 0.16%, within one-host timing variation. Fixtures
 are prepared outside timing and no other engine tests ran during measurement.
 The baseline uses the pre-fix encoder from parent commit `adba148`; raw metadata,
 min/max timing, byte hashes and memory counters are in the
-[before](performance/mp3-gapless-before-windows.csv) and
-[after](performance/mp3-gapless-after-windows.csv) CSVs. This does not set a
+[before](https://github.com/jmsansan/audiobox-rs/blob/v0.5.1/docs/performance/mp3-gapless-before-windows.csv) and
+[after](https://github.com/jmsansan/audiobox-rs/blob/v0.5.1/docs/performance/mp3-gapless-after-windows.csv) CSVs. This does not set a
 portable throughput/deadline bound. Reproduce with:
 
 ```sh

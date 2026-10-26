@@ -162,8 +162,8 @@ reverb cases. Control commands/source preparation remain outside render
 timing; the first callback includes installing all queued starts. See the
 [shared protocol](performance.md) for checksum, phase and allocation semantics.
 
-Raw observations: [Windows scale CSV](performance/virtual-voices-windows.csv) and
-[individual effects CSV](performance/virtual-voices-effects-windows.csv). Timing
+Raw observations: [Windows scale CSV](https://github.com/jmsansan/audiobox-rs/blob/v0.5.1/docs/performance/virtual-voices-windows.csv) and
+[individual effects CSV](https://github.com/jmsansan/audiobox-rs/blob/v0.5.1/docs/performance/virtual-voices-effects-windows.csv). Timing
 and callback deadlines describe that host/run, not real-time guarantees.
 
 Windows x86_64, Ryzen 7 1700X, Rust 1.98.1 release/all features, one warm-up,

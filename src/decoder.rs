@@ -809,7 +809,20 @@ mod tests {
 
     #[test]
     fn mp3_seek_restarts_shortly_before_the_target() {
-        let bytes = include_bytes!("../tests/fixtures/lame-stereo.mp3");
+        // Keep library unit tests runnable from the published crate: external
+        // reservoir/interop controls live in the repository integration suite.
+        let audio = Audio::new(
+            (0..2)
+                .map(|ch| {
+                    (0..30_000)
+                        .map(|i| ((i * (ch + 1)) as f32 * 0.02).sin() * 0.3)
+                        .collect()
+                })
+                .collect(),
+            44_100,
+        )
+        .unwrap();
+        let bytes = crate::encode(&audio, AudioFormat::Mp3).unwrap();
         let mut decoder = Decoder::new(bytes.as_slice()).unwrap();
         let total = decoder.frames().unwrap();
         decoder.seek(total * 3 / 4).unwrap();

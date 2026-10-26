@@ -94,8 +94,8 @@ These controls also run on MSRV and WASI. Tests cover continuation pages, zero
 laces, comment padding, initial offsets, empty streams, truncation/CRC/sequence,
 setup budgets, repaired-CRC mutations and allocator activity (floor 0 and 7.1).
 
-The [fixture manifest](../tests/fixtures/ogg/vorbis.csv) records encoded/reference
-hashes; [the generator](../tests/fixtures/generate_ogg.py) authors integer signals
+The [fixture manifest](https://github.com/jmsansan/audiobox-rs/blob/v0.5.1/tests/fixtures/ogg/vorbis.csv) records encoded/reference
+hashes; [the generator](https://github.com/jmsansan/audiobox-rs/blob/v0.5.1/tests/fixtures/generate_ogg.py) authors integer signals
 and minimal floor-0 packets. FFmpeg and libvorbisfile are development oracles only.
 
 ## Opus
@@ -127,7 +127,7 @@ synthesis differs from libopus builds. No lag search, resampling or consumer tri
 is allowed. Whole/read/replayed-seek samples are bit-identical within a host.
 Tests cover malformed packets, limits, silent/duplicate mappings, CRC-repaired
 mutations and zero callback allocations/frees. The manifest is
-[`opus.csv`](../tests/fixtures/ogg/opus.csv); regenerate with
+[`opus.csv`](https://github.com/jmsansan/audiobox-rs/blob/v0.5.1/tests/fixtures/ogg/opus.csv); regenerate with
 `python tests/fixtures/generate_opus.py /path/to/ffmpeg`.
 
 The optional ignored unit test `official_rfc8251_ranges_and_pcm` reads the
