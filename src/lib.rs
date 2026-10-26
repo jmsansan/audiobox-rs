@@ -51,13 +51,14 @@
 //! synthesizer, the sound effects and the mixer, and the offline transforms that render
 //! audio — [`Audio::pan`], [`Audio::gain`] and [`Audio::gain_db`], [`Audio::fade`],
 //! [`Audio::crossfade_to`], [`Audio::filter`], [`Audio::limit`], [`Audio::resample`],
-//! [`Audio::tempo`], [`Audio::pitch`], [`Audio::trim_silence`], peak
+//! [`Audio::tempo`], [`Audio::pitch`], [`Audio::trim_silence`],
 //! [`Audio::normalize`], and [`analyze::from_db`]. They compute with the crate's own
 //! sine and `2^x` series instead of the platform's `sin`, `cos`, `exp` and `powf`, whose
 //! last bits can differ between systems; CI pins their output with checksums on Linux,
 //! macOS, Windows and WebAssembly. Analysis that only reports numbers, such as
-//! loudness, true peak and spectra, and normalization to LUFS or true peak, which
-//! depend on it, use the platform's math.
+//! loudness, true peak and spectra, use the platform's math. Normalization in every
+//! unit uses a separate deterministic measurement path and reports its values
+//! through [`Audio::normalize_with_report`]. LUFS normalization requires >= 4000 Hz.
 //!
 //! Integer PCM export supports optional seeded [`Dither::Tpdf`] noise through
 //! [`EncodeOptions::dither`]. Its quantization is deterministic, including FLAC and

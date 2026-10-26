@@ -389,6 +389,15 @@ crate's own math, so they give the same samples on every platform, WebAssembly
 included; CI pins them with checksums. Analysis that only reports numbers, such as
 loudness, uses the platform's math.
 
+On the development branch for 0.5, normalization to LUFS and true peak also uses
+deterministic measurement and gain decisions. `normalize_with_report` returns
+those f64 measurements and the applied gain without rounding them first. Use this
+path to drive rendered samples; the public report-only `loudness` and `true_peak_db`
+keep their existing math. LUFS normalization requires at least 4000 Hz; lower rates
+and measurement overflow return `InvalidArgument`. Peak normalization keeps its
+existing PCM output. See [the normalization contract and export audit](docs/normalization.md)
+for gating, ceiling behavior, chunked output and the MP3 guarantee boundary.
+
 The resampler uses a Kaiser-windowed sinc filter with a downsampling anti-alias cutoff.
 The limiter links channels with lookahead and release. Loudness uses K-weighting and
 BS.1770 absolute/relative gating; `range` retains the original library's 400-ms block

@@ -524,13 +524,29 @@ fn analysis_cases(cases: &mut Vec<Case>, seconds: f64, tag: &str) {
         })
     }));
     type Transform = fn(&Audio) -> Audio;
-    let transforms: [(&str, Transform); 5] = [
+    let transforms: [(&str, Transform); 7] = [
         ("resample-44k1", |a| a.resample(44_100).unwrap()),
         ("filter-lowpass", |a| {
             a.filter(FilterOptions::new(FilterType::Lowpass, 2000.0))
                 .unwrap()
         }),
         ("limit", |a| a.limit(LimiterOptions::default()).unwrap()),
+        ("normalize-lufs", |a| {
+            a.normalize(NormalizeOptions {
+                to: -16.0,
+                unit: NormalizeUnit::Lufs,
+                ..Default::default()
+            })
+            .unwrap()
+        }),
+        ("normalize-true-peak", |a| {
+            a.normalize(NormalizeOptions {
+                to: -1.0,
+                unit: NormalizeUnit::TruePeak,
+                ..Default::default()
+            })
+            .unwrap()
+        }),
         ("tempo-1.25", |a| a.tempo(1.25).unwrap()),
         ("pitch-up3", |a| a.pitch(3.0).unwrap()),
     ];
