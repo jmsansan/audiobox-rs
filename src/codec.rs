@@ -48,6 +48,12 @@ pub fn encode_with_options(
     format: AudioFormat,
     options: &EncodeOptions,
 ) -> Result<Vec<u8>> {
+    if options.dither != crate::Dither::None {
+        if format == AudioFormat::Mp3 {
+            return Err(Error::invalid("Dither is not supported for MP3 output"));
+        }
+        crate::pcm::validate_dither(options.sample_format, options.dither)?;
+    }
     crate::metadata::validate_options(options, format)?;
     match format {
         AudioFormat::Wav => crate::formats::encode_wav(audio, options),
@@ -56,7 +62,12 @@ pub fn encode_with_options(
         AudioFormat::Au => crate::formats::encode_au(audio, options),
         AudioFormat::Flac => crate::flac::encode(audio, options),
         AudioFormat::Mp3 => crate::mp3::encode(audio, options),
-        AudioFormat::Raw => crate::pcm::encode_pcm(audio, options.sample_format, options.endian),
+        AudioFormat::Raw => crate::pcm::encode_pcm_with_dither(
+            audio,
+            options.sample_format,
+            options.endian,
+            options.dither,
+        ),
     }
 }
 pub fn read_audio_file(path: impl AsRef<Path>) -> Result<Audio> {

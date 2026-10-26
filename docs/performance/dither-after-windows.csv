@@ -1,0 +1,16 @@
+# crate: audiobox 0.4.1
+# commit: 7477cb192f5d97c1c349abc12d312e87ea9203ac (modified)
+# rustc: rustc 1.98.1 (48a229cea 2026-09-01)
+# profile: release
+# features: synth+sfx+mixer+music+events+assets+file-stream
+# target: x86_64 windows (windows)
+# cpu: AMD64 Family 23 Model 1 Stepping 1, AuthenticAMD
+# logical-cpus: 16
+# runs: 1 warm-up + 5 timed + 1 allocation-counted
+# scale: quick (10 s)
+# unix-time: 1793013663
+case,phase,runs,frames,rate,median_ms,min_ms,max_ms,mframes_per_s,realtime_x,allocs,reallocs,frees,requested_bytes,moved_bytes,peak_live_bytes,callbacks,p50_us,p99_us,p999_us,max_us,deadline_us,over_deadline,process_rss_bytes,checksum
+codec/wav-encode/10s,encode,5,480000,48000,24.7181,24.5050,25.2949,19.419,404.6,3,4,2,3840152,92,3840060,0,,,,,,,,192649816735e958
+codec/wav-tpdf-encode/10s,encode,5,480000,48000,33.9742,33.0346,34.6281,14.128,294.3,4,4,3,3840200,92,3840060,0,,,,,,,,782673d641df6044
+codec/flac-encode/10s,encode,5,480000,48000,90.4170,85.4354,101.9359,5.309,110.6,2700,2605,2699,99460452,1658670,10424137,0,,,,,,,,735a86d2021946e1
+codec/flac-tpdf-encode/10s,encode,5,480000,48000,92.7613,91.4911,96.8779,5.175,107.8,2700,2605,2699,99460451,4747065,10424136,0,,,,,,,,ab06e73617b8a08e

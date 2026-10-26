@@ -133,6 +133,54 @@ fn pcm_and_flac_outputs_match_ffmpeg() {
     }
 }
 #[test]
+fn dithered_wav_and_flac_keep_the_exact_integer_samples_in_ffmpeg() {
+    if !enabled() {
+        return;
+    }
+    let tmp = Temp::new();
+    let source = tone(8201, 48_000, 2);
+    for (sample_format, codec, raw_format) in [
+        (SampleFormat::S16, "pcm_s16le", "s16le"),
+        (SampleFormat::S24, "pcm_s24le", "s24le"),
+        (SampleFormat::S32, "pcm_s32le", "s32le"),
+    ] {
+        let options = EncodeOptions {
+            sample_format,
+            dither: Dither::Tpdf { seed: 7 },
+            ..Default::default()
+        };
+        let expected =
+            pcm::encode_pcm_with_dither(&source, sample_format, Endian::Little, options.dither)
+                .unwrap();
+        for (format, ext) in [(AudioFormat::Wav, "wav"), (AudioFormat::Flac, "flac")] {
+            let input = tmp.path(&format!("dither.{ext}"));
+            let output = tmp.path("dither.raw");
+            std::fs::write(
+                &input,
+                encode_with_options(&source, format, &options).unwrap(),
+            )
+            .unwrap();
+            run(&[
+                "-i",
+                text(&input),
+                "-map",
+                "0:a:0",
+                "-c:a",
+                codec,
+                "-f",
+                raw_format,
+                text(&output),
+            ]);
+            assert_eq!(
+                std::fs::read(&output).unwrap(),
+                expected,
+                "{format:?} {sample_format:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn external_pcm_flac_adpcm_and_rf64_inputs() {
     if !enabled() {
         return;

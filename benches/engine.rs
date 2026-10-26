@@ -394,6 +394,27 @@ fn codec_cases(cases: &mut Vec<Case>, seconds: f64, tag: &str) {
                 r.hash_bytes(&bytes);
             })
         }));
+        if matches!(format, AudioFormat::Wav | AudioFormat::Flac) {
+            cases.push(case(
+                format!("codec/{label}-tpdf-encode/{tag}"),
+                move || {
+                    let audio = music(seconds, RATE, 2);
+                    let options = EncodeOptions {
+                        dither: Dither::Tpdf { seed: 7 },
+                        ..Default::default()
+                    };
+                    Box::new(move |r: &mut Recorder| {
+                        let bytes = r.phase("encode", || {
+                            (
+                                encode_with_options(&audio, format, &options).unwrap(),
+                                work(audio.frames(), RATE),
+                            )
+                        });
+                        r.hash_bytes(&bytes);
+                    })
+                },
+            ));
+        }
         if format != AudioFormat::Wav || seconds <= 10.0 {
             cases.push(case(format!("codec/{label}-stream/{tag}"), move || {
                 let bytes = encode(&music(seconds, RATE, 2), format).unwrap();

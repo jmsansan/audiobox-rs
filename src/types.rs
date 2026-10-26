@@ -57,6 +57,20 @@ impl SampleFormat {
         (self.bytes() * 8) as u16
     }
 }
+
+/// Optional noise at final linear integer PCM quantization.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Dither {
+    /// Round and clamp without added noise; preserves the existing encoded bytes.
+    #[default]
+    None,
+    /// Add triangular noise in (-1, 1) destination LSBs before rounding and clamping.
+    /// Each channel has its own deterministic stream, restarted for each export.
+    /// Supported for U8/S8/S16/S24/S32 PCM, including FLAC. Float, G.711 and MP3
+    /// output reject this option with [`crate::ErrorCode::InvalidArgument`].
+    Tpdf { seed: u64 },
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Endian {
     #[default]
@@ -168,6 +182,8 @@ pub struct DecodeOptions {
 pub struct EncodeOptions {
     pub sample_format: SampleFormat,
     pub endian: Endian,
+    /// Noise added once at the destination integer quantizer. Off by default.
+    pub dither: Dither,
     pub metadata: AudioMetadata,
     /// Structured publishing tags, supported by WAV, FLAC and MP3. Native map keys
     /// remain available through `metadata`; supplying the same field twice is an error.
@@ -186,6 +202,7 @@ impl Default for EncodeOptions {
         Self {
             sample_format: SampleFormat::S16,
             endian: Endian::Little,
+            dither: Dither::None,
             metadata: AudioMetadata::new(),
             tags: crate::Tags::default(),
             bitrate: 192,

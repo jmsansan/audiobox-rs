@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Opt-in seeded TPDF dither at final integer PCM quantization (#66), through
+  `EncodeOptions::dither`, `pcm::encode_pcm_with_dither` and
+  `stream::PcmEncoder::with_dither`. Per-channel streams preserve bytes across
+  chunk sizes; WAV, AIFF, CAF, AU, raw PCM and FLAC share the same quantization.
+  Float, G.711 and MP3 reject enabled dither; CAF uses signed 8-bit PCM.
+  Dither remains off by default, preserving existing encoded bytes.
+
+### Fixed
+
+- FLAC encoder Rice candidate costs use 64-bit arithmetic, avoiding overflow and
+  excessive output allocation for 32-bit samples on WebAssembly/32-bit hosts.
+
+### Breaking
+
+- Full `EncodeOptions` literals need `dither`, or `..Default::default()`.
+
 ## 0.4.1 — 2026-10-25
 
 ### Added

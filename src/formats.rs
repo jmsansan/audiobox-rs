@@ -1,5 +1,5 @@
 use crate::io::{Reader, put16, put32, put64};
-use crate::pcm::{decode_pcm, encode_pcm};
+use crate::pcm::{decode_pcm, encode_pcm_with_dither};
 use crate::{
     Audio, AudioFormat, DecodeOptions, EncodeOptions, Endian, Error, Result, SampleFormat,
 };
@@ -313,7 +313,7 @@ pub(crate) fn encode_wav(audio: &Audio, options: &EncodeOptions) -> Result<Vec<u
         put16(&mut desc, code, true);
         desc.extend_from_slice(&[0, 0, 0, 0, 0x10, 0, 0x80, 0, 0, 0xaa, 0, 0x38, 0x9b, 0x71]);
     }
-    let pcm = encode_pcm(audio, f, Endian::Little)?;
+    let pcm = encode_pcm_with_dither(audio, f, Endian::Little, options.dither)?;
     let mut out = b"RIFF\0\0\0\0WAVE".to_vec();
     chunk(&mut out, b"fmt ", &desc, true)?;
     if code != 1 {
@@ -513,7 +513,12 @@ pub(crate) fn encode_aiff(audio: &Audio, options: &EncodeOptions) -> Result<Vec<
         chunk(&mut out, tag, value.as_bytes(), false)?;
     }
     let mut ssnd = vec![0; 8];
-    ssnd.extend_from_slice(&encode_pcm(audio, f, Endian::Big)?);
+    ssnd.extend_from_slice(&encode_pcm_with_dither(
+        audio,
+        f,
+        Endian::Big,
+        options.dither,
+    )?);
     chunk(&mut out, b"SSND", &ssnd, false)?;
     let n = u32::try_from(out.len() - 8).map_err(|_| Error::encode("AIFF exceeds 4 GiB"))?;
     out[4..8].copy_from_slice(&n.to_be_bytes());
@@ -598,7 +603,7 @@ pub(crate) fn encode_au(audio: &Audio, options: &EncodeOptions) -> Result<Vec<u8
             comment.push(0);
         }
     }
-    let pcm = encode_pcm(audio, f, Endian::Big)?;
+    let pcm = encode_pcm_with_dither(audio, f, Endian::Big, options.dither)?;
     let mut out = b".snd".to_vec();
     put32(&mut out, (24 + comment.len()) as u32, false);
     put32(
@@ -696,6 +701,11 @@ pub(crate) fn encode_caf(audio: &Audio, options: &EncodeOptions) -> Result<Vec<u
         return Err(Error::encode("CAF metadata writing is not supported"));
     }
     let f = options.sample_format;
+    if f == SampleFormat::U8 && options.dither != crate::Dither::None {
+        return Err(Error::invalid(
+            "CAF dither requires signed 8-bit PCM; select S8",
+        ));
+    }
     let mut out = b"caff\0\x01\0\0desc".to_vec();
     put64(&mut out, 32, false);
     put64(&mut out, (audio.rate as f64).to_bits(), false);
@@ -720,7 +730,7 @@ pub(crate) fn encode_caf(audio: &Audio, options: &EncodeOptions) -> Result<Vec<u
     put32(&mut out, 1, false);
     put32(&mut out, audio.channels() as u32, false);
     put32(&mut out, f.bits() as u32, false);
-    let pcm = encode_pcm(audio, f, options.endian)?;
+    let pcm = encode_pcm_with_dither(audio, f, options.endian, options.dither)?;
     out.extend_from_slice(b"data");
     put64(&mut out, (pcm.len() + 4) as u64, false);
     put32(&mut out, 0, false);

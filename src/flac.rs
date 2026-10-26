@@ -543,15 +543,18 @@ fn sub_writer(samples: &[i64], bits: usize, level: u8, w: &mut BitWriter) {
             })
             .collect();
         for k in 0..=14 {
+            // A 32-bit residual can need more than 2^32 unary bits. Keep the
+            // candidate cost wide on wasm32 too; wrapping can select an enormous
+            // Rice stream instead of the bounded verbatim candidate.
             let cost = 8
-                + order * bits
+                + (order * bits) as u64
                 + 10
                 + residual
                     .iter()
-                    .map(|&r| (r >> k) as usize + 1 + k)
-                    .sum::<usize>();
-            if cost < best.0 {
-                best = (cost, order, k, residual.clone());
+                    .map(|&r| (r >> k) + 1 + k as u64)
+                    .sum::<u64>();
+            if cost < best.0 as u64 {
+                best = (cost as usize, order, k, residual.clone());
             }
         }
     }
@@ -602,14 +605,13 @@ pub(crate) fn encode(audio: &Audio, options: &EncodeOptions) -> Result<Vec<u8>> 
             "Invalid FLAC channel count, rate or compression level",
         ));
     }
-    let scale = (1u64 << (bits - 1)) as f64;
     let samples: Vec<Vec<i64>> = audio
         .data
         .iter()
-        .map(|c| {
-            c.iter()
-                .map(|&s| (s as f64 * scale).round().clamp(-scale, scale - 1.0) as i64)
-                .collect()
+        .enumerate()
+        .map(|(channel, c)| {
+            let mut quantizer = crate::pcm::Quantizer::new(bits as u32, options.dither, channel);
+            c.iter().map(|&s| quantizer.sample(s)).collect()
         })
         .collect();
     let block = 4096usize;
@@ -815,6 +817,38 @@ impl Md5 {
 mod tests {
     use super::{Md5, unary};
     use crate::io::Bits;
+
+    #[test]
+    fn dithered_streaminfo_hashes_exactly_the_raw_quantizer_output() {
+        use crate::{Audio, Dither, EncodeOptions, Endian, SampleFormat};
+        // DecodeInfo's f32 PCM cannot expose the low bits of all 32-bit samples.
+        // Compare the MD5 of the full integer bytes, including across a FLAC block.
+        let audio = Audio::new(vec![vec![0.25; 8201], vec![-0.5; 8201]], 48_000).unwrap();
+        for sample_format in [
+            SampleFormat::S8,
+            SampleFormat::S16,
+            SampleFormat::S24,
+            SampleFormat::S32,
+        ] {
+            let options = EncodeOptions {
+                sample_format,
+                dither: Dither::Tpdf { seed: 7 },
+                ..Default::default()
+            };
+            let raw = crate::pcm::encode_pcm_with_dither(
+                &audio,
+                sample_format,
+                Endian::Little,
+                options.dither,
+            )
+            .unwrap();
+            let mut md5 = Md5::new();
+            md5.update(&raw);
+            let flac = super::encode(&audio, &options).unwrap();
+            assert_eq!(&flac[26..42], &md5.digest());
+            super::decode(&flac, &crate::DecodeOptions::default()).unwrap();
+        }
+    }
 
     /// The bit-at-a-time unary reader of 0.4.0: zeros before a one, with its errors.
     fn reference_unary(bytes: &[u8], pos: &mut usize) -> Result<u64, &'static str> {
