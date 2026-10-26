@@ -33,6 +33,7 @@ pub fn sniff(bytes: &[u8]) -> Option<AudioFormat> {
         b"caff" => Some(AudioFormat::Caf),
         b".snd" => Some(AudioFormat::Au),
         b"fLaC" => Some(AudioFormat::Flac),
+        b"OggS" => crate::ogg::sniff(bytes),
         _ if bytes.starts_with(b"ID3") || crate::mp3::has_frame(bytes) => Some(AudioFormat::Mp3),
         _ => None,
     }
@@ -54,6 +55,7 @@ pub fn decode_with_options(bytes: &[u8], options: &DecodeOptions) -> Result<Audi
         AudioFormat::Au => crate::formats::decode_au(bytes, options),
         AudioFormat::Flac => crate::flac::decode(bytes, options),
         AudioFormat::Mp3 => crate::mp3::decode(bytes, options),
+        AudioFormat::Vorbis => crate::ogg::decode(bytes, format, options),
         AudioFormat::Raw => Err(Error::invalid(
             "Raw PCM requires pcm::decode_pcm with an explicit shape",
         )),
@@ -81,6 +83,10 @@ pub fn encode_with_options(
         AudioFormat::Au => crate::formats::encode_au(audio, options),
         AudioFormat::Flac => crate::flac::encode(audio, options),
         AudioFormat::Mp3 => crate::mp3::encode(audio, options),
+        AudioFormat::Vorbis => Err(Error::new(
+            ErrorCode::UnsupportedFormat,
+            "Vorbis encoding is not supported",
+        )),
         AudioFormat::Raw => crate::pcm::encode_pcm_with_dither(
             audio,
             options.sample_format,

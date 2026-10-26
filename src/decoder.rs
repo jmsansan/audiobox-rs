@@ -29,7 +29,7 @@ impl Default for DecoderOptions {
     }
 }
 
-/// Decodes WAV, FLAC or MP3 bytes held in memory a chunk at a time.
+/// Decodes WAV, FLAC, MP3 or Ogg Vorbis bytes held in memory a chunk at a time.
 ///
 /// The bytes can be anything that holds them: `&'static [u8]` from
 /// `include_bytes!`, a `Vec<u8>` read from a file, or an `Arc<[u8]>` shared with
@@ -47,6 +47,9 @@ impl Default for DecoderOptions {
 /// enough to refill the bit reservoir and the filter state, so the samples after a
 /// seek equal those of a whole decode. [`Decoder::rewind`] returns to the start at
 /// once, for looping music.
+/// Ogg Vorbis validates page framing/granules at open and prepares bounded packet
+/// DSP storage. Seeking replays from the first audio packet with existing storage;
+/// it is exact but O(distance from the start). Chained/multiplexed links are rejected.
 ///
 /// ```
 /// use audiobox::{Audio, AudioFormat, encode, stream::Decoder};
@@ -108,6 +111,7 @@ impl Block {
 }
 
 enum Inner {
+    Ogg(Box<crate::ogg::Stream>),
     Wav(WavStream),
     Flac(Box<FlacStream>),
     Mp3(Box<Mp3Stream>),
@@ -133,6 +137,17 @@ impl<B: AsRef<[u8]>> Decoder<B> {
             })?;
         let limits = &options.limits;
         let (inner, channels, rate, frames, capacity) = match format {
+            AudioFormat::Vorbis => {
+                let s = crate::ogg::Stream::open(input, format, limits)?;
+                let (channels, rate, frames, capacity) = (s.channels, s.rate, s.frames, s.capacity);
+                (
+                    Inner::Ogg(Box::new(s)),
+                    channels,
+                    rate,
+                    Some(frames),
+                    capacity,
+                )
+            }
             AudioFormat::Wav => {
                 let layout = crate::formats::parse_wav(input, limits)?;
                 let (channels, rate, frames) = (layout.channels, layout.rate, layout.frames);
@@ -283,6 +298,10 @@ impl<B: AsRef<[u8]>> Decoder<B> {
         let frame = self.frames.map_or(frame, |n| frame.min(n));
         let bytes = self.bytes.as_ref();
         let result = match &mut self.inner {
+            Inner::Ogg(s) => s.seek(bytes, frame, &mut self.block.data).map(|offset| {
+                self.block.start = offset;
+                frame
+            }),
             Inner::Wav(s) => s.seek(bytes, frame, &mut self.block),
             Inner::Flac(s) => s.seek(bytes, frame, self.position, &mut self.block),
             Inner::Mp3(s) => s.seek(bytes, frame, &mut self.block),
@@ -303,6 +322,7 @@ impl<B: AsRef<[u8]>> Decoder<B> {
         self.failed = None;
         self.block.clear();
         match &mut self.inner {
+            Inner::Ogg(s) => s.rewind(),
             Inner::Wav(s) => s.rewind(),
             Inner::Flac(s) => s.rewind(),
             Inner::Mp3(s) => s.rewind(),
@@ -314,6 +334,7 @@ impl<B: AsRef<[u8]>> Decoder<B> {
         let bytes = self.bytes.as_ref();
         self.block.clear();
         match &mut self.inner {
+            Inner::Ogg(s) => s.refill(bytes, &mut self.block.data),
             Inner::Wav(s) => s.refill(bytes, &mut self.block),
             Inner::Flac(s) => s.refill(bytes, &mut self.block),
             Inner::Mp3(s) => s.refill(bytes, &mut self.block),

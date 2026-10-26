@@ -1,3 +1,9 @@
+`ogg/` contains synthetic Vorbis inputs and independent libvorbisfile f32
+references. `generate_ogg.py` uses FFmpeg 9.0.1 and SoundFile 0.14.0 / libsndfile
+1.2.2 as development oracles; they are not crate dependencies. `ogg/vorbis.csv`
+records every encoded/reference SHA-256. The generated media is MIT-licensed
+repository test data. See `docs/ogg-decoding.md` for exact trim/precision policy.
+
 These six files were generated from the original audiobox TypeScript implementation
 (https://github.com/jmsansan/audiobox, commit 6f89fca7eefb7367738454d64b329c96f4fd81bc, src/index.ts) during the Rust migration. They contain 4097 stereo frames at
 44100 Hz: a 440 Hz sine at amplitude 0.6 on the left and an 880 Hz sine at

@@ -1,0 +1,490 @@
+// Adapted from tpt-cadence, MIT; see src/ogg/NOTICE.md.
+//! Vorbis codebooks: packed header decode (spec section 3.2.1), Huffman
+//! codeword decode, and the VQ lookup tables.
+//!
+//! Codewords are assigned canonically in entry order ("lowest valued unused
+//! binary Huffman codeword", leftmost bit = MSb). Decode walks an explicit
+//! binary tree built once at setup; every structure is preallocated.
+
+use crate::ogg::error::CodecError as CadenceError;
+use crate::ogg::vorbis::bitreader::BitReader;
+
+fn corrupt(what: &str) -> CadenceError {
+    CadenceError::CorruptData(format!("vorbis codebook: {what}"))
+}
+
+/// Huffman decode tree: internal nodes with two children; leaves carry the
+/// entry number. Node 0 is the root.
+struct Tree {
+    /// Child node indices; `-1` = empty branch; leaf marker uses
+    /// `LEAF_MASK | entry` in `left` with `right = -2` sentinel.
+    left: Box<[i32]>,
+    right: Box<[i32]>,
+    parent: Box<[usize]>,
+    /// Nearest unassigned edge, relative to this node; 255 means full.
+    free_depth: Box<[u8]>,
+    used: usize,
+}
+
+const LEAF_MASK: i32 = 1 << 30;
+
+impl Tree {
+    fn with_capacity(nodes: usize) -> Self {
+        Tree {
+            left: vec![-1; nodes].into_boxed_slice(),
+            right: vec![-1; nodes].into_boxed_slice(),
+            parent: vec![0; nodes].into_boxed_slice(),
+            free_depth: vec![1; nodes].into_boxed_slice(),
+            used: 1,
+        }
+    }
+
+    /// Assigns the leftmost unused codeword of length `len` to `entry`
+    /// (spec: each entry, in order, takes "the lowest valued unused binary
+    /// Huffman codeword possible"). Returns the codeword, MSb-aligned in
+    /// `len` bits.
+    fn assign_leftmost(&mut self, len: u32, entry: usize) -> Result<u32, CadenceError> {
+        // DFS in strict left-first order: empty slots are frames too, so an
+        // empty slot under an earlier branch is always reached before any
+        // later branch's subtree.
+        enum Frame {
+            /// Existing internal node: (node, code, depth).
+            Node(usize, u32, u32),
+            /// Empty slot: (parent, bit, code, depth-of-slot).
+            Empty(usize, bool, u32, u32),
+        }
+        let mut stack: Vec<Frame> = vec![Frame::Node(0, 0, 0)];
+        while let Some(frame) = stack.pop() {
+            match frame {
+                Frame::Node(node, code, depth) => {
+                    for branch in (0..2).rev() {
+                        let bit = branch != 0;
+                        let child_code = (code << 1) | branch as u32;
+                        let child = if bit {
+                            self.right[node]
+                        } else {
+                            self.left[node]
+                        };
+                        if child == -1 {
+                            stack.push(Frame::Empty(node, bit, child_code, depth + 1));
+                        } else if (child & LEAF_MASK) == 0
+                            && depth + 1 < len
+                            && (self.free_depth[child as usize] as u32) < len - depth
+                        {
+                            stack.push(Frame::Node(child as usize, child_code, depth + 1));
+                        }
+                    }
+                }
+                Frame::Empty(parent, bit, code, depth) => {
+                    // The leftmost free slot: codeword = path so far padded
+                    // with zeros to `len` bits.
+                    let final_code = code << (len - depth);
+                    if depth == len {
+                        // The empty slot is the leaf itself.
+                        if bit {
+                            self.right[parent] = LEAF_MASK | entry as i32;
+                        } else {
+                            self.left[parent] = LEAF_MASK | entry as i32;
+                        }
+                    } else {
+                        // Create the slot node below `parent`, then zero
+                        // edges down to the leaf.
+                        let nn = self.alloc_node()?;
+                        self.parent[nn] = parent;
+                        if bit {
+                            self.right[parent] = nn as i32;
+                        } else {
+                            self.left[parent] = nn as i32;
+                        }
+                        let mut cur = nn;
+                        for _ in 0..(len - depth - 1) {
+                            let nx = self.alloc_node()?;
+                            self.parent[nx] = cur;
+                            self.left[cur] = nx as i32;
+                            cur = nx;
+                        }
+                        // Leaf in the parent's edge slot; the leaf node's own
+                        // child slots stay empty (they are unreachable).
+                        self.left[cur] = LEAF_MASK | entry as i32;
+                        self.refresh(cur);
+                    }
+                    self.refresh(parent);
+                    return Ok(final_code);
+                }
+            }
+        }
+        Err(corrupt("no free codeword (overspecified huffman tree)"))
+    }
+
+    fn alloc_node(&mut self) -> Result<usize, CadenceError> {
+        let idx = self.used;
+        if idx >= self.left.len() {
+            return Err(corrupt("huffman tree overflow"));
+        }
+        self.used += 1;
+        Ok(idx)
+    }
+    fn refresh(&mut self, mut node: usize) {
+        loop {
+            let depth = |child: i32| {
+                if child == -1 {
+                    1
+                } else if child & LEAF_MASK != 0 {
+                    255
+                } else {
+                    self.free_depth[child as usize].saturating_add(1)
+                }
+            };
+            self.free_depth[node] = depth(self.left[node]).min(depth(self.right[node]));
+            if node == 0 {
+                break;
+            }
+            node = self.parent[node];
+        }
+    }
+}
+
+/// A decoded Vorbis codebook.
+pub struct Codebook {
+    pub dimensions: usize,
+    pub entries: usize,
+    lookup_type: u8,
+    /// Flattened VQ value vectors, `entry * dimensions` scalars, for lookup
+    /// types 1 and 2.
+    values: Box<[f32]>,
+    tree: Option<Tree>,
+    /// Prefix-code lookup over the next `bits` stream bits: for each peeked
+    /// value, the codeword that matches its low `len` bits (0 = miss, take
+    /// the tree walk — only codewords longer than `bits` land there). Built
+    /// at setup; turns the bit-at-a-time tree walk into one peek + one
+    /// consume for every codeword that fits.
+    fast: Option<FastTable>,
+    /// Single-entry books decode as one bit + the lone entry (spec erratum
+    /// 20150226).
+    single_entry: Option<usize>,
+    max_depth: u32,
+}
+
+/// Lookup-table width cap (2^9 slots ≈ 2.5 KiB per book at setup time).
+/// Books deeper than this keep the table for their short codewords and
+/// tree-walk only the long tail.
+const FAST_BITS: u32 = 9;
+/// Below this many used entries the tree walk is already 1–2 bits deep;
+/// a table would cost more to build than it saves.
+const FAST_MIN_ENTRIES: usize = 4;
+
+struct FastTable {
+    bits: u32,
+    symbols: Box<[u32]>,
+    /// Codeword length per slot; 0 = no codeword of length ≤ `bits` matches
+    /// this peeked value.
+    lens: Box<[u8]>,
+}
+
+/// Mirrors `code` (MSb-aligned in `len` bits) into the bit reader's LSB-first
+/// peek order: peek bit `i` is stream bit `i`, which is codeword bit
+/// `len - 1 - i`.
+fn reverse_bits(code: u32, len: u32) -> u32 {
+    let mut r = 0u32;
+    for i in 0..len {
+        r |= ((code >> i) & 1) << (len - 1 - i);
+    }
+    r
+}
+
+/// Hard cap on one codebook's value table (real books are far below this).
+const MAX_VALUES: usize = 32 << 20;
+
+impl Codebook {
+    /// Parses one codebook from the setup header, starting after the sync
+    /// pattern has been verified by the caller. Layout (spec §3.2.1): the
+    /// 16-bit dimension count, the 24-bit entry count, then the codeword
+    /// lengths — there is no version field.
+    pub fn parse(
+        br: &mut BitReader,
+        budget: &mut crate::ogg::error::Budget,
+    ) -> Result<Codebook, CadenceError> {
+        let dimensions = br.read_bits(16)? as usize;
+        let entries = br.read_bits(24)? as usize;
+        if dimensions == 0 || dimensions > 8192 || entries == 0 {
+            return Err(corrupt("entry count out of range"));
+        }
+        if entries > 65536 {
+            return Err(CadenceError::LimitExceeded(
+                "Vorbis codebook exceeds 65536 entries",
+            ));
+        }
+        budget.charge(entries * 128 + 8192)?;
+        let ordered = br.read_bit()?;
+        let mut lengths = vec![0u8; entries].into_boxed_slice();
+
+        if ordered {
+            let mut current_entry = 0usize;
+            let mut current_length = br.read_bits(5)? as usize + 1;
+            while current_entry < entries {
+                let number =
+                    br.read_bits(BitReader::ilog((entries - current_entry) as i64))? as usize;
+                if current_entry + number > entries {
+                    return Err(corrupt("ordered length overruns entries"));
+                }
+                if current_length > 32 {
+                    return Err(corrupt("codeword length overflow"));
+                }
+                for len in lengths[current_entry..current_entry + number].iter_mut() {
+                    *len = current_length as u8;
+                }
+                current_entry += number;
+                current_length += 1;
+            }
+        } else {
+            let sparse = br.read_bit()?;
+            for len in lengths.iter_mut() {
+                if sparse {
+                    if br.read_bit()? {
+                        *len = br.read_bits(5)? as u8 + 1;
+                    }
+                } else {
+                    *len = br.read_bits(5)? as u8 + 1;
+                }
+            }
+        }
+
+        let lookup_type = br.read_bits(4)? as u8;
+        let mut values: Box<[f32]> = Box::default();
+        match lookup_type {
+            0 => {}
+            1 | 2 => {
+                let minimum = float32_unpack(br.read_bits(32)?);
+                let delta = float32_unpack(br.read_bits(32)?);
+                let value_bits = br.read_bits(4)? as usize + 1;
+                let sequence_p = br.read_bit()?;
+                let lookup_values = if lookup_type == 1 {
+                    lookup1_values(entries, dimensions)
+                } else {
+                    entries * dimensions
+                };
+                if lookup_values
+                    .checked_mul(value_bits)
+                    .unwrap_or(u32::MAX as usize)
+                    > (1 << 31)
+                {
+                    return Err(corrupt("lookup size overflows the packet"));
+                }
+                let cells = entries
+                    .checked_mul(dimensions)
+                    .ok_or(CadenceError::LimitExceeded("Vorbis codebook size overflow"))?;
+                if cells > MAX_VALUES {
+                    return Err(corrupt("lookup value table exceeds budget"));
+                }
+                budget.charge(
+                    cells
+                        .checked_add(lookup_values)
+                        .and_then(|n| n.checked_mul(4))
+                        .ok_or(CadenceError::LimitExceeded("Vorbis codebook size overflow"))?,
+                )?;
+                let mut multiplicands = Vec::with_capacity(lookup_values.min(1 << 20));
+                for _ in 0..lookup_values {
+                    multiplicands.push(br.read_bits(value_bits as u32)? as f32);
+                }
+                values = vec![0.0f32; entries * dimensions].into_boxed_slice();
+                for entry in 0..entries {
+                    if lengths[entry] == 0 {
+                        continue;
+                    }
+                    let mut last = 0.0f32;
+                    for i in 0..dimensions {
+                        let multiplicand = if lookup_type == 1 {
+                            // (entry / lookup_values^i) % lookup_values
+                            let mut divisor = 1usize;
+                            for _ in 0..i {
+                                divisor = divisor.saturating_mul(lookup_values.max(1));
+                            }
+                            let multiplicand_offset = (entry / divisor) % lookup_values.max(1);
+                            multiplicands[multiplicand_offset]
+                        } else {
+                            multiplicands[entry * dimensions + i]
+                        };
+                        let value = multiplicand * delta + minimum + last;
+                        values[entry * dimensions + i] = value;
+                        if sequence_p {
+                            last = value;
+                        }
+                    }
+                }
+            }
+            _ => return Err(corrupt("reserved lookup type")),
+        }
+
+        // Build the Huffman tree over the used entries.
+        let mut single_entry = None;
+        let mut used_count = 0usize;
+        let mut lone = 0usize;
+        for (e, &l) in lengths.iter().enumerate() {
+            if l > 0 {
+                used_count += 1;
+                lone = e;
+            }
+        }
+        if used_count == 1 {
+            if lengths[lone] != 1 {
+                return Err(corrupt("single-entry codebook length must be 1"));
+            }
+            single_entry = Some(lone);
+        }
+
+        let mut tree = None;
+        let mut max_depth = 1u32;
+        // (code, len, entry) for every codeword that can fit the fast table.
+        let mut fast_entries: Vec<(u32, u32, usize)> = Vec::new();
+        if used_count > 1 {
+            // Kraft check: sum 2^(32-len) must equal 2^32 (complete tree).
+            let mut kraft: u64 = 0;
+            for &l in lengths.iter() {
+                if l > 0 {
+                    kraft += 1u64 << (32 - l);
+                }
+            }
+            if kraft != 1 << 32 {
+                return Err(corrupt("underspecified or overspecified huffman tree"));
+            }
+            let mut t = Tree::with_capacity(used_count * 2 + 2);
+            for (e, &l) in lengths.iter().enumerate() {
+                if l == 0 {
+                    continue;
+                }
+                let code = t.assign_leftmost(l as u32, e)?;
+                max_depth = max_depth.max(l as u32);
+                if l as u32 <= FAST_BITS {
+                    fast_entries.push((code, l as u32, e));
+                }
+            }
+            tree = Some(t);
+        }
+
+        let fast = if used_count >= FAST_MIN_ENTRIES && max_depth >= 3 {
+            let bits = max_depth.min(FAST_BITS);
+            let size = 1usize << bits;
+            let mut symbols = vec![0u32; size];
+            let mut lens = vec![0u8; size];
+            for &(code, len, entry) in &fast_entries {
+                if len > bits {
+                    continue;
+                }
+                let base = reverse_bits(code, len) as usize;
+                let step = 1usize << len;
+                let mut idx = base;
+                while idx < size {
+                    symbols[idx] = entry as u32;
+                    lens[idx] = len as u8;
+                    idx += step;
+                }
+            }
+            Some(FastTable {
+                bits,
+                symbols: symbols.into_boxed_slice(),
+                lens: lens.into_boxed_slice(),
+            })
+        } else {
+            None
+        };
+
+        Ok(Codebook {
+            dimensions,
+            entries,
+            lookup_type,
+            values,
+            tree,
+            fast,
+            single_entry,
+            max_depth,
+        })
+    }
+
+    /// Reads one codeword and returns the entry number (scalar context).
+    ///
+    /// Codewords that fit the fast table decode as one peek + one consume;
+    /// longer codewords (and tables below the build threshold) take the
+    /// bit-at-a-time tree walk, which produces exactly the same entries and
+    /// errors.
+    pub fn read_scalar(&self, br: &mut BitReader) -> Result<usize, CadenceError> {
+        if let Some(entry) = self.single_entry {
+            let _ = br.read_bit()?; // sink one bit; value tolerated as 0 or 1
+            return Ok(entry);
+        }
+        if let Some(table) = &self.fast {
+            let peek = br.peek_bits(table.bits) as usize;
+            let len = table.lens[peek] as u32;
+            if len != 0 {
+                // Consuming through `read_bits` keeps the legacy bounds
+                // check: an overread raises the same error and leaves the
+                // reader in the same exhausted state as the tree walk did.
+                br.read_bits(len)?;
+                return Ok(table.symbols[peek] as usize);
+            }
+        }
+        let tree = self
+            .tree
+            .as_ref()
+            .ok_or_else(|| corrupt("empty codebook read"))?;
+        let mut node = 0usize;
+        for _ in 0..=self.max_depth {
+            let bit = br.read_bit()?;
+            let next = if bit {
+                tree.right[node]
+            } else {
+                tree.left[node]
+            };
+            if next < 0 {
+                return Err(corrupt("invalid codeword"));
+            }
+            if (next & LEAF_MASK) != 0 {
+                return Ok((next & !LEAF_MASK) as usize);
+            }
+            node = next as usize;
+        }
+        Err(corrupt("codeword exceeds maximum depth"))
+    }
+
+    /// Reads one codeword and returns its VQ value vector (VQ context).
+    pub fn read_vector(&self, br: &mut BitReader, out: &mut [f32]) -> Result<(), CadenceError> {
+        let entry = self.read_scalar(br)?;
+        if self.lookup_type == 0 {
+            return Err(corrupt("VQ context on a book without a lookup"));
+        }
+        let src = &self.values[entry * self.dimensions..(entry + 1) * self.dimensions];
+        out[..self.dimensions].copy_from_slice(src);
+        Ok(())
+    }
+
+    pub fn has_lookup(&self) -> bool {
+        self.lookup_type != 0
+    }
+}
+
+/// The spec's `float32_unpack`: sign-mantissa-exponent packing with an
+/// exponent bias of 788 (mantissa holds the implied leading bit).
+fn float32_unpack(bits: u32) -> f32 {
+    let mantissa = (bits & 0x1f_ffff) as i64;
+    let sign = bits & 0x8000_0000;
+    let exponent = ((bits & 0x7fe0_0000) >> 21) as i64;
+    let mantissa = if sign != 0 { -mantissa } else { mantissa };
+    ((mantissa as f64) * (2.0f64).powi((exponent - 788) as i32)) as f32
+}
+
+/// Greatest integer `v` with `v^dim <= entries` (spec 9.2.3).
+fn lookup1_values(entries: usize, dim: usize) -> usize {
+    if dim == 0 {
+        return 0;
+    }
+    let mut r = (entries as f64).powf(1.0 / dim as f64).floor() as usize;
+    while r.checked_pow(dim as u32).is_some_and(|p| p > entries) {
+        r -= 1;
+    }
+    while (r + 1)
+        .checked_pow(dim as u32)
+        .is_some_and(|p| p <= entries)
+    {
+        r += 1;
+    }
+    r
+}
