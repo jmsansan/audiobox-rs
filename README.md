@@ -387,7 +387,8 @@ FFmpeg installation.
 - Silence: `detect_silence`, `trim_silence`.
 - Time/pitch: `speed`, WSOLA `tempo`, `pitch`.
 - Measurement: `peak`, `peak_db`, `true_peak_db`, `mean_square`, `rms`, `rms_db`,
-  `loudness`, `measure_deterministic`, `waveform`.
+  `loudness`, `measure_deterministic`, `waveform`, `dc_means`, `threshold_silence`,
+  `stereo_measurements`, `measure_boundaries`.
 - Spectral analysis: `analyze::spectrum`, `analyze::spectrogram`.
 
 Transforms that render audio (pan, gain, fades, crossfades, filters, the limiter,
@@ -412,6 +413,13 @@ and amplitude for aggregation. `resampled_frame_index` maps absolute body/tail
 boundaries using the exact count policy used by `resample`, including its existing
 floating-point rounding. See [Studio delivery contracts](docs/studio-delivery-contracts.md)
 for units, no-result states, numerical tolerances, spectrum endpoints and alignment.
+
+The 0.5 numerical review APIs add per-channel DC means, frame-exact threshold
+silence, Pearson stereo correlation/mid-side power and explicit boundary/loop-seam
+sample steps. Empty, constant and short inputs have documented `None` states;
+outputs are bounded. These measurements do not classify audible defects or fix
+audio. See [render measurement units and limits](docs/render-measurements.md)
+and `cargo run --example render_measurements` for a report example.
 
 `read_audio_file` accepts regular files with a 512 MiB encoded-byte cap, in
 addition to decoded limits. `read_audio_file_with_options` and `ReadAudioOptions`
