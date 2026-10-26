@@ -1,0 +1,14 @@
+# crate: audiobox 0.4.1
+# commit: unknown (modified)
+# rustc: rustc 1.98.1 (48a229cea 2026-09-01)
+# profile: release
+# features: synth+sfx+mixer+music+events+assets+file-stream
+# target: x86_64 windows (windows)
+# cpu: AMD64 Family 23 Model 1 Stepping 1, AuthenticAMD
+# logical-cpus: 16
+# runs: 1 warm-up + 5 timed + 1 allocation-counted
+# scale: quick (10 s)
+# unix-time: 1793013662
+case,phase,runs,frames,rate,median_ms,min_ms,max_ms,mframes_per_s,realtime_x,allocs,reallocs,frees,requested_bytes,moved_bytes,peak_live_bytes,callbacks,p50_us,p99_us,p999_us,max_us,deadline_us,over_deadline,process_rss_bytes,checksum
+codec/wav-encode/10s,encode,5,480000,48000,25.6470,25.2968,26.6519,18.716,389.9,3,4,2,3840152,92,3840060,0,,,,,,,,192649816735e958
+codec/flac-encode/10s,encode,5,480000,48000,95.5103,85.6605,106.7554,5.026,104.7,2700,2605,2699,99460452,2154286,10424137,0,,,,,,,,735a86d2021946e1

@@ -92,6 +92,8 @@ pub struct PcmEncoder {
     format: SampleFormat,
     endian: Endian,
     shape: Option<(usize, u32)>,
+    dither: crate::Dither,
+    quantizers: Vec<crate::pcm::Quantizer>,
 }
 impl PcmEncoder {
     pub fn new(format: SampleFormat, endian: Endian) -> Self {
@@ -99,15 +101,37 @@ impl PcmEncoder {
             format,
             endian,
             shape: None,
+            dither: crate::Dither::None,
+            quantizers: Vec::new(),
         }
+    }
+    /// Encode chunks with a continuous per-channel dither stream. The same input,
+    /// format and seed give the bytes of [`crate::pcm::encode_pcm_with_dither`],
+    /// regardless of chunk sizes. Empty chunks consume no noise; shape errors
+    /// preserve the stream state. Float and G.711 reject enabled dither.
+    pub fn with_dither(
+        format: SampleFormat,
+        endian: Endian,
+        dither: crate::Dither,
+    ) -> Result<Self> {
+        crate::pcm::validate_dither(format, dither)?;
+        Ok(Self {
+            dither,
+            ..Self::new(format, endian)
+        })
     }
     pub fn push(&mut self, audio: &Audio) -> Result<Vec<u8>> {
         let shape = (audio.channels(), audio.sample_rate());
         if self.shape.is_some_and(|s| s != shape) {
             return Err(Error::invalid("PCM stream shape changed"));
         }
+        if self.shape.is_none() {
+            self.quantizers = crate::pcm::quantizers(self.format, self.dither, audio.channels());
+        }
+        let bytes =
+            crate::pcm::encode_quantized(audio, self.format, self.endian, &mut self.quantizers)?;
         self.shape = Some(shape);
-        crate::pcm::encode_pcm(audio, self.format, self.endian)
+        Ok(bytes)
     }
 }
 

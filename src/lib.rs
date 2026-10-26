@@ -59,6 +59,11 @@
 //! loudness, true peak and spectra, and normalization to LUFS or true peak, which
 //! depend on it, use the platform's math.
 //!
+//! Integer PCM export supports optional seeded [`Dither::Tpdf`] noise through
+//! [`EncodeOptions::dither`]. Its quantization is deterministic, including FLAC and
+//! [`stream::PcmEncoder::with_dither`] across chunk boundaries. Dither is disabled
+//! by default; float, G.711 and MP3 output reject enabled dither.
+//!
 //! Errors are [`Error`] values with a stable [`ErrorCode`]. Decoding is bounded by
 //! [`Limits`], checked before allocating. The [website](https://jmsansan.github.io/audiobox-rs/)
 //! has a browser sandbox and a sound-effect and chiptune playground that run this crate

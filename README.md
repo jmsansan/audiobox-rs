@@ -272,6 +272,38 @@ trimming for a whitelist of encoder names; they may expose priming and trailing 
 for audiobox's own encoder name. The independent MP3 encoding tests explicitly align
 that reference by the tag before checking samples and gain.
 
+### Seeded dither for integer exports
+
+On the development branch for 0.5, set `EncodeOptions::dither` to
+`Dither::Tpdf { seed }` to add triangular noise once,
+at final integer PCM quantization. This is useful when reducing a float master to
+16 bits. Perform gain changes, fades, resampling and limiting before this export.
+
+```rust
+use audiobox::{Audio, AudioFormat, Dither, EncodeOptions, SampleFormat, encode_with_options};
+
+fn export_16_bit(audio: &Audio) -> audiobox::Result<Vec<u8>> {
+    encode_with_options(audio, AudioFormat::Wav, &EncodeOptions {
+        sample_format: SampleFormat::S16,
+        dither: Dither::Tpdf { seed: 7 },
+        ..Default::default()
+    })
+}
+```
+
+The noise spans (-1, 1) destination LSBs before rounding and clamping. Each channel
+has an independent stream. The same PCM, seed and options give identical bytes on
+supported native targets and WebAssembly; WAV and FLAC quantize to the same integer
+samples. Dither is off by default. Enabled dither rejects float, G.711 and MP3
+output with `InvalidArgument`. Use `U8` for 8-bit WAV and `S8` for 8-bit CAF;
+AIFF, AU and FLAC accept either 8-bit selection and store signed samples.
+
+`pcm::encode_pcm_with_dither` provides the same option for raw PCM. For chunks, use
+`stream::PcmEncoder::with_dither`; it retains the per-channel noise state, so chunk
+boundaries do not change the output. Calling the whole-buffer function separately
+for each chunk restarts the seed. See [the quantization contract](docs/dither.md)
+for seed derivation, bounds and regression checks.
+
 ### Publishing tags and cover images
 
 Use `EncodeOptions::tags` for structured publishing fields. Whole decoding reads them
@@ -511,14 +543,15 @@ cargo run --example stream_from_disk --features file-stream,mixer -- music.mp3 t
 ## Streaming PCM
 
 `stream::PcmDecoder` retains partial frames between input chunks. `stream::PcmEncoder`
-validates that successive chunks have the same sample rate and channel count.
+validates that successive chunks have the same sample rate and channel count, and
+its optional dither state continues across chunks.
 `stream::Resampler` retains the sinc filter history and preserves phase across chunks;
 call `finish` to drain its tail. Its output matches whole-buffer resampling regardless
 of input chunk boundaries. Stream limits apply to the complete stream, not each chunk.
 
 Browser Workers, Web Audio and WebCodecs adapters belong to the TypeScript package and
-are not part of the Rust API. Dithering, Sony Wave64, RF64 encoding and reading files
-from disk incrementally are also not implemented.
+are not part of the Rust API. Sony Wave64 and RF64 encoding are not implemented.
+Native incremental disk reads use the optional `file-stream` feature above.
 
 ## Synthesizer (`synth` feature)
 

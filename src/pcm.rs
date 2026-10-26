@@ -1,5 +1,5 @@
 //! Raw PCM conversion, including G.711 A-law and µ-law.
-use crate::{Audio, DecodeInfo, Endian, Error, Limits, Result, SampleFormat};
+use crate::{Audio, DecodeInfo, Dither, Endian, Error, Limits, Result, SampleFormat};
 
 pub fn decode_pcm(
     bytes: &[u8],
@@ -60,6 +60,104 @@ pub(crate) fn read_sample(b: &[u8], f: SampleFormat, e: Endian) -> Result<f32> {
     Ok(s)
 }
 pub fn encode_pcm(audio: &Audio, format: SampleFormat, endian: Endian) -> Result<Vec<u8>> {
+    encode_pcm_with_dither(audio, format, endian, Dither::None)
+}
+
+/// Encode interleaved PCM with optional seeded noise at the final integer quantizer.
+/// The seed restarts on each call. For chunked input, use
+/// [`crate::stream::PcmEncoder::with_dither`] to retain its state across chunks.
+/// Float and G.711 samples reject enabled dither with
+/// [`crate::ErrorCode::InvalidArgument`].
+pub fn encode_pcm_with_dither(
+    audio: &Audio,
+    format: SampleFormat,
+    endian: Endian,
+    dither: Dither,
+) -> Result<Vec<u8>> {
+    validate_dither(format, dither)?;
+    encode_quantized(
+        audio,
+        format,
+        endian,
+        &mut quantizers(format, dither, audio.channels()),
+    )
+}
+
+pub(crate) fn validate_dither(format: SampleFormat, dither: Dither) -> Result<()> {
+    if dither != Dither::None
+        && !matches!(
+            format,
+            SampleFormat::U8
+                | SampleFormat::S8
+                | SampleFormat::S16
+                | SampleFormat::S24
+                | SampleFormat::S32
+        )
+    {
+        return Err(Error::invalid("Dither requires linear integer PCM output"));
+    }
+    Ok(())
+}
+
+// SplitMix64, with independently mixed initial channel states. All arithmetic is
+// wrapping u64; the top 53 bits of each draw are exactly representable as f64.
+const DITHER_STEP: u64 = 0x9e37_79b9_7f4a_7c15;
+fn mix(mut value: u64) -> u64 {
+    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^ (value >> 31)
+}
+
+#[derive(Debug)]
+pub(crate) struct Quantizer {
+    scale: f64,
+    state: Option<u64>,
+}
+impl Quantizer {
+    pub(crate) fn new(bits: u32, dither: Dither, channel: usize) -> Self {
+        Self {
+            scale: (1u64 << (bits - 1)) as f64,
+            state: match dither {
+                Dither::None => None,
+                Dither::Tpdf { seed } => {
+                    Some(mix(seed ^ (channel as u64 + 1).wrapping_mul(DITHER_STEP)))
+                }
+            },
+        }
+    }
+    pub(crate) fn sample(&mut self, sample: f32) -> i64 {
+        let noise = if let Some(state) = &mut self.state {
+            let mut draw = || {
+                *state = state.wrapping_add(DITHER_STEP);
+                (mix(*state) >> 11) as f64 / (1u64 << 53) as f64
+            };
+            draw() - draw()
+        } else {
+            0.0
+        };
+        // Add in destination LSBs in f64, not f32: even 32-bit dither survives.
+        (sample as f64 * self.scale + noise)
+            .round()
+            .clamp(-self.scale, self.scale - 1.0) as i64
+    }
+}
+
+pub(crate) fn quantizers(format: SampleFormat, dither: Dither, channels: usize) -> Vec<Quantizer> {
+    if dither == Dither::None {
+        Vec::new()
+    } else {
+        (0..channels)
+            .map(|c| Quantizer::new(format.bits() as u32, dither, c))
+            .collect()
+    }
+}
+
+pub(crate) fn encode_quantized(
+    audio: &Audio,
+    format: SampleFormat,
+    endian: Endian,
+    quantizers: &mut [Quantizer],
+) -> Result<Vec<u8>> {
     let size = audio
         .frames()
         .checked_mul(audio.channels())
@@ -67,8 +165,22 @@ pub fn encode_pcm(audio: &Audio, format: SampleFormat, endian: Endian) -> Result
         .ok_or_else(|| Error::encode("PCM size overflow"))?;
     let mut out = Vec::with_capacity(size);
     for i in 0..audio.frames() {
-        for c in audio.all_channels() {
-            write_sample(&mut out, c[i], format, endian);
+        for (channel, c) in audio.all_channels().iter().enumerate() {
+            if let Some(q) = quantizers.get_mut(channel) {
+                let value = q.sample(c[i]);
+                write_value(
+                    &mut out,
+                    (if format == SampleFormat::U8 {
+                        value + 128
+                    } else {
+                        value
+                    }) as u64,
+                    format.bytes(),
+                    endian,
+                );
+            } else {
+                write_sample(&mut out, c[i], format, endian);
+            }
         }
     }
     Ok(out)
@@ -90,6 +202,9 @@ pub(crate) fn write_sample(out: &mut Vec<u8>, sample: f32, f: SampleFormat, e: E
         SampleFormat::Alaw => encode_alaw(quant(16) as i16) as u64,
         SampleFormat::Ulaw => encode_ulaw(quant(16) as i16) as u64,
     };
+    write_value(out, value, n, e);
+}
+fn write_value(out: &mut Vec<u8>, value: u64, n: usize, e: Endian) {
     for i in 0..n {
         let shift = if e == Endian::Little { i } else { n - 1 - i };
         out.push((value >> (shift * 8)) as u8);
