@@ -1,0 +1,116 @@
+// Adapted from tpt-cadence, MIT; see src/ogg/NOTICE.md.
+//! LSB-first bit reader for Vorbis packets (spec section 2).
+//!
+//! Vorbis packs bits into packets least-significant-bit first within each
+//! octet, and multi-bit integers are stored least-significant-bit first in
+//! that bit stream. All reads are bounds-checked; reading past the end of the
+//! packet returns [`CadenceError::CorruptData`] (the spec's "end-of-packet"
+//! condition) and never panics.
+
+use crate::ogg::error::CodecError as CadenceError;
+
+/// End-of-packet read error.
+fn overread() -> CadenceError {
+    CadenceError::CorruptData("vorbis packet overread".to_string())
+}
+
+/// LSB-first bit reader over a completed packet.
+pub struct BitReader<'a> {
+    data: &'a [u8],
+    /// Next bit to serve, counted from the start of `data`.
+    pub bit_pos: usize,
+}
+
+impl<'a> BitReader<'a> {
+    /// Wraps a packet's bytes.
+    pub fn new(data: &'a [u8]) -> Self {
+        BitReader { data, bit_pos: 0 }
+    }
+
+    /// Number of bits still readable.
+    pub fn bits_left(&self) -> usize {
+        self.data.len() * 8 - self.bit_pos.min(self.data.len() * 8)
+    }
+
+    /// Reads `n` bits (0..=32) as an unsigned integer, LSB-first.
+    #[inline]
+    pub fn read_bits(&mut self, n: u32) -> Result<u32, CadenceError> {
+        debug_assert!(n <= 32);
+        if n == 0 {
+            return Ok(0);
+        }
+        if self.bits_left() < n as usize {
+            self.bit_pos = self.data.len() * 8;
+            return Err(overread());
+        }
+        let mut value: u64 = 0;
+        let mut taken = 0u32;
+        // Consume whole bytes while available.
+        while taken < n {
+            let byte = self.data[self.bit_pos / 8];
+            let off = (self.bit_pos % 8) as u32;
+            let avail = 8 - off;
+            let want = (n - taken).min(avail);
+            let piece = (byte >> off) as u64 & ((1u16 << want) - 1) as u64;
+            value |= piece << taken;
+            self.bit_pos += want as usize;
+            taken += want;
+        }
+        Ok(value as u32)
+    }
+
+    /// Reads a single bit.
+    #[inline]
+    pub fn read_bit(&mut self) -> Result<bool, CadenceError> {
+        Ok(self.read_bits(1)? != 0)
+    }
+
+    /// Peeks the next `n` bits (0..=32) in stream order without consuming
+    /// them; reads past the packet's end yield zero padding. This is the
+    /// hot-path companion of `read_bits` for table-driven decoders that
+    /// consume exactly the bits a lookup selected (via a plain `read_bits`,
+    /// which re-runs the bounds check and raises the same overread error).
+    #[inline]
+    pub fn peek_bits(&self, n: u32) -> u32 {
+        debug_assert!(n <= 32);
+        if n == 0 {
+            return 0;
+        }
+        let mut value: u64 = 0;
+        let mut taken = 0u32;
+        let last = self.data.len() * 8;
+        while taken < n {
+            let bit = self.bit_pos + taken as usize;
+            if bit >= last {
+                break; // zero padding past the end
+            }
+            let byte = self.data[bit / 8];
+            let off = (bit % 8) as u32;
+            let avail = 8 - off;
+            let want = (n - taken).min(avail);
+            let piece = (byte >> off) as u64 & ((1u16 << want) - 1) as u64;
+            value |= piece << taken;
+            taken += want;
+        }
+        value as u32
+    }
+
+    /// Reads `n` bits (0..=64) as an unsigned integer, LSB-first.
+    pub fn read_bits64(&mut self, n: u32) -> Result<u64, CadenceError> {
+        debug_assert!(n <= 64);
+        if n <= 32 {
+            return Ok(self.read_bits(n)? as u64);
+        }
+        let low = self.read_bits(32)? as u64;
+        let high = self.read_bits(n - 32)? as u64;
+        Ok(low | (high << 32))
+    }
+
+    /// The spec's `ilog(x)`: position of the highest set bit (0 for x <= 0).
+    pub fn ilog(x: i64) -> u32 {
+        if x <= 0 {
+            return 0;
+        }
+        (64 - (x as u64).leading_zeros()).max(1)
+    }
+}

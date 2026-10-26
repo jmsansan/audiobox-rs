@@ -4,6 +4,14 @@
 
 ### Added
 
+- Ogg Vorbis I import (#21), whole and incremental with sample-exact replay seeks:
+  1–8 channels, floor 0/1, residue 0/1/2, block switching and granule trimming.
+  Page CRC/lacing/sequence checks and preparation budgets bound decoding;
+  reads/seeks/rewinds reuse storage. Independent libvorbisfile/FFmpeg fixtures,
+  malformed-input and native/MSRV/WASI allocation controls cover the decoder.
+  Adapted packet DSP source/license provenance is retained. Encoding and
+  chained/multiplexed Ogg links remain explicitly unsupported.
+
 - Opt-in bounded virtual voices and distance culling (#22): up to 4096 logical
   sources retain their playback clocks inside a smaller physical budget. Priority,
   prepared source peaks, gain ramps and distance drive deterministic selection;
@@ -109,6 +117,8 @@
   the separate MP3 fixture contract (#100) is in `docs/mp3-export-contract.md`.
 
 ### Breaking
+
+- Exhaustive `AudioFormat` matches must handle the new decode-only `Vorbis` variant.
 
 - Full `MixerConfig` literals need `virtual_voices`, full `Play` literals need
   `resampling`, or use `..Default::default()`. Exhaustive `VoiceState` matches

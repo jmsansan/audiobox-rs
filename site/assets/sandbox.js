@@ -83,7 +83,7 @@ async function load(payload, caption, selectedFile = null) {
     resetValues(); showAudio(result, true);
     await apply();
   } catch (error) {
-    status(`${error.message} Try a WAV, FLAC or MP3 clip within the sandbox limits.`, true);
+    status(`${error.message} Try a WAV, FLAC, MP3 or Ogg Vorbis clip within the sandbox limits.`, true);
     setBusy(false);
   }
 }

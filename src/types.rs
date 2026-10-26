@@ -9,6 +9,8 @@ pub enum AudioFormat {
     Au,
     Flac,
     Mp3,
+    /// Ogg Vorbis I, decode only.
+    Vorbis,
     Raw,
 }
 impl FromStr for AudioFormat {
@@ -21,6 +23,7 @@ impl FromStr for AudioFormat {
             "au" | "snd" => Ok(Self::Au),
             "flac" => Ok(Self::Flac),
             "mp3" => Ok(Self::Mp3),
+            "ogg" | "oga" | "vorbis" => Ok(Self::Vorbis),
             "raw" | "pcm" => Ok(Self::Raw),
             _ => Err(Error::new(
                 crate::ErrorCode::UnsupportedFormat,

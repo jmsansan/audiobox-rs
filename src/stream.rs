@@ -1,6 +1,6 @@
 //! Incremental decoding and encoding.
 //!
-//! [`Decoder`] decodes WAV, FLAC or MP3 bytes held in memory a chunk at a time, with
+//! [`Decoder`] decodes WAV, FLAC, MP3 or Ogg Vorbis bytes held in memory a chunk at a time, with
 //! seeking. [`PcmDecoder`] and [`PcmEncoder`] convert raw PCM whose input chunks may
 //! end in the middle of a frame, and [`Resampler`] resamples across chunks.
 //!

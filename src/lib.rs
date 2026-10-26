@@ -92,6 +92,7 @@ pub mod metadata;
 #[cfg(feature = "mixer")]
 #[cfg_attr(docsrs, doc(cfg(feature = "mixer")))]
 pub mod mixer;
+mod ogg;
 #[cfg(feature = "events")]
 #[cfg_attr(docsrs, doc(cfg(feature = "events")))]
 pub use mixer::events;
