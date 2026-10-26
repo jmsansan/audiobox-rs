@@ -1,0 +1,33 @@
+# crate: audiobox 0.4.1
+# commit: 2a2eb05000ab3e5cea5a5002aacc8251a3e786ee (modified)
+# rustc: rustc 1.98.1 (48a229cea 2026-09-01)
+# profile: release
+# features: synth+sfx+mixer+music+events+assets+file-stream
+# target: x86_64 windows (windows)
+# cpu: AMD64 Family 23 Model 1 Stepping 1, AuthenticAMD
+# logical-cpus: 16
+# runs: 1 warm-up + 5 timed + 1 allocation-counted
+# scale: quick (10 s)
+# unix-time: 1793043128
+case,phase,runs,frames,rate,median_ms,min_ms,max_ms,mframes_per_s,realtime_x,allocs,reallocs,frees,requested_bytes,moved_bytes,peak_live_bytes,callbacks,p50_us,p99_us,p999_us,max_us,deadline_us,over_deadline,process_rss_bytes,checksum
+mixer/effect/lowpass-16/10s,prepare,5,0,0,3.1333,2.9903,3.2086,0.000,0.0,37,0,0,3708085,0,3708085,0,,,,,,,,b73fe59d41f6d624
+mixer/effect/lowpass-16/10s,render,5,480000,48000,118.8895,118.3965,130.4830,4.037,84.1,0,0,0,0,0,0,9375,62.80,89.40,130.40,180.60,5333.3,0,,b73fe59d41f6d624
+mixer/effect/lowpass-16/10s,drop,5,0,0,0.4784,0.4030,0.5117,0.000,0.0,0,0,72,0,0,0,0,,,,,,,,b73fe59d41f6d624
+mixer/effect/highpass-16/10s,prepare,5,0,0,3.1441,3.1160,3.4837,0.000,0.0,37,0,0,3708085,0,3708085,0,,,,,,,,6a993f72d4857c97
+mixer/effect/highpass-16/10s,render,5,480000,48000,119.5826,118.7937,135.1678,4.014,83.6,0,0,0,0,0,0,9375,63.00,106.40,145.80,346.60,5333.3,0,,6a993f72d4857c97
+mixer/effect/highpass-16/10s,drop,5,0,0,0.4055,0.3816,0.5158,0.000,0.0,0,0,72,0,0,0,0,,,,,,,,6a993f72d4857c97
+mixer/effect/compressor-16/10s,prepare,5,0,0,3.1569,3.0377,4.1515,0.000,0.0,37,0,0,3708085,0,3708085,0,,,,,,,,f66990b9a922ea38
+mixer/effect/compressor-16/10s,render,5,480000,48000,135.0814,133.8841,167.2427,3.553,74.0,0,0,0,0,0,0,9375,72.00,119.90,146.50,435.50,5333.3,0,,f66990b9a922ea38
+mixer/effect/compressor-16/10s,drop,5,0,0,0.4079,0.4023,0.5846,0.000,0.0,0,0,72,0,0,0,0,,,,,,,,f66990b9a922ea38
+mixer/effect/chorus-16/10s,prepare,5,0,0,3.1576,3.0570,4.2601,0.000,0.0,37,0,0,3708085,0,3708085,0,,,,,,,,11936cc0c668cfbb
+mixer/effect/chorus-16/10s,render,5,480000,48000,234.4797,230.5787,276.5580,2.047,42.6,0,0,0,0,0,0,9375,119.80,235.60,400.50,1068.40,5333.3,0,,11936cc0c668cfbb
+mixer/effect/chorus-16/10s,drop,5,0,0,0.4841,0.4070,0.9256,0.000,0.0,0,0,73,0,0,0,0,,,,,,,,11936cc0c668cfbb
+mixer/effect/phaser-16/10s,prepare,5,0,0,3.1144,3.0541,3.1808,0.000,0.0,37,0,0,3708085,0,3708085,0,,,,,,,,60ea46c5395c4155
+mixer/effect/phaser-16/10s,render,5,480000,48000,316.7153,315.9144,317.3452,1.516,31.6,0,0,0,0,0,0,9375,168.70,196.40,231.70,265.60,5333.3,0,,60ea46c5395c4155
+mixer/effect/phaser-16/10s,drop,5,0,0,0.4039,0.3827,0.4432,0.000,0.0,0,0,73,0,0,0,0,,,,,,,,60ea46c5395c4155
+mixer/effect/delay-16/10s,prepare,5,0,0,3.0742,3.0449,3.2383,0.000,0.0,37,0,0,3708085,0,3708085,0,,,,,,,,6a3e0d1cc753fbd7
+mixer/effect/delay-16/10s,render,5,480000,48000,130.7357,129.7080,131.4105,3.672,76.5,0,0,0,0,0,0,9375,69.20,84.50,120.10,147.20,5333.3,0,,6a3e0d1cc753fbd7
+mixer/effect/delay-16/10s,drop,5,0,0,0.5428,0.5323,0.6060,0.000,0.0,0,0,73,0,0,0,0,,,,,,,,6a3e0d1cc753fbd7
+mixer/effect/reverb-16/10s,prepare,5,0,0,3.0934,2.8684,3.2226,0.000,0.0,37,0,0,3708085,0,3708085,0,,,,,,,,73f569340d128110
+mixer/effect/reverb-16/10s,render,5,480000,48000,130.2472,128.2611,137.0567,3.685,76.8,0,0,0,0,0,0,9375,68.90,107.20,140.90,397.90,5333.3,0,,73f569340d128110
+mixer/effect/reverb-16/10s,drop,5,0,0,0.4237,0.4136,0.4374,0.000,0.0,0,0,85,0,0,0,0,,,,,,,,73f569340d128110

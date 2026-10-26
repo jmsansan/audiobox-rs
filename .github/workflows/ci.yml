@@ -77,7 +77,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: cargo test --locked --offline --release --target wasm32-wasip1 --all-features --test deterministic --test delivery --test measurements --test true_peak --test normalization --test mp3_contract --test mp3_gapless --test dither --test synth --test prepared_synth --test synth_controls --test sfx --test assets --test music --test metadata --test effects --test routing --test colour_effects --test drums --test chip --test spatial --test events --test synthwave
+      - run: cargo test --locked --offline --release --target wasm32-wasip1 --all-features --test deterministic --test delivery --test measurements --test true_peak --test normalization --test mp3_contract --test mp3_gapless --test virtual_voices --test dither --test synth --test prepared_synth --test synth_controls --test sfx --test assets --test music --test metadata --test effects --test routing --test colour_effects --test drums --test chip --test spatial --test events --test synthwave
         env:
           CARGO_TARGET_WASM32_WASIP1_RUNNER: node --no-warnings scripts/wasi-run.mjs
           AUDIOBOX_MP3_CONTRACT_REPORT: ${{ github.workspace }}/target/mp3-contract/wasi-release.csv

@@ -538,7 +538,7 @@ impl Mixer {
         } else {
             0
         };
-        if incoming > 0 && occupied - removed + incoming > self.max_voices {
+        if incoming > 0 && occupied - removed + incoming > self.voice_limit {
             let id = request.id;
             return self.return_music(
                 request,

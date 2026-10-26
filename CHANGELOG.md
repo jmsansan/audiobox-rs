@@ -4,6 +4,15 @@
 
 ### Added
 
+- Opt-in bounded virtual voices and distance culling (#22): up to 4096 logical
+  sources retain their playback clocks inside a smaller physical budget. Priority,
+  prepared source peaks, gain ramps and distance drive deterministic selection;
+  memory promotion rebuilds filter/loop history, and stateful streams consume and
+  discard. `VoiceState::Virtual` and physical/virtual counts expose the state.
+  `Play::resampling` adds explicit Linear interpolation beside default sinc, with
+  a documented aliasing tradeoff. Native/WASI fixtures, allocation controls, the
+  `virtual_voices` example and on-demand release benchmarks cover the feature.
+
 - Bounded numerical render-review primitives for Studio (#86): per-channel
   `dc_means`, frame-exact `threshold_silence`, Pearson `stereo_measurements` with
   mid/side mean-square energy, and explicit `measure_boundaries`/loop-seam steps.
@@ -82,6 +91,9 @@
 
 ### Fixed
 
+- Disconnected mixer controls retain finished voices in bounded retirement storage
+  until final mixer destruction, avoiding source frees inside `render` (#22).
+
 - MP3 gapless interoperability (#95): Info exports now use the explicit audiobox
   LAME-layout ID `LAMEabox1`, valid music/tag CRCs and at least two coded audio
   frames. Tested FFmpeg decodes recover the exact input frame count, including
@@ -97,6 +109,10 @@
   the separate MP3 fixture contract (#100) is in `docs/mp3-export-contract.md`.
 
 ### Breaking
+
+- Full `MixerConfig` literals need `virtual_voices`, full `Play` literals need
+  `resampling`, or use `..Default::default()`. Exhaustive `VoiceState` matches
+  must handle `Virtual` (#22).
 
 - `read_audio_file` now rejects nonregular paths and encoded files over 512 MiB.
   Use `read_audio_file_with_options` to change the encoded-byte cap.

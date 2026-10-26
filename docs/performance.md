@@ -6,6 +6,10 @@ optimization records its before/after comparison here, with links to its issue:
 (codecs) and #83 (file streaming and assets). Numbers describe the host they ran
 on. They are not throughput or real-time guarantees.
 
+The 0.5 virtual-voice, distance-culling and explicit Linear-resampler cases (#22)
+reuse this runner and protocol. See [feature contracts and recorded results](virtual-voices.md)
+for logical/physical budgets, individual effects and resampler quality comparisons.
+
 ## Running
 
 The runner is a `cargo bench` target without a harness or dependencies,

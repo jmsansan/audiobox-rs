@@ -19,7 +19,7 @@ use audiobox::assets::{AssetKey, AudioCache, Loader, LoaderConfig};
 use audiobox::mixer::effects::{Chorus, Compressor, Delay, Effect, Phaser, Reverb};
 use audiobox::mixer::{
     Attenuation, BusRouting, BusSend, Emitter, Fade, Loop, MasterLimiter, Mixer, MixerConfig,
-    OutputLayout, Play, SendPosition, Sound, Variation,
+    OutputLayout, Play, ResamplingQuality, SendPosition, Sound, Variation, VirtualVoices,
 };
 use audiobox::sfx::{Effect as Sfx, Preset};
 use audiobox::stream::Decoder;
@@ -643,6 +643,11 @@ fn synth_cases(cases: &mut Vec<Case>, seconds: f64, tag: &str) {
 }
 
 struct MixerSetup {
+    physical: Option<usize>,
+    virtual_capacity: Option<usize>,
+    quality: ResamplingQuality,
+    distance_cull: bool,
+    single_effect: Option<Effect>,
     voices: usize,
     source_rate: u32,
     pitched: bool,
@@ -654,6 +659,11 @@ struct MixerSetup {
     irregular: bool,
 }
 const PLAIN: MixerSetup = MixerSetup {
+    physical: None,
+    virtual_capacity: None,
+    quality: ResamplingQuality::Sinc,
+    distance_cull: false,
+    single_effect: None,
     voices: 0,
     source_rate: RATE,
     pitched: false,
@@ -679,9 +689,17 @@ fn mixer_case(cases: &mut Vec<Case>, name: &str, seconds: f64, tag: &str, setup:
                 let config = MixerConfig {
                     sample_rate: RATE,
                     channels,
-                    max_voices: if setup.burst { 32 } else { setup.voices.max(1) },
+                    max_voices: setup.physical.unwrap_or(if setup.burst {
+                        32
+                    } else {
+                        setup.voices.max(1)
+                    }),
+                    virtual_voices: setup.virtual_capacity.map(|capacity| VirtualVoices {
+                        capacity,
+                        threshold: 0.0001,
+                    }),
                     buses: vec!["fx".into(), "key".into()],
-                    queue: 1024,
+                    queue: setup.voices.max(1024),
                     limiter: setup.effects.then(|| MasterLimiter {
                         lookahead_ms: 2.0,
                         ..MasterLimiter::default()
@@ -707,9 +725,15 @@ fn mixer_case(cases: &mut Vec<Case>, name: &str, seconds: f64, tag: &str, setup:
                     )
                     .unwrap();
             }
+            if let Some(effect) = &setup.single_effect {
+                handle
+                    .set_effects(fx, std::slice::from_ref(effect))
+                    .unwrap();
+            }
             let mut ids = Vec::new();
             for v in 0..setup.voices {
                 let play = Play {
+                    resampling: setup.quality,
                     bus: if setup.effects && v % 8 == 0 { key } else { fx },
                     looping: Loop::Whole,
                     gain: 0.05,
@@ -719,8 +743,20 @@ fn mixer_case(cases: &mut Vec<Case>, name: &str, seconds: f64, tag: &str, setup:
                     } else {
                         1.0
                     },
-                    emitter: setup.spatial.then(|| Emitter {
-                        position: [(v as f32 - 16.0) * 2.0, 0.0, -10.0],
+                    emitter: (setup.spatial || setup.distance_cull).then(|| Emitter {
+                        position: if setup.distance_cull {
+                            [
+                                0.0,
+                                0.0,
+                                if v < setup.physical.unwrap_or(16) {
+                                    -1.0
+                                } else {
+                                    -200.0
+                                },
+                            ]
+                        } else {
+                            [(v as f32 - 16.0) * 2.0, 0.0, -10.0]
+                        },
                         velocity: [3.0, 0.0, 0.0],
                         attenuation: Attenuation::default(),
                     }),
@@ -927,6 +963,109 @@ fn routing_cases(cases: &mut Vec<Case>, seconds: f64, tag: &str) {
 
 fn mixer_cases(cases: &mut Vec<Case>, seconds: f64, tag: &str) {
     routing_cases(cases, seconds, tag);
+    for (name, effect) in [
+        ("lowpass", Effect::LowPass { cutoff_hz: 6000.0 }),
+        ("highpass", Effect::HighPass { cutoff_hz: 200.0 }),
+        ("compressor", Effect::Compressor(Compressor::default())),
+        ("chorus", Effect::Chorus(Chorus::default())),
+        ("phaser", Effect::Phaser(Phaser::default())),
+        ("delay", Effect::Delay(Delay::default())),
+        ("reverb", Effect::Reverb(Reverb::default())),
+    ] {
+        mixer_case(
+            cases,
+            &format!("effect/{name}-16"),
+            seconds,
+            tag,
+            MixerSetup {
+                voices: 16,
+                single_effect: Some(effect),
+                ..PLAIN
+            },
+        );
+    }
+    for (name, voices, physical, virtual_capacity, quality, distance_cull) in [
+        (
+            "scale/physical-16-sinc",
+            16,
+            None,
+            None,
+            ResamplingQuality::Sinc,
+            false,
+        ),
+        (
+            "scale/physical-256-sinc",
+            256,
+            None,
+            None,
+            ResamplingQuality::Sinc,
+            false,
+        ),
+        (
+            "scale/physical-256-linear",
+            256,
+            None,
+            None,
+            ResamplingQuality::Linear,
+            false,
+        ),
+        (
+            "scale/logical-256-physical-16-sinc",
+            256,
+            Some(16),
+            Some(256),
+            ResamplingQuality::Sinc,
+            false,
+        ),
+        (
+            "scale/logical-256-physical-16-linear",
+            256,
+            Some(16),
+            Some(256),
+            ResamplingQuality::Linear,
+            false,
+        ),
+        (
+            "scale/distance-256-physical-16",
+            256,
+            Some(16),
+            Some(256),
+            ResamplingQuality::Sinc,
+            true,
+        ),
+        (
+            "scale/logical-1024-physical-64",
+            1024,
+            Some(64),
+            Some(1024),
+            ResamplingQuality::Sinc,
+            false,
+        ),
+        (
+            "scale/logical-4096-physical-64",
+            4096,
+            Some(64),
+            Some(4096),
+            ResamplingQuality::Sinc,
+            false,
+        ),
+    ] {
+        mixer_case(
+            cases,
+            name,
+            seconds,
+            tag,
+            MixerSetup {
+                voices,
+                physical,
+                virtual_capacity,
+                quality,
+                distance_cull,
+                source_rate: 44_100,
+                ..PLAIN
+            },
+        );
+    }
     mixer_case(cases, "empty", seconds, tag, PLAIN);
     for voices in [16, 64] {
         mixer_case(
