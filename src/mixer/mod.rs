@@ -68,7 +68,10 @@
 //! mixer's [`Space2d`].
 //!
 //! Every voice plays through a bus: the master bus, or one of the named buses of
-//! [`MixerConfig::buses`], which play through the master. A voice's samples are scaled
+//! [`MixerConfig::buses`], which by default play through the master. [`BusRouting`]
+//! and [`MixerHandle::set_routing`] opt into nested groups and shared pre/post-fader
+//! [`BusSend`] routes, with stereo bus balance and explicit mute/solo path rules.
+//! A voice's samples are scaled
 //! by its gain, its fades, its pan, its bus's gain and the master gain.
 //! [`effects`] adds ordered bus chains, ramped filters, compression/ducking, delay
 //! and reverb. Sidechain dependencies order named buses before master processing.
@@ -128,6 +131,8 @@ mod limiter;
 #[cfg_attr(docsrs, doc(cfg(feature = "music")))]
 pub mod music;
 mod queue;
+mod routing;
+pub use routing::{BusRouting, BusSend, MAX_BUS_ROUTES, RoutingId, SendPosition};
 pub mod spatial;
 mod status;
 mod voice;
@@ -579,6 +584,10 @@ pub enum MixerEvent {
     EffectsApplied(BusId, u64),
     /// An effect edit was refused; the existing chain and settings are unchanged.
     EffectsRejected(BusId, ErrorCode),
+    /// A prepared audio graph/settings edit was installed at this output frame.
+    RoutingApplied(RoutingId, u64),
+    /// A graph conflicted with actual sidechain dependencies; prior state survives.
+    RoutingRejected(RoutingId, ErrorCode),
     /// A whole music operation took effect at this output frame; a fade may continue.
     #[cfg(feature = "music")]
     MusicApplied(music::MusicId, u64),
@@ -588,6 +597,7 @@ pub enum MixerEvent {
 }
 
 enum Action {
+    Routing(Box<routing::Edit>),
     Effects(Box<effects::Edit>),
     Effect(usize, usize, effects::Settings, u64, FadeCurve),
     #[cfg(feature = "music")]
@@ -633,6 +643,7 @@ struct Bus {
 
 /// The audio thread's half of the mixer. See the [module documentation](self).
 pub struct Mixer {
+    routing: routing::AudioRouting,
     effects: effects::AudioEffects,
     rate: u32,
     channels: usize,
@@ -661,6 +672,7 @@ pub struct Mixer {
 
 /// The game's half of the mixer: starts, changes and stops voices.
 pub struct MixerHandle {
+    routing: routing::ControlRouting,
     effects: effects::ControlEffects,
     rate: u32,
     channels: usize,
@@ -756,7 +768,9 @@ impl Mixer {
         let clock = Arc::new(AtomicU64::new(0));
         let status = Arc::new(status::Table::new(slots));
         let (audio_effects, control_effects) = effects::create(queue, buses.len() + 1);
+        let (audio_routing, control_routing) = routing::create(queue);
         let mixer = Mixer {
+            routing: audio_routing,
             effects: audio_effects,
             rate: sample_rate,
             channels,
@@ -790,6 +804,7 @@ impl Mixer {
             limiter_gain: limiter_gain.clone(),
         };
         let handle = MixerHandle {
+            routing: control_routing,
             effects: control_effects,
             rate: sample_rate,
             channels,
@@ -876,6 +891,7 @@ impl Mixer {
         self.publish();
         self.send_returns();
         self.effects.send_returns();
+        self.routing.send_returns();
         self.clock.store(end, Ordering::Release);
     }
 
@@ -931,6 +947,7 @@ impl Mixer {
 
     fn apply(&mut self, frame: u64, action: Action) {
         match action {
+            Action::Routing(edit) => self.apply_routing(frame, edit),
             Action::Effects(edit) => self.apply_effects(frame, edit),
             Action::Effect(bus, slot, settings, len, curve) => {
                 self.apply_effect(bus, slot, settings, len, curve)
@@ -1240,7 +1257,9 @@ impl Mixer {
         }
         self.retire_done();
         let end = first + frames as u64;
-        if self.buses.iter().any(|bus| bus.effects.is_some()) {
+        if self.routing.graph.is_some() {
+            self.mix_routing(first, out);
+        } else if self.buses.iter().any(|bus| bus.effects.is_some()) {
             self.mix_effects(first, out);
         } else {
             let (master, master_pause) = (self.buses[0].gain, self.buses[0].pause);
@@ -1409,8 +1428,10 @@ impl MixerHandle {
     pub fn resume(&mut self, voice: VoiceId, fade: Fade) -> Result<()> {
         self.now().resume(voice, fade)
     }
-    /// Pauses every voice routed through a bus, and only those; [`BusId::MASTER`]
-    /// pauses every voice. Voices started on a paused bus wait for it to resume.
+    /// Pauses voices directly assigned to a bus; [`BusId::MASTER`] pauses all.
+    /// A paused group also gates routed input/freezes its inserts, but does not
+    /// recursively freeze child sources. Use mute for advancing silent playback.
+    /// Voices started directly on a paused bus wait for it to resume.
     pub fn pause_bus(&mut self, bus: BusId, fade: Fade) -> Result<()> {
         self.now().pause_bus(bus, fade)
     }
@@ -1499,11 +1520,14 @@ impl MixerHandle {
     pub fn set_bus_gain(&mut self, bus: BusId, gain: f32, fade: Fade) -> Result<()> {
         self.now().set_bus_gain(bus, gain, fade)
     }
-    /// Returns the next event, freeing finished voices and retired effect chains
-    /// on this thread. Voice and effect queues are independent; their combined
-    /// polling order is not a chronological ordering of both event kinds.
+    /// Returns the next event, freeing finished voices and retired effect/routing
+    /// edits on this thread. These queues are independent; combined polling order
+    /// is not a chronological ordering across event kinds.
     pub fn poll_event(&mut self) -> Option<MixerEvent> {
         if let Some(event) = self.effects.poll() {
+            return Some(event);
+        }
+        if let Some(event) = self.routing.poll() {
             return Some(event);
         }
         while let Some(returned) = self.returns.pop() {

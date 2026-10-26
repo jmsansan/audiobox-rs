@@ -18,8 +18,8 @@ use audiobox::analyze;
 use audiobox::assets::{AssetKey, AudioCache, Loader, LoaderConfig};
 use audiobox::mixer::effects::{Chorus, Compressor, Delay, Effect, Phaser, Reverb};
 use audiobox::mixer::{
-    Attenuation, Emitter, Fade, Loop, MasterLimiter, Mixer, MixerConfig, OutputLayout, Play, Sound,
-    Variation,
+    Attenuation, BusRouting, BusSend, Emitter, Fade, Loop, MasterLimiter, Mixer, MixerConfig,
+    OutputLayout, Play, SendPosition, Sound, Variation,
 };
 use audiobox::sfx::{Effect as Sfx, Preset};
 use audiobox::stream::Decoder;
@@ -818,7 +818,115 @@ fn mixer_case(cases: &mut Vec<Case>, name: &str, seconds: f64, tag: &str, setup:
     }));
 }
 
+fn routing_cases(cases: &mut Vec<Case>, seconds: f64, tag: &str) {
+    for (buses, routes, voices) in [(16, 32, 16), (64, 256, 32), (255, 1024, 64), (255, 0, 64)] {
+        let label = if routes == 0 {
+            format!("mixer/routing-flat-{buses}/{tag}")
+        } else {
+            format!("mixer/routing-{buses}-{routes}/{tag}")
+        };
+        cases.push(case(label, move || {
+            let tone = Arc::new(music(1.37, RATE, 2));
+            let names: Vec<_> = (0..buses).map(|i| format!("bus-{i}")).collect();
+            let callbacks = (seconds * RATE as f64) as usize / BLOCK;
+            let mut out = vec![0.0; BLOCK * 2];
+            Box::new(move |r: &mut Recorder| {
+                let (mut mixer, mut handle) = r.phase("prepare-mixer", || {
+                    (
+                        Mixer::new(MixerConfig {
+                            sample_rate: RATE,
+                            channels: 2,
+                            max_voices: voices,
+                            buses: names.clone(),
+                            queue: 256,
+                            ..Default::default()
+                        })
+                        .unwrap(),
+                        NONE,
+                    )
+                });
+                let ids: Vec<_> = names.iter().map(|n| handle.bus(n).unwrap()).collect();
+                if routes != 0 {
+                    let mut settings: Vec<_> = ids
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &b)| BusRouting {
+                            output: Some(if i + 1 < buses {
+                                ids[i + 1]
+                            } else {
+                                audiobox::mixer::BusId::MASTER
+                            }),
+                            ..BusRouting::new(b)
+                        })
+                        .collect();
+                    let mut count = buses;
+                    for jump in 2..buses {
+                        for from in 0..buses - jump {
+                            if count == routes {
+                                break;
+                            }
+                            settings[from].sends.push(BusSend {
+                                destination: ids[from + jump],
+                                gain: 0.01,
+                                position: if count % 2 == 0 {
+                                    SendPosition::PreFader
+                                } else {
+                                    SendPosition::PostFader
+                                },
+                            });
+                            count += 1;
+                        }
+                    }
+                    assert_eq!(count, routes);
+                    r.phase("prepare-graph", || {
+                        handle.set_routing(&settings).unwrap();
+                        ((), NONE)
+                    });
+                }
+                for v in 0..voices {
+                    handle
+                        .play(
+                            tone.clone(),
+                            &Play {
+                                bus: ids[v % (buses / 4).max(1)],
+                                gain: 0.025,
+                                looping: Loop::Whole,
+                                ..Default::default()
+                            },
+                        )
+                        .unwrap();
+                }
+                r.phase("apply", || {
+                    mixer.render(&mut []);
+                    ((), NONE)
+                });
+                r.blocks(
+                    Blocks {
+                        name: "render",
+                        max: callbacks,
+                        channels: 2,
+                        rate: RATE,
+                        deadline: BLOCK,
+                    },
+                    &mut out,
+                    |_| {},
+                    |_, out| {
+                        mixer.render(out);
+                        Some(out.len())
+                    },
+                );
+                r.phase("drop", || {
+                    drop(mixer);
+                    while handle.poll_event().is_some() {}
+                    (drop(handle), NONE)
+                });
+            })
+        }));
+    }
+}
+
 fn mixer_cases(cases: &mut Vec<Case>, seconds: f64, tag: &str) {
+    routing_cases(cases, seconds, tag);
     mixer_case(cases, "empty", seconds, tag, PLAIN);
     for voices in [16, 64] {
         mixer_case(
