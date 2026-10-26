@@ -197,7 +197,9 @@ pub(crate) fn encode(audio: &Audio, options: &EncodeOptions) -> Result<Vec<u8>> 
         .checked_add(flush)
         .ok_or_else(|| Error::encode("MP3 length overflow"))?
         .div_ceil(1152)
-        .max(1);
+        // Independent demuxers require two consecutive audio frames even after
+        // skipping the Info frame. Gapless padding removes the extra silence.
+        .max(2);
     let padding = count * 1152 - audio.frames() - delay;
     let mut states: Vec<_> = (0..channels).map(|_| Analysis::new()).collect();
     let mut frames = Vec::new();
@@ -253,7 +255,8 @@ pub(crate) fn encode(audio: &Audio, options: &EncodeOptions) -> Result<Vec<u8>> 
         out.resize(length, 0);
         frames.extend_from_slice(&out);
     }
-    // A self-contained Info frame with a printable encoder tag records exact priming/padding.
+    // A self-contained Info frame with a LAME-layout gapless extension. The
+    // compatibility ID is audiobox's own (not a claim to use the LAME encoder).
     let tag_bitrate = bitrate.max(64);
     let tag_length = 144 * tag_bitrate as usize * 1000 / rate as usize;
     let mut tag = frame_header(tag_bitrate, rate, channels, false);
@@ -265,11 +268,28 @@ pub(crate) fn encode(audio: &Audio, options: &EncodeOptions) -> Result<Vec<u8>> 
     let total_bytes = (tag.len() + frames.len()) as u32;
     tag[at + 12..at + 16].copy_from_slice(&total_bytes.to_be_bytes());
     let p = at + 16;
-    tag[p..p + 9].copy_from_slice(b"audiobox ");
+    tag[p..p + 9].copy_from_slice(b"LAMEabox1");
+    tag[p + 9] = 1; // revision zero, CBR method
     tag[p + 21] = (delay >> 4) as u8;
     tag[p + 22] = ((delay & 15) << 4) as u8 | ((padding >> 8) & 15) as u8;
     tag[p + 23] = padding as u8;
+    tag[p + 28..p + 32].copy_from_slice(&total_bytes.to_be_bytes());
+    tag[p + 32..p + 34].copy_from_slice(&gapless_crc(&frames).to_be_bytes());
+    let crc = gapless_crc(&tag[..p + 34]);
+    tag[p + 34..p + 36].copy_from_slice(&crc.to_be_bytes());
     tag.extend_from_slice(&frames);
     id3.extend_from_slice(&tag);
     Ok(id3)
+}
+
+// Reflected CRC-16/ANSI, initial zero, for the music and Info extension checksums.
+fn gapless_crc(bytes: &[u8]) -> u16 {
+    let mut crc = 0u16;
+    for &byte in bytes {
+        crc ^= byte as u16;
+        for _ in 0..8 {
+            crc = (crc >> 1) ^ if crc & 1 != 0 { 0xa001 } else { 0 };
+        }
+    }
+    crc
 }

@@ -11,11 +11,16 @@ pub(crate) use encoder::encode;
 pub struct Mp3Info {
     pub sample_rate: u32,
     pub channels: usize,
+    /// Coded MPEG audio frames, excluding the Info frame; not PCM sample frames.
     pub frames: usize,
     pub duration: f64,
     pub bitrate: u32,
     pub mpeg_version: u8,
+    /// Encoder priming in source-sample frames (528 for audiobox exports).
+    /// An MPEG decoder adds its own delay; FFmpeg's Layer III delay is 529.
     pub encoder_delay: usize,
+    /// End padding in the gapless convention, including the decoder-delay credit.
+    /// Exact PCM length is coded frames * samples per MPEG frame - delay - padding.
     pub encoder_padding: usize,
 }
 #[derive(Clone, Copy, Debug)]

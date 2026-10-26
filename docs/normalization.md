@@ -103,13 +103,14 @@ use this normalization contract.
 The tests compare normalized PCM first, encoded bytes second and decoded PCM third
 so a container/codec difference cannot be mistaken for a normalization difference.
 No MP3 encoded-byte divergence was reproduced by the Windows/WASI fixtures.
-The MP3 implementation is unchanged. The broader #100 fixture matrix includes
+The MP3 transform/quantizer math is unchanged. The broader #100 fixture matrix includes
 mono/stereo, all encoder rates, representative bitrates, short/quiet signals and
 adjacent-f32 output-decision boundaries. It compares source, encoded and decoded
 hashes in that order and requires an actual reproducer before any codec fix.
 Studio can select LUFS directly through this API and use WAV/FLAC when its export
 policy requires a general exact-byte promise. Independent-decoder MP3 gapless
-timing remains tracked separately in #95.
+timing is covered by the separate [#95 gapless correction](mp3-gapless.md), which
+intentionally updates encoded hashes while retaining source/decoded PCM hashes.
 
 ## Verification and resources
 

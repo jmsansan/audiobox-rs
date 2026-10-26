@@ -22,3 +22,7 @@ Its stage hashes and encoded lengths are regression evidence, not reference
 quality measurements or a general arbitrary-input MP3 identity guarantee.
 See `docs/mp3-export-contract.md` for the matrix, hash layout, comparison artifacts
 and individual-case/boundary reproduction helpers. The test and data are MIT-licensed.
+
+The #95 gapless correction updates only the MP3 encoded lengths/hashes in this
+246-case CSV. Every source and decoded-PCM hash was compared and retained. Its
+separate 32..=48-frame tail compatibility control is in `tests/mp3_gapless.rs`.

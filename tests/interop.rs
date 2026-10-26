@@ -253,17 +253,7 @@ fn mp3_outputs_have_correct_gain_delay_and_quality_in_ffmpeg() {
             std::fs::write(&path, encode(&source, AudioFormat::Mp3).unwrap()).unwrap();
             run(&["-i", text(&path), "-f", "f32le", text(&out)]);
             let reference = raw(&out);
-            assert!(reference.len() >= source.frames() * channels, "rate {rate}");
-            let info = mp3::probe_mp3(&std::fs::read(&path).unwrap()).unwrap();
-            // FFmpeg only honors priming for its encoder-name whitelist. Align the
-            // reference by the tag when it reports the complete MPEG frames.
-            let reference = if reference.len() == source.frames() * channels {
-                reference
-            } else {
-                reference[(info.encoder_delay + 529) * channels
-                    ..(info.encoder_delay + 529 + source.frames()) * channels]
-                    .to_vec()
-            };
+            assert_eq!(reference.len(), source.frames() * channels, "rate {rate}");
             let samples = source.to_interleaved();
             let start = 1000 * channels;
             let end = 10000 * channels;
@@ -281,6 +271,137 @@ fn mp3_outputs_have_correct_gain_delay_and_quality_in_ffmpeg() {
         }
     }
 }
+#[test]
+fn mp3_gapless_frames_and_skip_samples_match_ffmpeg_without_consumer_trimming() {
+    if !enabled() {
+        return;
+    }
+    let tmp = Temp::new();
+    let mut worst = 0.0f32;
+    for rate in [32000, 44100, 48000] {
+        for channels in [1, 2] {
+            for bitrate in [32, 320] {
+                for frames in [0, 1, 48, 49, 575, 1153, rate as usize - 1, rate as usize] {
+                    let source = Audio::new(
+                        (0..channels)
+                            .map(|c| {
+                                (0..frames)
+                                    .map(|i| {
+                                        if frames == rate as usize {
+                                            0.0
+                                        } else if i == 0 {
+                                            0.5 / (c + 1) as f32
+                                        } else if i == frames - 1 {
+                                            -0.25
+                                        } else if i % 97 == 0 {
+                                            0.125
+                                        } else {
+                                            0.0
+                                        }
+                                    })
+                                    .collect()
+                            })
+                            .collect(),
+                        rate,
+                    )
+                    .unwrap();
+                    let options = EncodeOptions {
+                        bitrate,
+                        tags: Tags {
+                            title: Some("Gapless control".into()),
+                            artist: Some("audiobox".into()),
+                            album: Some("Original synthetic fixture".into()),
+                            track: Some("1/2".into()),
+                            year: Some("2026".into()),
+                            genre: Some("Synthetic".into()),
+                            isrc: Some("ZZABC2600001".into()),
+                            cover: Some(
+                                CoverArt::new(
+                                    "image/png",
+                                    include_bytes!("fixtures/cover.png").to_vec(),
+                                )
+                                .unwrap(),
+                            ),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    };
+                    let bytes = encode_with_options(&source, AudioFormat::Mp3, &options).unwrap();
+                    let path = tmp.path("gapless.mp3");
+                    let output = tmp.path("gapless.raw");
+                    std::fs::write(&path, &bytes).unwrap();
+                    run(&[
+                        "-i",
+                        text(&path),
+                        "-map",
+                        "0:a:0",
+                        "-f",
+                        "f32le",
+                        text(&output),
+                    ]);
+                    let external = raw(&output);
+                    let own = decode(&bytes).unwrap();
+                    let info = mp3::probe_mp3(&bytes).unwrap();
+                    assert_eq!(own.info().tags, options.tags);
+                    assert_eq!(
+                        external.len(),
+                        frames * channels,
+                        "{rate}/{channels}/{bitrate}/{frames} FFmpeg frame count"
+                    );
+                    assert_eq!(own.frames(), frames);
+                    let difference = external
+                        .iter()
+                        .zip(own.to_interleaved())
+                        .map(|(&a, b)| (a - b).abs())
+                        .fold(0.0f32, f32::max);
+                    worst = worst.max(difference);
+                    assert!(
+                        difference < 0.0015,
+                        "{rate}/{channels}/{bitrate}/{frames} aligned decoder max error {difference}"
+                    );
+                    let probe = Command::new("ffprobe")
+                        .args([
+                            "-v",
+                            "error",
+                            "-select_streams",
+                            "a:0",
+                            "-show_packets",
+                            "-show_streams",
+                            "-show_entries",
+                            "packet_side_data=side_data_type,skip_samples,discard_padding:stream_tags=encoder",
+                            "-of",
+                            "default=noprint_wrappers=1",
+                            text(&path),
+                        ])
+                        .output()
+                        .expect("gapless interoperability checks require ffprobe");
+                    assert!(
+                        probe.status.success(),
+                        "{}",
+                        String::from_utf8_lossy(&probe.stderr)
+                    );
+                    let packets = String::from_utf8(probe.stdout).unwrap();
+                    assert!(packets.contains("side_data_type=Skip Samples"));
+                    assert!(
+                        packets.contains("TAG:encoder=LAMEabox1"),
+                        "Info CRC not accepted: {packets}"
+                    );
+                    let sum = |key: &str| {
+                        packets
+                            .lines()
+                            .filter_map(|l| l.strip_prefix(key))
+                            .map(|v| v.parse::<usize>().unwrap())
+                            .sum::<usize>()
+                    };
+                    assert_eq!(sum("skip_samples="), info.encoder_delay + 529);
+                    assert_eq!(sum("discard_padding="), info.encoder_padding - 529);
+                }
+            }
+        }
+    }
+    println!("96 independent gapless cases; aligned decoder max amplitude error {worst}");
+}
+
 #[test]
 fn external_mp3_all_rates_joint_stereo_and_vbr() {
     if !enabled() {
