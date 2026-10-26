@@ -17,6 +17,8 @@ pub enum VoiceState {
     /// Fading out after a stop or a steal.
     Stopping,
     Finished,
+    /// Retained and advancing without interpolation/mixing; can become physical.
+    Virtual,
 }
 
 /// A voice's state and its position in its sound, in source frames. A looping voice's
@@ -87,6 +89,7 @@ impl Table {
                         0 => VoiceState::Playing,
                         1 => VoiceState::Paused,
                         2 => VoiceState::Stopping,
+                        4 => VoiceState::Virtual,
                         _ => VoiceState::Finished,
                     };
                     return Some(VoiceStatus { state, position });

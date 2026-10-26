@@ -991,6 +991,12 @@ fn start(music: &'static [u8], jump: Arc<audiobox::Audio>) -> audiobox::Result<(
   fades in, out and between gains with a `FadeCurve`. At most `max_voices` play; a new
   voice takes the place of the lowest-priority, oldest voice if that priority is not
   higher than its own, which fades out over 5 ms; otherwise the new voice is rejected.
+- **Virtual voices (opt-in):** `MixerConfig::virtual_voices` retains up to 4096
+  logical voices within a smaller physical `max_voices` budget. Quiet, distant or
+  lower-ranked sources keep their clocks and can return in sync; `VoiceState::Virtual`
+  exposes that state. `Play::resampling` selects the default sinc or cheaper Linear
+  interpolation (without anti-alias filtering). See [contracts, limits and measured
+  costs](docs/virtual-voices.md) and `cargo run --example virtual_voices --features mixer`.
 - **Rate, pitch and variation:** a playback rate and a pitch offset per voice, set at
   the start and changed while it plays with a ramp, and seeded random variation of
   pitch and gain for repeated sounds:

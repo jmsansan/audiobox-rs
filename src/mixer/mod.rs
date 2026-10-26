@@ -52,12 +52,20 @@
 //!
 //! # Voices and buses
 //!
-//! At most [`MixerConfig::max_voices`] voices play at once. When a voice starts while
+//! By default at most [`MixerConfig::max_voices`] voices play at once. When a voice starts while
 //! that many play, it takes the place of the playing voice with the lowest priority,
 //! the oldest among equals, if that priority is not higher than its own. The voice it
 //! replaces fades out over 5 ms and reports [`MixerEvent::Stolen`]. Otherwise the new
 //! voice does not play and reports [`MixerEvent::Rejected`]. Give music a high
 //! priority so that effects never take its place.
+//!
+//! Opt into [`MixerConfig::virtual_voices`] to retain up to 4096 logical sources
+//! while selecting only `max_voices` physical voices. Quiet, distant and lower-ranked
+//! voices advance their clocks as [`VoiceState::Virtual`]. Memory sources skip PCM
+//! and rebuild history on promotion; stateful streams still consume/discard PCM.
+//! Selection uses priority, estimated source-peak level and start order at fixed
+//! 32-frame boundaries and command frames. Virtual/paused voices count against
+//! logical and instance capacity. Physical stop fades have eight extra budget slots.
 //!
 //! A sound can also limit its own voices with [`Instances`]: at most so many at once,
 //! with a policy for one more, and a minimum gap between starts. A refused start
@@ -94,6 +102,9 @@
 //! frequency). It is designed for ratios up to 2:1, such as 44.1 kHz to 48 kHz;
 //! larger downsampling ratios alias more. A source at the output rate is copied
 //! sample for sample.
+//!
+//! [`Play::resampling`] can explicitly select [`ResamplingQuality::Linear`], cheaper
+//! two-point interpolation without an anti-alias filter. Sinc remains the default.
 //!
 //! Panning a mono source follows a constant-power law: `cos θ` on the left and
 //! `sin θ` on the right, with `θ = (pan + 1)·π/4`, so the centre is -3 dB on each side.
@@ -135,7 +146,19 @@ mod routing;
 pub use routing::{BusRouting, BusSend, MAX_BUS_ROUTES, RoutingId, SendPosition};
 pub mod spatial;
 mod status;
+mod virtualization;
 mod voice;
+pub use virtualization::{MAX_LOGICAL_VOICES, VIRTUAL_VOICE_QUANTUM, VirtualVoices};
+
+/// Per-voice interpolation quality. The default retains the original PCM/filter.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ResamplingQuality {
+    #[default]
+    Sinc,
+    /// Two-point interpolation, without an anti-alias low-pass. Cheaper, with
+    /// greater high-frequency error/aliasing, especially when downsampling.
+    Linear,
+}
 pub use spatial::{
     Attenuation, DistanceModel, Emitter, Listener, OutputLayout, Placement, SpatialConfig,
 };
@@ -307,6 +330,9 @@ impl Default for Fade {
 /// How a voice starts playing.
 #[derive(Clone, Copy, Debug)]
 pub struct Play {
+    /// Interpolation quality fixed at voice creation. Default sinc; Linear has no
+    /// anti-alias filter and is cheaper. Integral unit-speed samples stay exact.
+    pub resampling: ResamplingQuality,
     pub bus: BusId,
     /// Linear gain, at least 0. Default 1.
     pub gain: f32,
@@ -490,6 +516,7 @@ const MAX_GAP: f64 = 60.0;
 impl Default for Play {
     fn default() -> Self {
         Self {
+            resampling: ResamplingQuality::Sinc,
             bus: BusId::MASTER,
             gain: 1.0,
             pan: 0.0,
@@ -529,11 +556,15 @@ impl Variation {
 
 #[derive(Clone, Debug)]
 pub struct MixerConfig {
+    /// Opt into a bounded logical pool and physical selection. None preserves
+    /// legacy admission/stealing and all default PCM.
+    pub virtual_voices: Option<VirtualVoices>,
     /// The output's sample rate. Default 48000.
     pub sample_rate: u32,
     /// Output layout: 1 mono, 2 stereo, 4 quad, 6 5.1, 8 7.1. Default 2.
     pub channels: usize,
-    /// Most voices that play at once, 1..=1024. Default 32.
+    /// Most live physical voices, 1..=1024. Default 32. With virtualization disabled
+    /// this is also the live admission limit. Stop fades can use eight extra slots.
     pub max_voices: usize,
     /// Named buses besides the master, such as `music` and `effects`.
     pub buses: Vec<String>,
@@ -552,6 +583,7 @@ pub struct MixerConfig {
 impl Default for MixerConfig {
     fn default() -> Self {
         Self {
+            virtual_voices: None,
             sample_rate: 48_000,
             channels: 2,
             max_voices: 32,
@@ -643,6 +675,8 @@ struct Bus {
 
 /// The audio thread's half of the mixer. See the [module documentation](self).
 pub struct Mixer {
+    virtualization: Option<virtualization::Scheduler>,
+    voice_limit: usize,
     routing: routing::AudioRouting,
     effects: effects::AudioEffects,
     rate: u32,
@@ -672,6 +706,10 @@ pub struct Mixer {
 
 /// The game's half of the mixer: starts, changes and stops voices.
 pub struct MixerHandle {
+    /// Bounded source-peak metadata only; does not retain Audio allocations.
+    peaks: Vec<(u64, f64)>,
+    peak_cursor: usize,
+    peak_limit: usize,
     routing: routing::ControlRouting,
     effects: effects::ControlEffects,
     rate: u32,
@@ -711,6 +749,7 @@ impl SplitMix {
 impl Mixer {
     pub fn new(config: MixerConfig) -> Result<(Mixer, MixerHandle)> {
         let MixerConfig {
+            virtual_voices,
             sample_rate,
             channels,
             max_voices,
@@ -749,7 +788,20 @@ impl Mixer {
         let latency = limiter.as_ref().map_or(0, |l| l.latency() as u64);
         let has_limiter = limiter.is_some();
         let limiter_gain = Arc::new(AtomicU32::new(1f32.to_bits()));
-        let slots = max_voices + TAILS;
+        let voice_limit = if let Some(settings) = virtual_voices {
+            if settings.capacity < max_voices
+                || settings.capacity > MAX_LOGICAL_VOICES
+                || !(0.0..=1.0).contains(&settings.threshold)
+            {
+                return Err(Error::invalid(
+                    "Virtual capacity must be max_voices..=4096 and threshold 0..=1",
+                ));
+            }
+            settings.capacity
+        } else {
+            max_voices
+        };
+        let slots = voice_limit + TAILS;
         let (command_tx, command_rx) = queue::queue(queue);
         // Per render, at most `slots + queue` voices end or are refused, and as many
         // are stolen, so the way back holds every event and voice of a render.
@@ -770,6 +822,8 @@ impl Mixer {
         let (audio_effects, control_effects) = effects::create(queue, buses.len() + 1);
         let (audio_routing, control_routing) = routing::create(queue);
         let mixer = Mixer {
+            virtualization: virtual_voices.map(|v| virtualization::Scheduler::new(v, slots)),
+            voice_limit,
             routing: audio_routing,
             effects: audio_effects,
             rate: sample_rate,
@@ -804,6 +858,9 @@ impl Mixer {
             limiter_gain: limiter_gain.clone(),
         };
         let handle = MixerHandle {
+            peaks: Vec::with_capacity(virtual_voices.map_or(0, |v| v.capacity)),
+            peak_cursor: 0,
+            peak_limit: virtual_voices.map_or(0, |v| v.capacity),
             routing: control_routing,
             effects: control_effects,
             rate: sample_rate,
@@ -835,7 +892,7 @@ impl Mixer {
     pub fn frame(&self) -> u64 {
         self.frame
     }
-    /// Voices playing or fading out.
+    /// All retained voices, including virtual, paused and fading-out voices.
     pub fn active_voices(&self) -> usize {
         self.voices.iter().flatten().count()
     }
@@ -870,7 +927,10 @@ impl Mixer {
                 .filter(|&f| f > cursor)
                 .min()
                 .unwrap_or(end);
-            let stop = next.min(end).min(cursor + BLOCK as u64);
+            let mut stop = next.min(end).min(cursor + BLOCK as u64);
+            if self.virtualization.is_some() {
+                stop = stop.min(cursor - cursor % VIRTUAL_VOICE_QUANTUM + VIRTUAL_VOICE_QUANTUM);
+            }
             let from = (cursor - start) as usize * ch;
             let to = (stop - start) as usize * ch;
             self.mix(cursor, &mut out[from..to]);
@@ -888,6 +948,7 @@ impl Mixer {
             v.settle();
         }
         self.retire_done();
+        self.select_physical(end);
         self.publish();
         self.send_returns();
         self.effects.send_returns();
@@ -946,6 +1007,9 @@ impl Mixer {
     }
 
     fn apply(&mut self, frame: u64, action: Action) {
+        if let Some(scheduler) = &mut self.virtualization {
+            scheduler.dirty = true;
+        }
         match action {
             Action::Routing(edit) => self.apply_routing(frame, edit),
             Action::Effects(edit) => self.apply_effects(frame, edit),
@@ -992,10 +1056,12 @@ impl Mixer {
             }
             Action::Emitter(id, emitter, len, curve) => {
                 let channels = self.channels;
-                let placement = self.spatial.place_validated(
+                let placement = virtualization::placement(
+                    &self.spatial,
                     &self.listener,
                     &emitter,
                     OutputLayout::from_channels(self.channels).unwrap(),
+                    self.virtualization.is_some(),
                 );
                 if let Some(v) = self.voice_mut(id) {
                     v.emitter = Some(emitter);
@@ -1007,7 +1073,13 @@ impl Mixer {
                 let layout = OutputLayout::from_channels(self.channels).unwrap();
                 for v in self.voices.iter_mut().flatten() {
                     if let Some(emitter) = v.emitter {
-                        let placement = self.spatial.place_validated(&listener, &emitter, layout);
+                        let placement = virtualization::placement(
+                            &self.spatial,
+                            &listener,
+                            &emitter,
+                            layout,
+                            self.virtualization.is_some(),
+                        );
                         v.update_spatial(placement, frame, len, curve, layout.channels());
                     }
                 }
@@ -1069,10 +1141,12 @@ impl Mixer {
 
     fn start(&mut self, frame: u64, mut voice: Box<Voice>) {
         if let Some(emitter) = voice.emitter {
-            let placement = self.spatial.place_validated(
+            let placement = virtualization::placement(
+                &self.spatial,
                 &self.listener,
                 &emitter,
                 OutputLayout::from_channels(self.channels).unwrap(),
+                self.virtualization.is_some(),
             );
             voice.update_spatial(placement, frame, 0, FadeCurve::Linear, self.channels);
         }
@@ -1164,7 +1238,7 @@ impl Mixer {
                 .filter(|(_, v)| v.as_ref().is_some_and(|v| v.live() && !v.marked))
         };
         let mut global_victim = None;
-        if others().count() >= self.max_voices {
+        if others().count() >= self.voice_limit {
             let victim = others()
                 .filter_map(|(i, v)| v.as_deref().map(|v| (i, v)))
                 .min_by_key(|(_, v)| (v.priority, v.order));
@@ -1234,6 +1308,7 @@ impl Mixer {
     }
 
     fn mix(&mut self, first: u64, out: &mut [f32]) {
+        self.select_physical(first);
         let ch = self.channels;
         let frames = out.len() / ch;
         for bus in &mut self.buses {
@@ -1253,7 +1328,11 @@ impl Mixer {
                 continue;
             }
             let buffer = &mut self.buses[v.bus].buffer[..frames * ch];
-            v.render(first, frames, buffer, ch);
+            if v.virtualized {
+                v.advance(first, frames);
+            } else {
+                v.render(first, frames, buffer, ch);
+            }
         }
         self.retire_done();
         let end = first + frames as u64;
@@ -1307,6 +1386,8 @@ impl Mixer {
                     VoiceState::Stopping
                 } else if v.paused() || self.buses[v.bus].paused || master_paused {
                     VoiceState::Paused
+                } else if v.virtualized {
+                    VoiceState::Virtual
                 } else {
                     VoiceState::Playing
                 };
@@ -1377,11 +1458,10 @@ impl Mixer {
             );
             match self.returns.push(item) {
                 Ok(()) => sent += 1,
-                Err(PushError::Full(item)) => {
+                Err(PushError::Full(item) | PushError::Disconnected(item)) => {
                     self.retired[sent] = item;
                     break;
                 }
-                Err(PushError::Disconnected(_)) => sent += 1,
             }
         }
         self.retired.drain(..sent);
@@ -1397,6 +1477,22 @@ fn bus_gain(bus: usize, gain: &Ramp, master: &Ramp, frame: u64) -> f64 {
 }
 
 impl MixerHandle {
+    fn source_peak(&mut self, audio: &Audio) -> f64 {
+        if self.peak_limit == 0 {
+            return 1.0;
+        }
+        if let Some((_, peak)) = self.peaks.iter().find(|(id, _)| *id == audio.id()) {
+            return *peak;
+        }
+        let entry = (audio.id(), audio.peak());
+        if self.peaks.len() < self.peak_limit {
+            self.peaks.push(entry);
+        } else {
+            self.peaks[self.peak_cursor] = entry;
+            self.peak_cursor = (self.peak_cursor + 1) % self.peak_limit;
+        }
+        entry.1
+    }
     pub fn sample_rate(&self) -> u32 {
         self.rate
     }
@@ -1626,7 +1722,8 @@ impl MixerHandle {
         let start = start_frame(play.start, rate, frames)?;
         let step = (((rate as u128) << 32) + handle.rate as u128 / 2) / handle.rate as u128;
         let step = step as u64;
-        let table = (step != ONE).then(|| handle.table(rate));
+        let table =
+            (step != ONE && play.resampling == ResamplingQuality::Sinc).then(|| handle.table(rate));
         let base_ratio = rate as f64 / handle.rate as f64;
         let mut gain = play.gain as f64;
         let mut pitch = play.pitch as f64;
@@ -1639,18 +1736,24 @@ impl MixerHandle {
         }
         let id = VoiceId(handle.next_voice);
         handle.next_voice += 1;
+        let source_peak = match &sound {
+            Sound::Memory(audio) => handle.source_peak(audio),
+            Sound::Stream(_) => 1.0,
+        };
         let feed = match sound {
             Sound::Memory(audio) => Feed::Memory(audio),
             Sound::Stream(stream) => Feed::Stream(stream),
         };
         let bank = handle.bank.clone();
         let resampling = Resampling {
+            quality: play.resampling,
             step,
             base_ratio,
             table,
             bank,
         };
         let mut voice = Box::new(Voice::new(id, feed, channels, play.looping, resampling));
+        voice.source_peak = source_peak;
         voice.bus = play.bus.0;
         voice.priority = play.priority;
         voice.gain = Ramp::constant(gain);

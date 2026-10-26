@@ -79,6 +79,10 @@ name = "group_sends"
 required-features = ["mixer"]
 
 [[example]]
+name = "virtual_voices"
+required-features = ["mixer"]
+
+[[example]]
 name = "colour_effects"
 required-features = ["mixer"]
 
