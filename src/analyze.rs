@@ -12,6 +12,15 @@ pub fn to_db(linear: f64) -> f64 {
 pub fn from_db(db: f64) -> f64 {
     crate::math::db_to_gain(db)
 }
+// Render decisions must not depend on the host libm. Report-only APIs retain
+// their original math; normalization uses the same scans with deterministic math.
+pub(crate) fn render_db(linear: f64) -> f64 {
+    if linear > 0.0 {
+        20.0 * crate::math::log2(linear) / std::f64::consts::LOG2_10
+    } else {
+        f64::NEG_INFINITY
+    }
+}
 #[derive(Clone, Debug)]
 pub struct LoudnessResult {
     pub integrated: f64,
@@ -204,6 +213,12 @@ impl Audio {
         })
     }
     pub fn true_peak_db(&self) -> f64 {
+        to_db(self.true_peak::<false>())
+    }
+    pub(crate) fn render_true_peak_db(&self) -> f64 {
+        render_db(self.true_peak::<true>())
+    }
+    fn true_peak<const RENDER: bool>(&self) -> f64 {
         let mut peak = self.peak();
         let mut kernel = [0.0; 128];
         for (i, k) in kernel.iter_mut().enumerate() {
@@ -211,10 +226,21 @@ impl Audio {
             let sinc = if t == 0.0 {
                 1.0
             } else {
-                (PI * t).sin() / (PI * t)
+                (if RENDER {
+                    crate::math::sin_turns(t / 2.0)
+                } else {
+                    (PI * t).sin()
+                }) / (PI * t)
             };
             let w = i as f64 / 127.0;
-            *k = sinc * (0.42 - 0.5 * (2.0 * PI * w).cos() + 0.08 * (4.0 * PI * w).cos());
+            let cos = |turns| {
+                if RENDER {
+                    crate::math::cos_turns(turns)
+                } else {
+                    (2.0 * PI * turns).cos()
+                }
+            };
+            *k = sinc * (0.42 - 0.5 * cos(w) + 0.08 * cos(2.0 * w));
         }
         for c in &self.data {
             for i in 0..c.len() {
@@ -244,7 +270,7 @@ impl Audio {
                 }
             }
         }
-        to_db(peak)
+        peak
     }
     pub fn waveform(&self, buckets: usize) -> Result<Waveform> {
         if buckets == 0 || buckets > 16 * 1024 * 1024 {
@@ -268,10 +294,32 @@ impl Audio {
     }
     /// K-weighted, gated loudness; range is the legacy 400-ms block percentile estimate.
     pub fn loudness(&self) -> LoudnessResult {
+        self.loudness_impl::<false>()
+    }
+    pub(crate) fn render_loudness(&self) -> LoudnessResult {
+        self.loudness_impl::<true>()
+    }
+    fn loudness_impl<const RENDER: bool>(&self) -> LoudnessResult {
         let rate = self.rate as f64;
-        let k = (PI * 1681.974450955533 / rate).tan();
-        let vh = 10f64.powf(3.999843853973347 / 20.0);
-        let vb = vh.powf(0.4996667741545416);
+        let tangent = |frequency: f64| {
+            if RENDER {
+                let turns = frequency / rate / 2.0;
+                crate::math::sin_turns(turns) / crate::math::cos_turns(turns)
+            } else {
+                (PI * frequency / rate).tan()
+            }
+        };
+        let k = tangent(1681.974450955533);
+        let vh = if RENDER {
+            crate::math::db_to_gain(3.999843853973347)
+        } else {
+            10f64.powf(3.999843853973347 / 20.0)
+        };
+        let vb = if RENDER {
+            crate::math::db_to_gain(3.999843853973347 * 0.4996667741545416)
+        } else {
+            vh.powf(0.4996667741545416)
+        };
         let q = 0.7071752369554196;
         let a0 = 1.0 + k / q + k * k;
         let shelf = [
@@ -281,7 +329,7 @@ impl Audio {
             2.0 * (k * k - 1.0) / a0,
             (1.0 - k / q + k * k) / a0,
         ];
-        let k = (PI * 38.13547087602444 / rate).tan();
+        let k = tangent(38.13547087602444);
         let q = 0.5003270373238773;
         let a0 = 1.0 + k / q + k * k;
         let hp = [
@@ -296,6 +344,13 @@ impl Audio {
             .iter()
             .map(|c| crate::dsp::biquad(&crate::dsp::biquad(c, shelf), hp))
             .collect();
+        if RENDER && filtered.iter().flatten().any(|s| !s.is_finite()) {
+            return LoudnessResult {
+                integrated: f64::NAN,
+                range: f64::NAN,
+                peak_momentary: f64::NAN,
+            };
+        }
         let weights: Vec<f64> = match self.channels() {
             4 => vec![1.0, 1.0, 1.41, 1.41],
             5 => vec![1.0, 1.0, 1.0, 1.41, 1.41],
@@ -322,7 +377,12 @@ impl Audio {
         };
         let lufs = |p: f64| {
             if p > 0.0 {
-                -0.691 + 10.0 * p.log10()
+                -0.691
+                    + if RENDER {
+                        10.0 * crate::math::log2(p) / std::f64::consts::LOG2_10
+                    } else {
+                        10.0 * p.log10()
+                    }
             } else {
                 f64::NEG_INFINITY
             }
@@ -339,36 +399,82 @@ impl Audio {
             .step_by(step)
             .map(|i| power(i, i + block))
             .collect();
-        let absolute: Vec<_> = blocks
+        gated_loudness(&blocks, lufs)
+    }
+}
+
+fn gated_loudness(blocks: &[f64], lufs: impl Fn(f64) -> f64) -> LoudnessResult {
+    let absolute: Vec<_> = blocks
+        .iter()
+        .copied()
+        .filter(|&p| lufs(p) >= -70.0)
+        .collect();
+    if absolute.is_empty() {
+        return LoudnessResult {
+            integrated: f64::NEG_INFINITY,
+            range: 0.0,
+            peak_momentary: f64::NEG_INFINITY,
+        };
+    }
+    let relative = lufs(absolute.iter().sum::<f64>() / absolute.len() as f64) - 10.0;
+    let gated: Vec<_> = absolute
+        .iter()
+        .copied()
+        .filter(|&p| lufs(p) >= relative)
+        .collect();
+    let integrated = lufs(gated.iter().sum::<f64>() / gated.len() as f64);
+    let mut sorted: Vec<_> = gated.iter().map(|&p| lufs(p)).collect();
+    sorted.sort_by(f64::total_cmp);
+    let range = sorted[(sorted.len() * 95 / 100).min(sorted.len() - 1)] - sorted[sorted.len() / 10];
+    LoudnessResult {
+        integrated,
+        range,
+        peak_momentary: blocks
             .iter()
-            .copied()
-            .filter(|&p| lufs(p) >= -70.0)
-            .collect();
-        if absolute.is_empty() {
-            return LoudnessResult {
-                integrated: f64::NEG_INFINITY,
-                range: 0.0,
-                peak_momentary: f64::NEG_INFINITY,
-            };
+            .map(|&p| lufs(p))
+            .fold(f64::NEG_INFINITY, f64::max),
+    }
+}
+
+#[cfg(test)]
+mod normalization_tests {
+    use super::*;
+
+    #[test]
+    fn gates_include_boundary_levels_and_separate_adjacent_powers() {
+        let lufs = |p: f64| -0.691 + render_db(p) / 2.0;
+        // Find the adjacent f64 powers bracketing -70 LUFS, without assuming
+        // that converting -70 to power and back is an exact inverse.
+        let mut bits = crate::math::db_to_gain((-70.0 + 0.691) * 2.0).to_bits();
+        while lufs(f64::from_bits(bits)) < -70.0 {
+            bits += 1;
         }
-        let relative = lufs(absolute.iter().sum::<f64>() / absolute.len() as f64) - 10.0;
-        let gated: Vec<_> = absolute
-            .iter()
-            .copied()
-            .filter(|&p| lufs(p) >= relative)
-            .collect();
-        let integrated = lufs(gated.iter().sum::<f64>() / gated.len() as f64);
-        let mut sorted: Vec<_> = gated.iter().map(|&p| lufs(p)).collect();
-        sorted.sort_by(f64::total_cmp);
-        let range =
-            sorted[(sorted.len() * 95 / 100).min(sorted.len() - 1)] - sorted[sorted.len() / 10];
-        LoudnessResult {
-            integrated,
-            range,
-            peak_momentary: blocks
-                .iter()
-                .map(|&p| lufs(p))
-                .fold(f64::NEG_INFINITY, f64::max),
+        while lufs(f64::from_bits(bits - 1)) >= -70.0 {
+            bits -= 1;
         }
+        let below = f64::from_bits(bits - 1);
+        let above = f64::from_bits(bits);
+        assert_eq!(gated_loudness(&[below], lufs).integrated, f64::NEG_INFINITY);
+        assert_eq!(gated_loudness(&[above], lufs).integrated, lufs(above));
+        // Equality must be admitted even when the level is exactly the gate.
+        assert_eq!(gated_loudness(&[1.0], |_| -70.0).integrated, -70.0);
+        // Two-block relative gate: q >= mean(1,q)/10 iff q >= 1/19.
+        let below = (1.0 / 19.0) * (1.0 - 1e-10);
+        let above = (1.0 / 19.0) * (1.0 + 1e-10);
+        assert_eq!(gated_loudness(&[1.0, below], lufs).integrated, lufs(1.0));
+        assert_eq!(
+            gated_loudness(&[1.0, above], lufs).integrated,
+            lufs((1.0 + above) / 2.0)
+        );
+        let equality = |p: f64| {
+            if p == 1.0 {
+                -20.0
+            } else if p == 0.1 {
+                -30.0
+            } else {
+                -20.0
+            }
+        };
+        assert_eq!(gated_loudness(&[1.0, 0.1], equality).range, 10.0);
     }
 }

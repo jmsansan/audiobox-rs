@@ -11,14 +11,27 @@
   Float, G.711 and MP3 reject enabled dither; CAF uses signed 8-bit PCM.
   Dither remains off by default, preserving existing encoded bytes.
 
+### Changed
+
+- LUFS and true-peak normalization use deterministic filter/kernel preparation,
+  logarithms and gain decisions (#64). `normalize_with_report` reports that path
+  without decimal rounding; public report-only analysis retains its existing math
+  and peak normalization retains its sample bits. PCM, reports and WAV/FLAC/MP3
+  mastering fixtures are pinned separately across native targets and WASI.
+
 ### Fixed
 
 - FLAC encoder Rice candidate costs use 64-bit arithmetic, avoiding overflow and
   excessive output allocation for 32-bit samples on WebAssembly/32-bit hosts.
+- LUFS normalization rejects measurement overflow rather than treating it as
+  silence. Normalization/export contracts and the remaining general MP3 byte
+  contract audit (#100) are documented in `docs/normalization.md`.
 
 ### Breaking
 
 - Full `EncodeOptions` literals need `dither`, or `..Default::default()`.
+- LUFS normalization requires a sample rate of at least 4000 Hz, keeping the
+  K-weighting shelf below Nyquist; lower rates return `InvalidArgument`.
 
 ## 0.4.1 — 2026-10-25
 

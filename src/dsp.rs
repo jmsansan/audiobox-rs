@@ -39,14 +39,19 @@ impl FilterOptions {
 #[derive(Clone, Copy, Debug, Default)]
 pub enum NormalizeUnit {
     #[default]
+    /// Sample peak in dBFS.
     Peak,
+    /// Four-times oversampled, windowed-sinc true peak in dBTP.
     TruePeak,
+    /// K-weighted integrated loudness in LUFS; requires a sample rate >= 4000 Hz.
     Lufs,
 }
 #[derive(Clone, Copy, Debug)]
 pub struct NormalizeOptions {
+    /// Finite target level in the selected unit.
     pub to: f64,
     pub unit: NormalizeUnit,
+    /// Finite measured true-peak ceiling in dBTP, applied only in LUFS mode.
     pub peak_ceiling_db: f64,
 }
 impl Default for NormalizeOptions {
@@ -60,8 +65,13 @@ impl Default for NormalizeOptions {
 }
 #[derive(Clone, Debug)]
 pub struct NormalizeReport {
+    /// Deterministic f64 measurement in the selected unit, without decimal rounding.
+    /// Negative infinity means silence or wholly gated material.
     pub measured: f64,
+    /// Applied gain in dB; zero when the measurement is negative infinity.
     pub gain_db: f64,
+    /// In LUFS mode, the requested gain exceeded the true-peak ceiling's gain.
+    /// Equality does not set this flag.
     pub limited_by_peak: bool,
 }
 #[derive(Clone, Copy, Debug)]
@@ -204,9 +214,17 @@ impl Audio {
         }
         self.gain(db_to_gain(db))
     }
+    /// Normalize the complete signal with deterministic measurement and gain math.
+    /// LUFS normalization requires at least 4000 Hz for the K-weighting filters.
+    /// Report-only `loudness`/`true_peak_db` retain platform math; use this method
+    /// or [`Self::normalize_with_report`] when measurements drive rendered samples.
     pub fn normalize(&self, options: NormalizeOptions) -> Result<Self> {
         self.normalize_with_report(options).map(|(a, _)| a)
     }
+    /// Normalize and report the deterministic measurement and applied gain in dB.
+    /// Silence and wholly gated material return unchanged with zero gain. LUFS
+    /// uses the existing short-input and channel-weight policies. Its peak ceiling
+    /// uses four-times oversampled true peak, not a true-peak limiter.
     pub fn normalize_with_report(
         &self,
         options: NormalizeOptions,
@@ -214,12 +232,17 @@ impl Audio {
         if !options.to.is_finite() || !options.peak_ceiling_db.is_finite() {
             return Err(Error::invalid("Normalization levels must be finite"));
         }
+        if matches!(options.unit, NormalizeUnit::Lufs) && self.rate < 4000 {
+            return Err(Error::invalid(
+                "LUFS normalization requires a sample rate of at least 4000 Hz",
+            ));
+        }
         let measured = match options.unit {
-            NormalizeUnit::Peak => self.peak_db(),
-            NormalizeUnit::TruePeak => self.true_peak_db(),
-            NormalizeUnit::Lufs => self.loudness().integrated,
+            NormalizeUnit::Peak => crate::analyze::render_db(self.peak()),
+            NormalizeUnit::TruePeak => self.render_true_peak_db(),
+            NormalizeUnit::Lufs => self.render_loudness().integrated,
         };
-        if !measured.is_finite() {
+        if measured == f64::NEG_INFINITY {
             return Ok((
                 self.clone(),
                 NormalizeReport {
@@ -229,17 +252,20 @@ impl Audio {
                 },
             ));
         }
+        if !measured.is_finite() {
+            return Err(Error::invalid("Normalization measurement overflow"));
+        }
         let mut gain = options.to - measured;
         let mut limited = false;
         if matches!(options.unit, NormalizeUnit::Lufs) {
-            let max = options.peak_ceiling_db - self.true_peak_db();
+            let max = options.peak_ceiling_db - self.render_true_peak_db();
             if gain > max {
                 gain = max;
                 limited = true;
             }
         }
-        // Peak normalization scales by a ratio, so it renders the same samples on
-        // every platform; the other units depend on the platform's analysis math.
+        // Preserve peak normalization's existing ratio and sample bits. LUFS and
+        // true-peak decisions now also use the crate's deterministic analysis math.
         let audio = if matches!(options.unit, NormalizeUnit::Peak) {
             self.gain(db_to_gain(options.to) / self.peak())?
         } else {
