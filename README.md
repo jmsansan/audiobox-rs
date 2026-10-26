@@ -380,7 +380,8 @@ FFmpeg installation.
 - DSP: `resample`, `gain`, `gain_db`, `fade`, `filter`, `limit`, `limit_true_peak`, `remove_dc_offset`.
 - Silence: `detect_silence`, `trim_silence`.
 - Time/pitch: `speed`, WSOLA `tempo`, `pitch`.
-- Measurement: `peak`, `peak_db`, `true_peak_db`, `rms_db`, `loudness`, `waveform`.
+- Measurement: `peak`, `peak_db`, `true_peak_db`, `mean_square`, `rms`, `rms_db`,
+  `loudness`, `measure_deterministic`, `waveform`.
 - Spectral analysis: `analyze::spectrum`, `analyze::spectrogram`.
 
 Transforms that render audio (pan, gain, fades, crossfades, filters, the limiter,
@@ -397,6 +398,20 @@ keep their existing math. LUFS normalization requires at least 4000 Hz; lower ra
 and measurement overflow return `InvalidArgument`. Peak normalization keeps its
 existing PCM output. See [the normalization contract and export audit](docs/normalization.md)
 for gating, ceiling behavior, chunked output and the MP3 guarantee boundary.
+
+Also in 0.5 development, `Audio::measure_deterministic()` measures the supplied
+PCM without changing it, using those same deterministic loudness/true-peak
+estimators for final delivery checks. `mean_square` and `rms` expose linear power
+and amplitude for aggregation. `resampled_frame_index` maps absolute body/tail
+boundaries using the exact count policy used by `resample`, including its existing
+floating-point rounding. See [Studio delivery contracts](docs/studio-delivery-contracts.md)
+for units, no-result states, numerical tolerances, spectrum endpoints and alignment.
+
+`read_audio_file` accepts regular files with a 512 MiB encoded-byte cap, in
+addition to decoded limits. `read_audio_file_with_options` and `ReadAudioOptions`
+allow separate encoded/decode budgets. Symlinks to regular files are supported;
+static directories, devices and FIFOs are rejected before opening. Paths must
+remain stable across the metadata/open checks; see the same contract for details.
 
 The resampler uses a Kaiser-windowed sinc filter with a downsampling anti-alias cutoff.
 The limiter links channels with lookahead and release. Loudness uses K-weighting and

@@ -332,10 +332,43 @@ impl Audio {
                 .collect(),
         )
     }
+    /// Map an absolute source boundary in `0..=frames()` to the output of
+    /// [`Self::resample`], without rendering or allocating PCM.
+    ///
+    /// Uses the existing f64 policy: first `ratio = output_rate / input_rate`,
+    /// then `round(source_frame * ratio)`, with positive half ties upward.
+    /// This is not exact rational arithmetic: e.g. 500 at 1000 -> 1001 Hz maps
+    /// to 500 because the floating product is just below 500.5. The same helper
+    /// determines the actual whole-buffer output length, preserving legacy PCM.
+    /// Mapping is monotonic, maps zero to zero and the input end to output end.
+    ///
+    /// Map body/tail **absolute boundaries**, then subtract mapped boundaries;
+    /// do not sum independently rounded durations. At 48 -> 44.1 kHz, source
+    /// boundaries 0/80/160 map to 0/74/147: 74 body frames and 73 tail frames.
+    /// Invalid source boundaries return `InvalidArgument`; default output shape
+    /// limits (also used by `resample`) return `LimitExceeded`.
+    pub fn resampled_frame_index(&self, source_frame: usize, sample_rate: u32) -> Result<usize> {
+        if source_frame > self.frames() {
+            return Err(Error::invalid("Resampling boundary exceeds input frames"));
+        }
+        let ratio = sample_rate as f64 / self.rate as f64;
+        let frames = resampled_count(self.frames(), ratio);
+        Limits::default().check(frames, self.channels(), sample_rate)?;
+        Ok(resampled_count(source_frame, ratio))
+    }
+    /// Offline Kaiser-windowed sinc resampling with clamped first/last samples.
+    ///
+    /// Output length follows [`Self::resampled_frame_index`] at the input end;
+    /// empty input stays empty and identity-rate input is cloned bit for bit.
+    /// Output frame i samples source position `i / ratio`, so frame zero has
+    /// source-time zero. Symmetric filtering uses future context, with no added
+    /// leading delay or appended filter/release tail. A transient peak need not
+    /// remain at the corresponding rounded index. Short downsampled input may
+    /// round to zero frames. Additional samples beyond the mapped end are never
+    /// emitted. Default [`Limits`] bound the output before allocation.
     pub fn resample(&self, sample_rate: u32) -> Result<Self> {
         let ratio = sample_rate as f64 / self.rate as f64;
-        let frames = (self.frames() as f64 * ratio).round() as usize;
-        Limits::default().check(frames, self.channels(), sample_rate)?;
+        let frames = self.resampled_frame_index(self.frames(), sample_rate)?;
         if sample_rate == self.rate {
             return Ok(self.clone());
         }
@@ -642,6 +675,10 @@ impl Audio {
         }
         Ok(shifted)
     }
+}
+
+fn resampled_count(frames: usize, ratio: f64) -> usize {
+    (frames as f64 * ratio).round() as usize
 }
 
 #[cfg(test)]

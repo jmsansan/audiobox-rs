@@ -23,9 +23,25 @@ pub(crate) fn render_db(linear: f64) -> f64 {
 }
 #[derive(Clone, Debug)]
 pub struct LoudnessResult {
+    /// Integrated K-weighted level in LUFS; negative infinity if unavailable.
     pub integrated: f64,
+    /// Legacy gated 400-ms block percentile range in LU; zero if unavailable.
     pub range: f64,
+    /// Maximum 400-ms block level in LUFS, or the whole-input short fallback.
     pub peak_momentary: f64,
+}
+/// Non-mutating deterministic measurements of the supplied PCM, without gain or
+/// quantization. These unrounded f64 values may drive repeatable delivery checks.
+/// Numerical accuracy is separate from cross-host identity; see
+/// [`Audio::measure_deterministic`] for the estimator and no-result policies.
+#[derive(Clone, Debug)]
+pub struct DeterministicMeasurements {
+    /// K-weighted loudness in LUFS, with a legacy block-percentile range in LU.
+    pub loudness: LoudnessResult,
+    /// Maximum absolute sample in dBFS; negative infinity for empty/silent PCM.
+    pub peak_db: f64,
+    /// Four-times reconstructed peak estimate in dBTP; negative infinity for silence.
+    pub true_peak_db: f64,
 }
 #[derive(Clone, Debug)]
 pub struct Waveform {
@@ -33,8 +49,14 @@ pub struct Waveform {
     pub max: Vec<f32>,
 }
 #[derive(Clone, Debug)]
+/// One-sided Hann-windowed tone-amplitude spectrum; not a power spectral density
+/// or calibrated band RMS measurement. Uses platform math, with report-only
+/// numerical accuracy rather than an exact rendering guarantee.
 pub struct Spectrum {
+    /// Bin centers in Hz: `k * sample_rate / fft_size`, including DC and Nyquist.
     pub frequencies: Vec<f64>,
+    /// Linear amplitudes in input-sample units, normalized by the full Hann sum.
+    /// Interior bins are doubled; DC and Nyquist are not. See [`spectrum`].
     pub magnitudes: Vec<f64>,
 }
 #[derive(Clone, Debug)]
@@ -139,9 +161,26 @@ fn frequencies(sample_rate: u32, fft_size: usize) -> Vec<f64> {
         .map(|i| i as f64 * sample_rate as f64 / fft_size as f64)
         .collect()
 }
-/// The magnitude spectrum of the first `fft_size` samples, Hann-windowed and
-/// zero-padded. Every sample of `samples` must be finite, including those after the
-/// window.
+/// One-sided tone-amplitude magnitudes of the first `fft_size` samples.
+///
+/// Applies the symmetric Hann `0.5 - 0.5*cos(2*pi*i/(fft_size-1))`, then divides
+/// complex magnitudes by the **entire** window sum and doubles interior bins.
+/// DC and Nyquist are included without doubling. Bin spacing is
+/// `sample_rate / fft_size` Hz. These are linear input-sample amplitude units,
+/// not calibrated band RMS, power or PSD; squared-bin shares are descriptive.
+///
+/// Extra input is truncated; short input is right-zero-padded without changing
+/// the window or normalization. Its samples occupy the window's original
+/// positions. A sole sample at index zero therefore produces zero magnitudes,
+/// even if nonzero. FFT size two has an all-zero Hann and returns NaN magnitudes
+/// (zero divided by zero), preserving the existing result. Do not interpret an
+/// absent windowed signal as proof of silence in the original PCM.
+///
+/// `sample_rate` must be nonzero; `fft_size` must be a power of two in
+/// 2..=1048576. Every input sample must be finite, including truncated samples.
+/// Invalid arguments return [`crate::ErrorCode::InvalidArgument`]. Work is
+/// O(samples.len() + fft_size * log2(fft_size)), with O(fft_size) storage.
+/// Platform FFT/window math is report-only, not cross-host bit identity.
 pub fn spectrum(samples: &[f32], sample_rate: u32, fft_size: usize) -> Result<Spectrum> {
     check_fft(sample_rate, fft_size)?;
     check_finite(samples)?;
@@ -197,19 +236,80 @@ impl Audio {
     pub fn peak_db(&self) -> f64 {
         to_db(self.peak())
     }
-    pub fn rms_db(&self) -> f64 {
+    /// Mean squared sample amplitude, averaged equally over **all** channels and
+    /// frames: sum(sample^2) / (frames * channels). Empty and silent PCM return
+    /// zero. Finite samples outside +/-1 retain their power without clamping.
+    /// Accumulation is f64 in planar channel/frame order, O(samples) with no
+    /// allocation. This is unweighted signal power, not calibrated loudness.
+    /// For aggregation use `frames() * channels()` as the sample denominator;
+    /// combining regions uses the weighted mean of their powers.
+    pub fn mean_square(&self) -> f64 {
         let n = self.frames() * self.channels();
-        to_db(if n == 0 {
+        if n == 0 {
             0.0
         } else {
-            (self
-                .data
+            self.data
                 .iter()
                 .flatten()
                 .map(|&s| (s as f64).powi(2))
                 .sum::<f64>()
-                / n as f64)
-                .sqrt()
+                / n as f64
+        }
+    }
+    /// Linear root-mean-square sample amplitude, `sqrt(mean_square())`.
+    /// Empty/silent PCM returns zero; channels have equal weight. This retains
+    /// the report-only numerical policy of [`Self::rms_db`].
+    pub fn rms(&self) -> f64 {
+        self.mean_square().sqrt()
+    }
+    /// Unweighted RMS in dBFS; negative infinity for empty/silent PCM.
+    pub fn rms_db(&self) -> f64 {
+        to_db(self.rms())
+    }
+    /// Measure this exact PCM with the deterministic normalization estimators.
+    /// No gain, clipping, resampling, quantization or PCM clone is performed.
+    ///
+    /// Uses unrounded f64 levels and deterministic coefficient/logarithm math.
+    /// True peak is the existing 4x/32-tap-per-phase Blackman sinc estimate,
+    /// including sample peak, with zero extension and scans at input frames.
+    /// It is not a universal continuous-time bound or the limiter's 8x detector.
+    ///
+    /// Loudness uses full 400-ms blocks at 100-ms hops, inclusive -70 LUFS and
+    /// relative -10 LU gates. A shorter input uses its entire ungated power.
+    /// Empty, silent or wholly gated input has integrated/peak-momentary levels
+    /// of negative infinity and range zero. Quad weights are 1/1/1.41/1.41,
+    /// five-channel 1/1/1/1.41/1.41, six-channel 1/1/1/0/1.41/1.41; other
+    /// counts use unit weights. Channel count does not infer a speaker layout.
+    /// The range is a legacy block-percentile estimate, not certified EBU LRA.
+    ///
+    /// Requires >=4000 Hz, finite input and finite filter results; violations
+    /// return `InvalidArgument`, including on empty input. Checks default
+    /// [`crate::Limits`] before workspace allocation (also for Audio decoded
+    /// with custom limits); a larger shape returns `LimitExceeded`. Offline
+    /// work/storage is proportional to samples and block count, as in
+    /// normalization. Existing report-only analysis keeps its platform math.
+    pub fn measure_deterministic(&self) -> Result<DeterministicMeasurements> {
+        if self.rate < 4000 {
+            return Err(Error::invalid(
+                "Deterministic loudness requires at least 4000 Hz",
+            ));
+        }
+        crate::Limits::default().check(self.frames(), self.channels(), self.rate)?;
+        if self.data.iter().flatten().any(|s| !s.is_finite()) {
+            return Err(Error::invalid("Measurement samples must be finite"));
+        }
+        let loudness = self.render_loudness();
+        if !loudness.range.is_finite()
+            || [loudness.integrated, loudness.peak_momentary]
+                .iter()
+                .any(|v| !v.is_finite() && *v != f64::NEG_INFINITY)
+        {
+            return Err(Error::invalid("Deterministic measurement overflow"));
+        }
+        Ok(DeterministicMeasurements {
+            loudness,
+            peak_db: render_db(self.peak()),
+            true_peak_db: self.render_true_peak_db(),
         })
     }
     pub fn true_peak_db(&self) -> f64 {

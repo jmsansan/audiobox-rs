@@ -4,6 +4,19 @@
 
 ### Added
 
+- Studio delivery contracts for 0.5 (#97, #99, #102, #103, #104): non-mutating
+  `Audio::measure_deterministic` exposes normalization's LUFS/true-peak estimators
+  for final validation; `mean_square` and `rms` expose linear signal measurements.
+  `resampled_frame_index` shares the existing offline output-count policy for
+  absolute body/tail boundaries. Spectrum units, Hann endpoints and short-window
+  behavior are documented without changing existing values. Native/WASI delivery
+  controls cover the new APIs, threshold decisions and seeded export round-trips.
+- `ReadAudioOptions` and `read_audio_file_with_options` provide a separate encoded
+  file-byte budget, checked both in metadata and during actual reads. The default
+  `read_audio_file` now accepts regular files up to 512 MiB encoded; static
+  nonregular files are rejected before open. Regular-file symlinks are supported
+  under a documented stable-filesystem assumption. Decoded limits still apply.
+
 - Opt-in offline true-peak limiting (#65): `Audio::limit_true_peak` and
   `TruePeakLimiterOptions`, 8x/64-tap detection, linked lookahead/release,
   a final reconstruction guard and an explicit safety/workspace budget.
@@ -36,6 +49,8 @@
 
 ### Breaking
 
+- `read_audio_file` now rejects nonregular paths and encoded files over 512 MiB.
+  Use `read_audio_file_with_options` to change the encoded-byte cap.
 - Full `EncodeOptions` literals need `dither`, or `..Default::default()`.
 - LUFS normalization requires a sample rate of at least 4000 Hz, keeping the
   K-weighting shelf below Nyquist; lower rates return `InvalidArgument`.

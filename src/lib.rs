@@ -59,7 +59,8 @@
 //! macOS, Windows and WebAssembly. Analysis that only reports numbers, such as
 //! loudness, true peak and spectra, use the platform's math. Normalization in every
 //! unit uses a separate deterministic measurement path and reports its values
-//! through [`Audio::normalize_with_report`]. LUFS normalization requires >= 4000 Hz.
+//! through [`Audio::normalize_with_report`]. [`Audio::measure_deterministic`] exposes
+//! that path for non-mutating final validation. Both LUFS paths require >= 4000 Hz.
 //!
 //! Integer PCM export supports optional seeded [`Dither::Tpdf`] noise through
 //! [`EncodeOptions::dither`]. Its quantization is deterministic, including FLAC and
@@ -110,8 +111,8 @@ mod true_peak;
 mod types;
 pub use audio::Audio;
 pub use codec::{
-    decode, decode_with_options, encode, encode_with_options, read_audio_file, sniff,
-    write_audio_file,
+    ReadAudioOptions, decode, decode_with_options, encode, encode_with_options, read_audio_file,
+    read_audio_file_with_options, sniff, write_audio_file,
 };
 pub use dsp::*;
 pub use error::{Error, ErrorCode, Result};

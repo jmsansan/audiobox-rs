@@ -1,5 +1,24 @@
 use crate::{Audio, AudioFormat, DecodeOptions, EncodeOptions, Error, ErrorCode, Result};
+use std::io::Read;
 use std::path::Path;
+
+/// Limits for the whole-file convenience reader. Encoded bytes and decoded PCM
+/// have separate budgets; codec-specific limits still apply during decoding.
+#[derive(Clone, Debug)]
+pub struct ReadAudioOptions {
+    /// Maximum encoded file bytes; exact equality is accepted. Defaults to 512 MiB.
+    pub max_encoded_bytes: usize,
+    /// Decoder format override and decoded PCM/shape limits.
+    pub decode: DecodeOptions,
+}
+impl Default for ReadAudioOptions {
+    fn default() -> Self {
+        Self {
+            max_encoded_bytes: 512 * 1024 * 1024,
+            decode: DecodeOptions::default(),
+        }
+    }
+}
 
 /// Detect a supported format from its bytes, independent of the extension.
 pub fn sniff(bytes: &[u8]) -> Option<AudioFormat> {
@@ -70,8 +89,78 @@ pub fn encode_with_options(
         ),
     }
 }
+/// Decode a regular file using a 512 MiB encoded-byte cap and default decoded
+/// [`crate::Limits`]. See [`read_audio_file_with_options`] for path and error policy.
 pub fn read_audio_file(path: impl AsRef<Path>) -> Result<Audio> {
-    decode(&std::fs::read(path)?)
+    read_audio_file_with_options(path, &ReadAudioOptions::default())
+}
+/// Read a bounded regular file, then decode the same buffer without copying it.
+///
+/// Follows symlinks to regular files, including outside any project directory;
+/// containment is the caller's responsibility. Static directories, FIFOs, devices
+/// and other nonregular targets are rejected **before opening** with
+/// `InvalidArgument`. The opened handle is checked again. This assumes a stable
+/// filesystem path: portable safe std I/O does not atomically protect the open
+/// against hostile replacement by a FIFO or another target between checks.
+///
+/// Both metadata size and actual bytes are bounded. Reads at most cap+1 bytes
+/// (the extra byte detects growth), stores at most cap, and accepts exact-cap
+/// files. Oversize or failed buffer reservation returns `LimitExceeded`; I/O
+/// errors return `Io`. Invalid encoded data/decoded limits retain decoder errors.
+/// There is no unrestricted `fs::read` or second encoded-buffer allocation.
+pub fn read_audio_file_with_options(
+    path: impl AsRef<Path>,
+    options: &ReadAudioOptions,
+) -> Result<Audio> {
+    let path = path.as_ref();
+    let check = |metadata: std::fs::Metadata| {
+        if !metadata.is_file() {
+            return Err(Error::invalid("Audio input must be a regular file"));
+        }
+        if metadata.len() as u128 > options.max_encoded_bytes as u128 {
+            return Err(Error::limit("Encoded file exceeds byte limit"));
+        }
+        Ok(())
+    };
+    check(std::fs::metadata(path)?)?;
+    let file = std::fs::File::open(path)?;
+    check(file.metadata()?)?;
+    decode_with_options(
+        &read_bounded(file, options.max_encoded_bytes)?,
+        &options.decode,
+    )
+}
+
+fn read_bounded(mut reader: impl Read, limit: usize) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        let remaining = limit - bytes.len();
+        let count = remaining.min(chunk.len()).max(1);
+        let n = match reader.read(&mut chunk[..count]) {
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            value => value?,
+        };
+        if n == 0 {
+            return Ok(bytes);
+        }
+        if n > remaining {
+            return Err(Error::limit("Encoded file exceeds byte limit"));
+        }
+        let next = bytes.len() + n;
+        if next > bytes.capacity() {
+            let target = next.max(
+                bytes
+                    .capacity()
+                    .saturating_add(bytes.capacity() / 2)
+                    .min(limit),
+            );
+            bytes
+                .try_reserve_exact(target - bytes.len())
+                .map_err(|_| Error::limit("Cannot reserve encoded file buffer"))?;
+        }
+        bytes.extend_from_slice(&chunk[..n]);
+    }
 }
 pub fn write_audio_file(
     path: impl AsRef<Path>,
@@ -86,4 +175,59 @@ pub fn write_audio_file(
         .parse()?;
     std::fs::write(path, encode_with_options(audio, format, options)?)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod bounded_read_tests {
+    use super::*;
+
+    #[test]
+    fn actual_bytes_are_bounded_even_when_the_source_keeps_growing() {
+        struct Growing {
+            read: usize,
+        }
+        impl Read for Growing {
+            fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+                bytes.fill(7);
+                self.read += bytes.len();
+                Ok(bytes.len())
+            }
+        }
+        for limit in [0, 1, 8191, 8192, 8193, 20000] {
+            let mut source = Growing { read: 0 };
+            assert_eq!(
+                read_bounded(&mut source, limit).unwrap_err().code,
+                ErrorCode::LimitExceeded
+            );
+            assert_eq!(source.read, limit + 1);
+            let bytes = vec![7; limit];
+            assert_eq!(
+                read_bounded(std::io::Cursor::new(&bytes), limit).unwrap(),
+                bytes
+            );
+        }
+    }
+
+    #[test]
+    fn interrupted_reads_are_retried_and_other_errors_are_io() {
+        struct Interrupted(bool);
+        impl Read for Interrupted {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                if !self.0 {
+                    self.0 = true;
+                    Err(std::io::ErrorKind::Interrupted.into())
+                } else {
+                    Ok(0)
+                }
+            }
+        }
+        assert!(read_bounded(Interrupted(false), 0).unwrap().is_empty());
+        struct Failed;
+        impl Read for Failed {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::PermissionDenied.into())
+            }
+        }
+        assert_eq!(read_bounded(Failed, 10).unwrap_err().code, ErrorCode::Io);
+    }
 }
