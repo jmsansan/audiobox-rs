@@ -1,5 +1,10 @@
 //! Waveforms, spectral analysis and K-weighted integrated loudness.
+mod measurements;
 use crate::{Audio, Error, Result};
+pub use measurements::{
+    BoundaryMeasurement, BoundarySamples, ChannelStep, MAX_MEASUREMENT_BOUNDARIES,
+    MeasurementBoundary, StereoMeasurements, ThresholdSilence, dc_mean, stereo_measurements,
+};
 use std::f64::consts::PI;
 
 pub fn to_db(linear: f64) -> f64 {

@@ -4,6 +4,14 @@
 
 ### Added
 
+- Bounded numerical render-review primitives for Studio (#86): per-channel
+  `dc_means`, frame-exact `threshold_silence`, Pearson `stereo_measurements` with
+  mid/side mean-square energy, and explicit `measure_boundaries`/loop-seam steps.
+  Borrowed-slice DC/stereo functions avoid PCM copies. Units, no-result states,
+  finite-input checks, output limits and report-only numerical tolerances are
+  documented; native/MSRV/WASI controls and `render_measurements` cover the APIs.
+  Measurements retain headroom and do not classify audibility or repair audio.
+
 - MP3 export reproducibility contract and 246-case comparison matrix (#100):
   separate source PCM, encoded-byte and decoded-PCM fingerprints cover mono/stereo,
   every encoder rate, representative bitrates, short/quiet inputs, tags/cover and
