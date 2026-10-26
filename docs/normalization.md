@@ -78,6 +78,10 @@ The LUFS policy retains the previous algorithm:
 
 `NormalizeReport` retains f64 precision with no decimal rounding before decisions.
 Its measurement is the input level, not a fresh measurement of the returned Audio.
+Use `Audio::measure_deterministic` for a non-mutating measurement of the returned
+or decoded final PCM with the same deterministic estimators (#104). The
+[Studio delivery contracts](studio-delivery-contracts.md) specify its units,
+no-result states, resource bounds and threshold comparisons.
 F32 output rounding can move a post-render measurement by a few ULPs; the regression
 ceiling tolerance is 0.00001 dB against the existing report-only estimator. The
 legacy block-percentile loudness range remains an approximation, not an EBU
@@ -94,6 +98,7 @@ use this normalization contract.
 | Raw integer PCM, WAV, FLAC | Same destination integers/bytes for identical PCM and format/options/tags. Seeded dither is added once at the final quantizer; FLAC's predictor, Rice coding, CRC and MD5 then operate on integers. |
 | MP3 encode/decode | Exact encoded/decoded checksums are tested for the named mastering fixtures. Its transform tables and quantizer retain platform transcendental functions. A general arbitrary-input exact-byte guarantee is not established here; [#100](https://github.com/jmsansan/audiobox-rs/issues/100) tracks the validation/contract follow-up. |
 | Public loudness/true-peak/spectral reports | Existing numeric/reporting API, using platform math. Normalization reuses the algorithms with deterministic preparation/logarithms rather than rounding those public reports. |
+| `measure_deterministic` | Non-mutating final PCM validation with the same deterministic LUFS/true-peak estimators as normalization; no rounding or hidden acceptance tolerance. |
 
 The tests compare normalized PCM first, encoded bytes second and decoded PCM third
 so a container/codec difference cannot be mistaken for a normalization difference.
