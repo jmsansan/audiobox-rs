@@ -1237,8 +1237,8 @@ fn main() -> audiobox::Result<()> {
 ```
 
 Effects run before the bus gain. A compressor's optional sidechain hears another
-named bus **after** its effects, gain and pause fade, in the same frame. Named buses
-are ordered by these dependencies, then summed with direct master voices; master
+named bus **after** its effects, gain and pause fade, in the same frame. By default,
+named buses are ordered by these dependencies, then summed with direct master voices; master
 effects run on the sum before master gain and the existing limiter. A master key,
 self key or dependency cycle is refused. Application-time cycles, missing slots,
 type changes and delay-capacity increases report `MixerEvent::EffectsRejected` and
@@ -1258,7 +1258,7 @@ Damping shortens high-frequency tails. Parameter ranges are in the API docs.
 Paused buses freeze their effect buffers and automation clock. Tails continue after
 voices end. Replacing/removing a chain is immediate and resets/removes its state;
 fade the bus around structural edits if a discontinuity would be audible. With no
-chains installed, the existing mixer path is unchanged. An installed chain can
+chains or routing graph installed, the existing mixer path is unchanged. An installed chain can
 change summation rounding, including at dry/neutral settings. No latency is added
 to the dry path; delay and reverb tails belong to their wet paths.
 
@@ -1270,6 +1270,23 @@ ducking, a tempo-synced delay and reverb:
 
 ```sh
 cargo run --example bus_effects --features mixer -- bus-effects.wav
+```
+
+### Groups and shared effect sends
+
+`MixerHandle::set_routing` opts into a prepared graph of named group buses and
+shared effect returns. `BusRouting` replaces each main output and adds explicit
+`BusSend` levels with pre/post-fader taps, stereo bus balance, mute and solo path
+selection. Inserts run once per summed bus; audio and sidechain dependencies share
+cycle validation. Edits can be scheduled at an output frame and report
+`RoutingApplied`/`RoutingRejected`; poll events to reclaim retired graphs. Empty
+settings restore flat routing, and the default PCM path is unchanged.
+
+See [routing semantics, bounds and measured cost](docs/bus-routing.md). Render the
+group low-pass/shared wet-delay example with:
+
+```sh
+cargo run --example group_sends --features mixer -- group-sends.wav
 ```
 
 ### Modulation and colour effects

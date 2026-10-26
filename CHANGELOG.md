@@ -4,6 +4,14 @@
 
 ### Added
 
+- Prepared group buses and shared effect sends (#69): `BusRouting` / `BusSend`
+  replace named-bus main outputs and add pre/post-fader sends, stereo balance,
+  mute and solo path selection. Audio and sidechain edges share cycle validation;
+  scheduled graph edits are atomic, bounded and retired through event polling.
+  Default flat PCM is retained; routing render allocates/frees nothing. Impulse,
+  block-size, queue, pause and native/WASI controls, release benchmark data and
+  the `group_sends` example document the new opt-in path for Studio.
+
 - Scheduled held-note synth controls (#68): bounded `ControlEvent` plans for
   expression/pan and supported synthwave filter, pitch and LFO-depth parameters,
   with linear/geometric ramps and track/instrument or authored-note targeting.

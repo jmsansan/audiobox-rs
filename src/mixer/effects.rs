@@ -10,9 +10,11 @@
 //! a cubic soft curve. These colour effects do not oversample or suppress aliasing.
 //! Parameter smoothing does not remove their intentional waveform discontinuities.
 //!
-//! Named buses run in sidechain dependency order, effects before the bus fader.
+//! Named buses run in combined audio/sidechain dependency order, effects before the bus fader.
 //! Detectors hear the key bus after its effects, gain and pause fade, in the same
-//! frame. All named buses then feed master effects, master gain and the limiter.
+//! frame, including routing mute/solo gating when enabled. By default all named
+//! buses feed master; [`super::BusRouting`] replaces those audio paths explicitly.
+//! Master effects, gain and the limiter still run last.
 //! Self sidechains, master as a key, and cycles are refused. Application-time
 //! failures arrive as [`MixerEvent::EffectsRejected`]; the previous chain survives.
 //!
@@ -588,7 +590,7 @@ impl Drop for Edit {
 pub(super) struct AudioEffects {
     returns: Producer<Box<Edit>>,
     retired: VecDeque<Box<Edit>>,
-    order: [usize; 256],
+    pub(super) order: [usize; 256],
 }
 pub(super) struct ControlEffects {
     returns: Consumer<Box<Edit>>,
@@ -699,18 +701,27 @@ impl Commands<'_> {
     }
 }
 
-enum Change<'a> {
+pub(super) enum Change<'a> {
+    Current,
     Chain(usize, Option<&'a Chain>),
     Parameter(usize, usize, Settings),
 }
 // Kahn sort with fixed storage, evaluated against actual application-time chains.
-// Every named bus feeds master, so master is always last; master cannot be a key.
-fn topology(buses: &[Bus], change: Change<'_>) -> Option<[usize; 256]> {
+// Master is always last and cannot be a source or detector key. Named audio and
+// detector dependencies are both checked against actual application-time state.
+pub(super) fn topology(
+    buses: &[Bus],
+    change: Change<'_>,
+    graph: Option<&super::routing::Graph>,
+) -> Option<[usize; 256]> {
     let mut done = [false; 256];
     let mut order = [0; 256];
     for entry in &mut order[..buses.len() - 1] {
         let ready = (1..buses.len()).find(|&b| {
             if done[b] {
+                return false;
+            }
+            if graph.is_some_and(|g| g.incoming[b].iter().any(|&source| !done[source])) {
                 return false;
             }
             let chain = match change {
@@ -738,9 +749,103 @@ fn topology(buses: &[Bus], change: Change<'_>) -> Option<[usize; 256]> {
 }
 
 impl Mixer {
+    /// Opt-in audio graph: inserts run once on summed input, then pre/post-fader
+    /// routes feed destinations in the combined audio/detector topological order.
+    pub(super) fn mix_routing(&mut self, first: u64, out: &mut [f32]) {
+        use super::routing::SendPosition;
+        let graph = self.routing.graph.as_mut().unwrap();
+        let ch = self.channels;
+        let frames = out.len() / ch;
+        let master_paused = self.buses[0].paused;
+        // At this point buffers contain direct voices only. Sources keep their
+        // clocks even when solo discards their contribution at this input stage.
+        for (b, bus) in self.buses.iter_mut().enumerate() {
+            if !graph.input[b] {
+                bus.buffer[..out.len()].fill(0.0);
+            }
+        }
+        for index in 0..self.buses.len() {
+            let b = self.effects.order[index];
+            let node = &graph.nodes[b];
+            let pre = node
+                .edges
+                .iter()
+                .any(|e| e.enabled && e.position == SendPosition::PreFader);
+            let (before, rest) = self.buses.split_at_mut(b);
+            let (bus, after) = rest.split_first_mut().unwrap();
+            let buffer = &mut bus.buffer[..out.len()];
+            if master_paused || bus.paused {
+                buffer.fill(0.0);
+                if pre {
+                    graph.pre[..out.len()].fill(0.0);
+                }
+            } else {
+                if let Some(chain) = &mut bus.effects {
+                    for effect in &mut chain.nodes {
+                        let key = effect.settings.key.map(|key| {
+                            if key < b {
+                                &before[key].buffer[..out.len()]
+                            } else {
+                                &after[key - b - 1].buffer[..out.len()]
+                            }
+                        });
+                        effect.process(bus.effect_clock, self.rate, ch, buffer, key);
+                    }
+                }
+                bus.effect_clock += frames as u64;
+                for (i, frame) in buffer.chunks_exact_mut(ch).enumerate() {
+                    let at = first + i as u64;
+                    let pause = bus.pause.value(at);
+                    let gain = bus.gain.value(at) * pause;
+                    for (c, sample) in frame.iter_mut().enumerate() {
+                        if pre {
+                            graph.pre[i * ch + c] = (*sample as f64 * pause) as f32;
+                        }
+                        let pan = if node.pan == 0.0 {
+                            1.0
+                        } else if c == 0 {
+                            1.0 - node.pan.max(0.0)
+                        } else {
+                            1.0 + node.pan.min(0.0)
+                        };
+                        *sample = (*sample as f64 * (gain * pan)) as f32;
+                    }
+                }
+                if node.muted || !node.audible {
+                    buffer.fill(0.0);
+                    if pre {
+                        graph.pre[..out.len()].fill(0.0);
+                    }
+                }
+            }
+            for edge in node.edges.iter().filter(|e| e.enabled) {
+                let source = if edge.position == SendPosition::PreFader {
+                    &graph.pre[..out.len()]
+                } else {
+                    &buffer[..]
+                };
+                let to = edge.destination;
+                let destination = if to < b {
+                    &mut before[to].buffer[..out.len()]
+                } else {
+                    &mut after[to - b - 1].buffer[..out.len()]
+                };
+                for (dest, &sample) in destination.iter_mut().zip(source) {
+                    *dest += (sample as f64 * edge.gain) as f32;
+                }
+            }
+            if b == 0 {
+                out.copy_from_slice(buffer);
+            }
+        }
+    }
     pub(super) fn apply_effects(&mut self, frame: u64, mut edit: Box<Edit>) {
         let bus = edit.bus;
-        if let Some(order) = topology(&self.buses, Change::Chain(bus, edit.chain.as_deref())) {
+        if let Some(order) = topology(
+            &self.buses,
+            Change::Chain(bus, edit.chain.as_deref()),
+            self.routing.graph.as_deref(),
+        ) {
             self.effects.order = order;
             std::mem::swap(&mut self.buses[bus].effects, &mut edit.chain);
             edit.event = Some(MixerEvent::EffectsApplied(BusId(bus), frame));
@@ -765,7 +870,13 @@ impl Mixer {
             .as_ref()
             .is_some_and(|c| c.accepts(slot, settings));
         let order = valid
-            .then(|| topology(&self.buses, Change::Parameter(bus, slot, settings)))
+            .then(|| {
+                topology(
+                    &self.buses,
+                    Change::Parameter(bus, slot, settings),
+                    self.routing.graph.as_deref(),
+                )
+            })
             .flatten();
         if let Some(order) = order {
             self.effects.order = order;

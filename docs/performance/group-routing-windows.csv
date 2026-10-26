@@ -1,0 +1,31 @@
+# crate: audiobox 0.4.1
+# commit: c15230f0046c459fd46f981348e5096067d830e1 (modified)
+# rustc: rustc 1.98.1 (48a229cea 2026-09-01)
+# profile: release
+# features: synth+sfx+mixer+music+events+assets+file-stream
+# target: x86_64 windows (windows)
+# cpu: AMD64 Family 23 Model 1 Stepping 1, AuthenticAMD
+# logical-cpus: 16
+# runs: 1 warm-up + 5 timed + 1 allocation-counted
+# scale: quick (10 s)
+# unix-time: 1793032662
+case,phase,runs,frames,rate,median_ms,min_ms,max_ms,mframes_per_s,realtime_x,allocs,reallocs,frees,requested_bytes,moved_bytes,peak_live_bytes,callbacks,p50_us,p99_us,p999_us,max_us,deadline_us,over_deadline,process_rss_bytes,checksum
+mixer/routing-16-32/10s,prepare-mixer,5,0,0,3.1506,2.4429,3.5795,0.000,0.0,65,0,0,1189206,0,1189206,0,,,,,,,,00b03183856d952c
+mixer/routing-16-32/10s,prepare-graph,5,0,0,0.0127,0.0105,0.0197,0.000,0.0,37,14,0,5752,336,5416,0,,,,,,,,00b03183856d952c
+mixer/routing-16-32/10s,apply,5,0,0,0.0161,0.0134,0.0195,0.000,0.0,0,0,0,0,0,0,0,,,,,,,,00b03183856d952c
+mixer/routing-16-32/10s,render,5,480000,48000,150.2324,146.1458,170.2140,3.195,66.6,0,0,0,0,0,0,9375,70.60,164.70,369.50,705.20,5333.3,0,,00b03183856d952c
+mixer/routing-16-32/10s,drop,5,0,0,0.2216,0.1843,0.2499,0.000,0.0,0,0,134,0,0,0,0,,,,,,,,00b03183856d952c
+mixer/routing-64-256/10s,prepare-mixer,5,0,0,3.6853,2.5951,4.0382,0.000,0.0,161,0,0,1298550,0,1298550,0,,,,,,,,565901a8842d5417
+mixer/routing-64-256/10s,prepare-graph,5,0,0,0.0428,0.0321,0.0659,0.000,0.0,133,80,0,18424,2640,15784,0,,,,,,,,565901a8842d5417
+mixer/routing-64-256/10s,apply,5,0,0,0.0336,0.0293,0.0440,0.000,0.0,0,0,0,0,0,0,0,,,,,,,,565901a8842d5417
+mixer/routing-64-256/10s,render,5,480000,48000,482.3330,448.8636,546.6700,0.995,20.7,0,0,0,0,0,0,9375,224.40,482.40,793.30,1592.80,5333.3,0,,565901a8842d5417
+mixer/routing-64-256/10s,drop,5,0,0,0.2255,0.1928,0.2681,0.000,0.0,0,0,358,0,0,0,0,,,,,,,,565901a8842d5417
+mixer/routing-255-1024/10s,prepare-mixer,5,0,0,2.9706,2.7994,4.0555,0.000,0.0,543,0,0,1726963,0,1726963,0,,,,,,,,e2e93c7ec62382e9
+mixer/routing-255-1024/10s,prepare-graph,5,0,0,0.1381,0.1231,0.1647,0.000,0.0,515,279,0,60704,7736,52968,0,,,,,,,,e2e93c7ec62382e9
+mixer/routing-255-1024/10s,apply,5,0,0,0.0817,0.0796,0.0831,0.000,0.0,0,0,0,0,0,0,0,,,,,,,,e2e93c7ec62382e9
+mixer/routing-255-1024/10s,render,5,480000,48000,1471.2193,1439.9940,1587.6096,0.326,6.8,0,0,0,0,0,0,9375,724.20,1347.00,1716.20,2186.90,5333.3,0,,e2e93c7ec62382e9
+mixer/routing-255-1024/10s,drop,5,0,0,0.2747,0.2635,0.3216,0.000,0.0,0,0,1186,0,0,0,0,,,,,,,,e2e93c7ec62382e9
+mixer/routing-flat-255/10s,prepare-mixer,5,0,0,2.8286,2.7578,3.1519,0.000,0.0,543,0,0,1726963,0,1726963,0,,,,,,,,b6e3cd41b1735ca4
+mixer/routing-flat-255/10s,apply,5,0,0,0.0590,0.0576,0.1025,0.000,0.0,0,0,0,0,0,0,0,,,,,,,,b6e3cd41b1735ca4
+mixer/routing-flat-255/10s,render,5,480000,48000,662.6532,638.5217,737.9044,0.724,15.1,0,0,0,0,0,0,9375,320.70,617.60,858.40,1103.40,5333.3,0,,b6e3cd41b1735ca4
+mixer/routing-flat-255/10s,drop,5,0,0,0.2564,0.2453,0.2793,0.000,0.0,0,0,671,0,0,0,0,,,,,,,,b6e3cd41b1735ca4
