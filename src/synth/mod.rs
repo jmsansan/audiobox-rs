@@ -9,6 +9,15 @@
 //! filters, LFOs and glide. [`Synth::new_stereo`] / [`Score::render_stereo`] preserve
 //! stereo; existing constructors remain mono and legacy instruments retain their bits.
 //!
+//! For prepared fractional/changing tempo, [`TempoMap`] converts absolute ticks
+//! once with checked rational nearest-frame rounding. [`FrameScore`] / [`FrameNote`]
+//! use those positions through [`Synth::from_frames`] or its stereo counterpart.
+//! This opt-in path keeps the Score syntax and its integer-tempo PCM unchanged.
+//! Beat LFOs integrate the scheduled tempo clock without phase resets; tick macros
+//! follow that clock relative to the note's start. Repeats/sections are expanded
+//! by the caller, and a tie is one extended note. Multiple bounded sources align
+//! through the existing mixer; no unrestricted Score channel expansion is needed.
+//!
 //! ```
 //! use audiobox::synth::Score;
 //! let score: Score = "
@@ -305,6 +314,8 @@ pub use chip::{
 mod drum;
 pub use drum::{Drum, DrumKind, DrumKit};
 mod parse;
+mod prepared;
+pub use prepared::{FrameNote, FrameScore, MAX_TEMPO_CHANGES, TempoChange, TempoMap};
 mod render;
 mod score;
 mod synthwave;

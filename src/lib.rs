@@ -107,6 +107,8 @@ pub mod stream;
 #[cfg(feature = "synth")]
 #[cfg_attr(docsrs, doc(cfg(feature = "synth")))]
 pub mod synth;
+#[cfg(any(feature = "synth", feature = "music"))]
+mod timing;
 mod true_peak;
 mod types;
 pub use audio::Audio;

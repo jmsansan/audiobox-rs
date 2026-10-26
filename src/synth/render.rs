@@ -1,5 +1,6 @@
 use super::chip::{ChipPlan, ChipVoice};
 use super::drum::{DrumPlan, DrumVoice};
+use super::prepared::{BeatClock, FrameScore, TempoMap};
 use super::score::{Instrument, Score};
 use super::synthwave::{WidePlan, WideVoice};
 use super::wave::{Aliasing, Duty, Oscillator, Waveform};
@@ -195,6 +196,7 @@ struct Voice {
     level: f64,
     elapsed: u64,
     frequency: f64,
+    beat_start: Option<u128>,
 }
 impl Voice {
     fn new(aliasing: Aliasing) -> Self {
@@ -213,6 +215,7 @@ impl Voice {
             level: 0.0,
             elapsed: 0,
             frequency: 0.0,
+            beat_start: None,
         }
     }
     fn start(&mut self, event: Event, plans: &[Plan]) {
@@ -251,6 +254,7 @@ impl Voice {
         self.position = 0;
         self.from = self.level;
         self.elapsed = 0;
+        self.beat_start = None;
         self.frequency = cents_to_hz(event.cents);
         if plans[event.instrument].chip.is_some() {
             self.chip.reset();
@@ -307,7 +311,7 @@ impl Voice {
         }
         level
     }
-    fn sample(&mut self, plans: &[Plan], rate: u32) -> f64 {
+    fn sample(&mut self, plans: &[Plan], rate: u32, musical: Option<BeatClock>) -> f64 {
         let Some(event) = self.event else {
             return 0.0;
         };
@@ -326,9 +330,19 @@ impl Voice {
         };
         let waveform = plan.waveform(self.elapsed);
         if let Some(chip) = &plan.chip {
-            let frequency = chip.frequency(frequency, self.elapsed);
-            let (sample, finished) = self.chip.sample(chip, waveform, frequency, self.elapsed);
-            let gain = chip.gain(level * event.amplitude * plan.volume, self.elapsed);
+            let relative = musical.map(|clock| BeatClock {
+                numerator: clock.numerator - *self.beat_start.get_or_insert(clock.numerator),
+                ..clock
+            });
+            let frequency = chip.frequency(frequency, self.elapsed, relative);
+            let (sample, finished) =
+                self.chip
+                    .sample(chip, waveform, frequency, self.elapsed, relative);
+            let gain = chip.gain(
+                level * event.amplitude * plan.volume,
+                self.elapsed,
+                relative,
+            );
             self.elapsed += 1;
             if finished {
                 self.stage = Stage::Idle;
@@ -346,13 +360,19 @@ impl Voice {
             self.stage != Stage::Idle
         }
     }
-    fn sample_stereo(&mut self, plans: &[Plan], rate: u32, clock: u64) -> [f64; 2] {
+    fn sample_stereo(
+        &mut self,
+        plans: &[Plan],
+        rate: u32,
+        clock: u64,
+        musical: Option<BeatClock>,
+    ) -> [f64; 2] {
         let Some(event) = self.event else {
             return [0.0; 2];
         };
         let plan = &plans[event.instrument];
         let Some(wide) = &plan.wide else {
-            let sample = self.sample(plans, rate);
+            let sample = self.sample(plans, rate, musical);
             return [sample; 2];
         };
         if self.stage == Stage::Idle {
@@ -360,9 +380,9 @@ impl Voice {
         }
         let gain = self.envelope(plan) * event.amplitude * plan.volume;
         let offset = plan.cents(0.0, self.elapsed);
-        let mut result = self
-            .wide
-            .sample(wide, plan.waveform(self.elapsed), offset, clock);
+        let mut result =
+            self.wide
+                .sample(wide, plan.waveform(self.elapsed), offset, clock, musical);
         self.elapsed += 1;
         for value in &mut result {
             *value *= gain;
@@ -429,9 +449,11 @@ impl Track {
     }
 }
 
-/// Incremental, allocation-free rendering of a [`Score`] into mono or stereo frames.
+/// Incremental, allocation-free rendering of a [`Score`] or [`FrameScore`] into
+/// mono or stereo frames.
 ///
-/// All memory is allocated by [`Synth::new`]. [`Synth::fill`] allocates nothing,
+/// All memory is allocated by the constructors, including [`Synth::from_frames`].
+/// [`Synth::fill`] allocates nothing,
 /// takes no lock and does not block, so it can run on an audio thread. The samples
 /// do not depend on how the output is split into chunks, and are identical on every
 /// platform: pitch and vibrato use the crate's own polynomials, not `sin` or `exp`.
@@ -456,6 +478,7 @@ pub struct Synth {
     finished: bool,
     produced: u64,
     max_release: u64,
+    tempo_map: Option<TempoMap>,
 }
 impl Synth {
     pub fn new(score: &Score, sample_rate: u32, options: &RenderOptions) -> Result<Self> {
@@ -576,12 +599,126 @@ impl Synth {
             ending: false,
             finished: false,
             produced: 0,
+            tempo_map: None,
+        })
+    }
+    /// Prepare absolute note frames for mono output, using existing instruments
+    /// and allocation-free `fill`. Unlike Score, the map supports fractional and
+    /// changing tempo. Preparation is bounded to 8 tracks, 256 instruments,
+    /// 200000 notes and a 1200-second body. Map changes must be within that body.
+    ///
+    /// Notes require `on < off <= end_frame`, ordered onsets, a valid instrument,
+    /// volume 0..=15 and velocity 0..=127. Invalid arguments return
+    /// `InvalidArgument`, resource limits `LimitExceeded`. Expand repetitions
+    /// before preparation; `options.loops` must be `Some(0)` on this path.
+    ///
+    /// At each frame, onsets run first in track/input order, followed by gate-offs
+    /// on the remaining held voices, as on Score. Single-voice replacement and
+    /// pooled stealing retain their semantics. A tie is one extended FrameNote;
+    /// it preserves oscillator/envelope/filter state across tempo boundaries.
+    ///
+    /// Beat LFO phase integrates scheduled tempos continuously from frame zero;
+    /// tick macros integrate it relative to note start. Other clocks retain their
+    /// original units. Release tails drain after the exclusive body end; no
+    /// leading latency, post-render retiming or automatic limiting is added.
+    pub fn from_frames(
+        score: &FrameScore,
+        map: &TempoMap,
+        options: &RenderOptions,
+    ) -> Result<Self> {
+        Self::from_frame_channels(score, map, options, 1)
+    }
+    /// Stereo counterpart of [`Self::from_frames`], including existing synthwave
+    /// spread/pan. Multiple prepared sources can use the existing mixer Stream
+    /// adapter, with a common map and a shared scheduled start.
+    pub fn from_frames_stereo(
+        score: &FrameScore,
+        map: &TempoMap,
+        options: &RenderOptions,
+    ) -> Result<Self> {
+        Self::from_frame_channels(score, map, options, 2)
+    }
+    fn from_frame_channels(
+        score: &FrameScore,
+        map: &TempoMap,
+        options: &RenderOptions,
+        channels: usize,
+    ) -> Result<Self> {
+        score.validate(map)?;
+        if options.loops != Some(0) || !options.gain.is_finite() {
+            return Err(Error::invalid(
+                "Prepared synth requires finite gain and no implicit loops",
+            ));
+        }
+        let rate = map.sample_rate();
+        // The prepared musical clock replaces every tempo-dependent calculation;
+        // these legacy plan fields are used only by the unchanged Score path.
+        let plans: Vec<_> = score
+            .instruments
+            .iter()
+            .map(|i| Plan::new(i, rate, 120, map.ticks_per_quarter()))
+            .collect();
+        let tracks = score
+            .tracks
+            .iter()
+            .map(|notes| {
+                let events: Vec<_> = notes
+                    .iter()
+                    .map(|n| Event {
+                        on: n.on,
+                        off: n.off,
+                        cents: (n.pitch.midi() as f64 - 69.0) * 100.0,
+                        instrument: n.instrument,
+                        amplitude: if n.velocity == 127 {
+                            n.volume as f64 / 15.0
+                        } else {
+                            (n.volume as f64 / 15.0) * (n.velocity as f64 / 127.0)
+                        },
+                    })
+                    .collect();
+                let count = events
+                    .iter()
+                    .map(|e| plans[e.instrument].voices)
+                    .max()
+                    .unwrap_or(0);
+                Track {
+                    events,
+                    next: 0,
+                    loop_next: 0,
+                    loop_carry: None,
+                    poly_carry: Vec::new(),
+                    voice: Voice::new(options.aliasing),
+                    poly: (0..count).map(|_| Voice::new(options.aliasing)).collect(),
+                }
+            })
+            .collect();
+        Ok(Self {
+            rate,
+            channels,
+            aliasing: options.aliasing,
+            gain: options.gain as f64,
+            max_release: plans
+                .iter()
+                .map(|p| p.release.max(p.drum.as_ref().map_or(0, |d| d.frames)))
+                .max()
+                .unwrap_or(0),
+            plans,
+            tracks,
+            song_end: score.end_frame,
+            loop_start: 0,
+            loops: Some(0),
+            loops_left: Some(0),
+            position: 0,
+            ending: false,
+            finished: false,
+            produced: 0,
+            tempo_map: Some(map.clone()),
         })
     }
     pub fn sample_rate(&self) -> u32 {
         self.rate
     }
-    /// 1 for `new`, 2 for `new_stereo`.
+    /// 1 for mono constructors, 2 for stereo constructors.
     pub fn channels(&self) -> usize {
         self.channels
     }
@@ -633,12 +770,14 @@ impl Synth {
             }
             let mut sum = 0.0;
             let mut right = 0.0;
+            let musical = self.tempo_map.as_ref().map(|map| map.clock(self.produced));
             for track in &mut self.tracks {
-                let legacy = track.voice.sample(&self.plans, self.rate);
+                let legacy = track.voice.sample(&self.plans, self.rate, musical);
                 sum += legacy;
                 right += legacy;
                 for voice in &mut track.poly {
-                    let [l, r] = voice.sample_stereo(&self.plans, self.rate, self.produced);
+                    let [l, r] =
+                        voice.sample_stereo(&self.plans, self.rate, self.produced, musical);
                     if self.channels == 1 {
                         sum += (l + r) * 0.5;
                     } else {

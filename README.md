@@ -604,6 +604,12 @@ Native incremental disk reads use the optional `file-stream` feature above.
 few kilobytes of text that the project owns, and it renders to the same samples on
 every platform.
 
+For 0.5 development, `TempoMap`, `FrameScore` and `Synth::from_frames` add prepared
+fractional tempo and authored tempo changes while retaining the existing Score
+syntax and samples. Beat LFOs preserve phase and tick macros follow the changing
+clock on held notes. See [prepared timing, ordering and limits](docs/prepared-synth-timing.md)
+and run `cargo run --example prepared_synth --features synth` for a stereo WAV.
+
 ```rust
 use audiobox::synth::Score;
 
