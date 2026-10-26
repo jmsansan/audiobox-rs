@@ -4,6 +4,15 @@
 
 ### Added
 
+- Prepared synth timing (#67): `synth::TempoMap` maps absolute ticks with
+  0.001-BPM precision, authored tempo changes and checked rational nearest-frame
+  rounding shared with Music::Transport. `FrameScore` / `FrameNote` feed existing
+  instruments through `Synth::from_frames` and `from_frames_stereo`, with bounded,
+  allocation-free playback. Beat LFOs preserve integrated phase across tempo
+  changes and tick macros follow the note-relative musical clock. Score text and
+  legacy PCM remain unchanged. Fifteen-source timing/mixer controls, native/WASI
+  hashes and the `prepared_synth` example cover the new path.
+
 - Studio delivery contracts for 0.5 (#97, #99, #102, #103, #104): non-mutating
   `Audio::measure_deterministic` exposes normalization's LUFS/true-peak estimators
   for final validation; `mean_square` and `rms` expose linear signal measurements.

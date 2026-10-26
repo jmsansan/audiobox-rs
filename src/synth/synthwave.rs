@@ -1,4 +1,5 @@
 //! Opt-in polyphonic, stereo instruments. Legacy instruments keep their sample bits.
+use super::prepared::BeatClock;
 use super::{Envelope, Oscillator, Waveform};
 use crate::math::{cos_turns, exp2, sin_turns};
 use crate::{Error, Result};
@@ -88,6 +89,22 @@ impl Lfo {
             _ => (clock as u128 * num) % den,
         };
         sin_turns(phase as f64 / den as f64) * self.depth as f64
+    }
+    fn value_clock(self, clock: u64, rate: u32, tempo: u16, musical: Option<BeatClock>) -> f64 {
+        if let (
+            Some(c),
+            LfoRate::Beats {
+                numerator,
+                denominator,
+            },
+        ) = (musical, self.rate)
+        {
+            let den = c.denominator * numerator as u128;
+            let phase = c.numerator * denominator as u128 % den;
+            sin_turns(phase as f64 / den as f64) * self.depth as f64
+        } else {
+            self.value(clock, rate, tempo)
+        }
     }
 }
 /// Opt-in synthwave controls, combined with an instrument's waveform and amplitude
@@ -301,6 +318,7 @@ impl WideVoice {
         wave: Waveform,
         cents_offset: f64,
         clock: u64,
+        musical: Option<BeatClock>,
     ) -> [f64; 2] {
         let s = plan.settings;
         self.pitch = if plan.glide == 0 {
@@ -311,7 +329,11 @@ impl WideVoice {
                     * (self.glide_age.min(plan.glide) as f64 / plan.glide as f64)
         };
         self.glide_age = self.glide_age.saturating_add(1);
-        let lfo = |l: Option<Lfo>| l.map_or(0.0, |l| l.value(clock, plan.rate, plan.tempo));
+        let lfo = |l: Option<Lfo>| {
+            l.map_or(0.0, |l| {
+                l.value_clock(clock, plan.rate, plan.tempo, musical)
+            })
+        };
         let cents = self.pitch + cents_offset + lfo(s.pitch_lfo);
         if self.hz.0 != cents.to_bits() {
             self.hz = (cents.to_bits(), crate::math::cents_to_hz(cents));
@@ -355,7 +377,7 @@ impl WideVoice {
             }
         }
         let amp = s.amplitude_lfo.map_or(1.0, |l| {
-            1.0 - (l.depth as f64 + l.value(clock, plan.rate, plan.tempo)) / 200.0
+            1.0 - (l.depth as f64 + l.value_clock(clock, plan.rate, plan.tempo, musical)) / 200.0
         });
         let pan = ((s.pan as f64 + lfo(s.pan_lfo)) / 100.0).clamp(-1.0, 1.0);
         out[0] *= amp * (1.0 - pan.max(0.0));
@@ -438,16 +460,16 @@ mod tests {
         );
         let mut voice = WideVoice::new();
         voice.trigger(&plan, 0.0, false, false);
-        voice.sample(&plan, Waveform::Triangle, 0.0, 0);
+        voice.sample(&plan, Waveform::Triangle, 0.0, 0, None);
         voice.trigger(&plan, 1200.0, true, true);
         for frame in 0..=100 {
-            voice.sample(&plan, Waveform::Triangle, 0.0, frame);
+            voice.sample(&plan, Waveform::Triangle, 0.0, frame, None);
             assert!((voice.pitch - frame as f64 * 12.0).abs() < 1e-9);
         }
-        voice.sample(&plan, Waveform::Triangle, 0.0, 101);
+        voice.sample(&plan, Waveform::Triangle, 0.0, 101, None);
         assert_eq!(voice.pitch, 1200.0);
         voice.trigger(&plan, -1200.0, true, true);
-        voice.sample(&plan, Waveform::Triangle, 0.0, 102);
+        voice.sample(&plan, Waveform::Triangle, 0.0, 102, None);
         assert_eq!(voice.pitch, 1200.0);
     }
     #[test]
@@ -492,7 +514,7 @@ mod tests {
                 let mut voice = WideVoice::new();
                 voice.trigger(&plan, -6900.0, false, false);
                 for n in 0..4000 {
-                    let frame = voice.sample(&plan, Waveform::Sawtooth, 0.0, n);
+                    let frame = voice.sample(&plan, Waveform::Sawtooth, 0.0, n, None);
                     assert!(
                         frame.iter().all(|x| x.is_finite() && x.abs() < 1000.0),
                         "rate={rate} {mode:?}: {frame:?}"

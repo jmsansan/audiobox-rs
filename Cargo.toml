@@ -47,6 +47,10 @@ name = "chiptune"
 required-features = ["synth"]
 
 [[example]]
+name = "prepared_synth"
+required-features = ["synth"]
+
+[[example]]
 name = "sfx"
 required-features = ["sfx"]
 

@@ -1,4 +1,5 @@
 //! Opt-in tracker primitives. This is not a cycle-accurate console emulator.
+use super::prepared::BeatClock;
 use super::{Duty, NoiseMode, Oscillator, Pitch, Waveform};
 use crate::{Error, Limits, Result};
 
@@ -84,13 +85,24 @@ impl Macro {
         Ok(self.value(frame, sample_rate, tempo, ticks_per_quarter))
     }
     fn value(&self, age: u64, rate: u32, tempo: u16, ticks: u16) -> i16 {
+        self.value_clock(age, rate, tempo, ticks, None)
+    }
+    fn value_clock(
+        &self,
+        age: u64,
+        rate: u32,
+        tempo: u16,
+        ticks: u16,
+        clock: Option<BeatClock>,
+    ) -> i16 {
         let index = match self.step {
             MacroStep::Frames { frames, hz } => {
                 age as u128 * hz as u128 / (rate as u128 * frames as u128)
             }
-            MacroStep::Ticks(step) => {
-                age as u128 * tempo as u128 * ticks as u128 / (rate as u128 * 60 * step as u128)
-            }
+            MacroStep::Ticks(step) => clock.map_or_else(
+                || age as u128 * tempo as u128 * ticks as u128 / (rate as u128 * 60 * step as u128),
+                |c| c.numerator * ticks as u128 / (c.denominator * step as u128),
+            ),
         };
         let n = self.values.len();
         let index = if index < n as u128 {
@@ -329,13 +341,14 @@ impl ChipPlan {
             ticks,
         }
     }
-    fn lane(&self, lane: &Option<Macro>, age: u64, default: i16) -> i16 {
-        lane.as_ref()
-            .map_or(default, |m| m.value(age, self.rate, self.tempo, self.ticks))
+    fn lane(&self, lane: &Option<Macro>, age: u64, default: i16, clock: Option<BeatClock>) -> i16 {
+        lane.as_ref().map_or(default, |m| {
+            m.value_clock(age, self.rate, self.tempo, self.ticks, clock)
+        })
     }
-    pub(super) fn frequency(&self, frequency: f64, age: u64) -> f64 {
-        let cents = self.lane(&self.settings.arpeggio, age, 0) as f64 * 100.0
-            + self.lane(&self.settings.pitch, age, 0) as f64;
+    pub(super) fn frequency(&self, frequency: f64, age: u64, clock: Option<BeatClock>) -> f64 {
+        let cents = self.lane(&self.settings.arpeggio, age, 0, clock) as f64 * 100.0
+            + self.lane(&self.settings.pitch, age, 0, clock) as f64;
         let frequency = if cents == 0.0 {
             frequency
         } else {
@@ -345,8 +358,8 @@ impl ChipPlan {
             .pitch_table
             .map_or(frequency, |table| table.quantize(frequency))
     }
-    pub(super) fn gain(&self, level: f64, age: u64) -> f64 {
-        let gain = level * self.lane(&self.settings.volume, age, 15) as f64 / 15.0;
+    pub(super) fn gain(&self, level: f64, age: u64, clock: Option<BeatClock>) -> f64 {
+        let gain = level * self.lane(&self.settings.volume, age, 15, clock) as f64 / 15.0;
         if self.settings.volume_4bit {
             (gain.clamp(0.0, 1.0) * 15.0).round() / 15.0
         } else {
@@ -381,6 +394,7 @@ impl ChipVoice {
         waveform: Waveform,
         frequency: f64,
         age: u64,
+        clock: Option<BeatClock>,
     ) -> (f64, bool) {
         let frequency = if frequency.is_finite() {
             frequency.max(0.0)
@@ -390,7 +404,7 @@ impl ChipVoice {
         match &plan.settings.source {
             ChipSource::Waveform => {
                 let waveform = if plan.settings.duty.is_some() {
-                    Waveform::Pulse(match plan.lane(&plan.settings.duty, age, 2) {
+                    Waveform::Pulse(match plan.lane(&plan.settings.duty, age, 2, clock) {
                         0 => Duty::Eighth,
                         1 => Duty::Quarter,
                         2 => Duty::Half,

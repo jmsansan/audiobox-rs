@@ -90,9 +90,7 @@ impl Transport {
     /// and `origin` is the first bar's first output frame.
     pub fn new(sample_rate: u32, bpm: f64, signature: TimeSignature, origin: u64) -> Result<Self> {
         Limits::default().check(0, 1, sample_rate)?;
-        if !bpm.is_finite() || !(1.0..=1000.0).contains(&bpm) {
-            return Err(Error::invalid("Music tempo must be 1..=1000 BPM"));
-        }
+        let milli_bpm = crate::timing::milli_bpm(bpm)?;
         if !(1..=32).contains(&signature.numerator)
             || !signature.denominator.is_power_of_two()
             || signature.denominator > 32
@@ -103,7 +101,7 @@ impl Transport {
         }
         Ok(Self {
             rate: sample_rate,
-            milli_bpm: (bpm * 1000.0).round() as u32,
+            milli_bpm,
             signature,
             origin,
         })
@@ -148,8 +146,8 @@ impl Transport {
         let elapsed = (frame - self.origin) as u128;
         let mut index = elapsed * denominator / numerator + 1;
         loop {
-            let offset = (index * numerator + denominator / 2) / denominator;
-            let boundary = u64::try_from(self.origin as u128 + offset).ok()?;
+            let offset = crate::timing::rounded_ratio(index * numerator, denominator)?;
+            let boundary = self.origin.checked_add(offset)?;
             if boundary > frame {
                 return Some(boundary);
             }
