@@ -133,7 +133,8 @@ needs its failing input, independent decoder/quality checks, gapless/tag coverag
 compatibility notes and release benchmarks.
 
 This corpus tests reproducibility, not perceptual quality or independent decoder
-timing. FFmpeg recognition of audiobox's Info-tag priming/padding is the separate
-open [#95](https://github.com/jmsansan/audiobox-rs/issues/95); internal frame-count
-agreement does not establish that FFmpeg applies the same trim. Studio should
-consume an engine correction for that issue rather than patch MP3 bytes itself.
+timing. The separate [gapless correction (#95)](mp3-gapless.md) changes the Info
+extension/minimum framing and encoded hashes. All 246 source/decoded PCM hashes
+remain unchanged. Its FFmpeg controls independently check exact length and skip
+metadata; this corpus alone cannot establish independent trim behavior. Studio
+consumes that engine correction rather than patching MP3 bytes itself.

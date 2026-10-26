@@ -457,22 +457,22 @@ fn mastering_pcm_reports_and_exports_are_pinned_separately() {
         [
             0x9bf540d1ab6c1bd0,
             0x59184862371c8deb,
-            0xa4361cd8920dad58,
+            0xc2cdbd9d1c3b2932,
             0x9b38293225b9f409,
             0x6800dd61c0a1d43c,
-            0xa4361cd8920dad58,
+            0xc2cdbd9d1c3b2932,
             0xf2dae6df0e5acaf5,
             0xaf1f396e3de04795,
-            0x84283837114e3927,
+            0x3249751d31f1f604,
             0xacc863b724695c87,
             0x727db9a4a757c72,
-            0x84283837114e3927,
+            0x3249751d31f1f604,
             0x61717716aa659ce7,
             0xee841e51aeb70584,
-            0x2a4c488bc8c45821,
+            0x16975e39f74bf7a2,
             0xcf7b364bb3dc3f07,
             0x31bd32ec643d8a07,
-            0x2a4c488bc8c45821
+            0x16975e39f74bf7a2
         ]
     );
     assert_eq!(

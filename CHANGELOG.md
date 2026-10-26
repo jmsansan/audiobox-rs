@@ -82,6 +82,14 @@
 
 ### Fixed
 
+- MP3 gapless interoperability (#95): Info exports now use the explicit audiobox
+  LAME-layout ID `LAMEabox1`, valid music/tag CRCs and at least two coded audio
+  frames. Tested FFmpeg decodes recover the exact input frame count, including
+  very short files, without consumer trimming. Tags/cover, the 246 existing decoded
+  PCM fingerprints and DSP math are retained. Inputs of 32..=48 frames can get
+  corrected final filter-tail samples. MP3 encoded bytes intentionally change; native/WASI,
+  independent FFmpeg/FFprobe controls and before/after benchmarks cover the fix.
+
 - FLAC encoder Rice candidate costs use 64-bit arithmetic, avoiding overflow and
   excessive output allocation for 32-bit samples on WebAssembly/32-bit hosts.
 - LUFS normalization rejects measurement overflow rather than treating it as

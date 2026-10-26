@@ -266,11 +266,12 @@ blocks and global quantization with Huffman table selection. The TypeScript enco
 VBR, psychoacoustic noise shaping, transient block switching and encoder bit reservoir
 have **not** been ported. Prefer higher bitrates for complex material.
 
-MP3 files contain an Info tag with the original sample count's priming and padding.
-Audiobox honors it. Some external decoders, including FFmpeg, only apply gapless
-trimming for a whitelist of encoder names; they may expose priming and trailing padding
-for audiobox's own encoder name. The independent MP3 encoding tests explicitly align
-that reference by the tag before checking samples and gain.
+For 0.5, new MP3 exports use an Info/LAME-layout gapless extension identified as
+`LAMEabox1`, with music/tag CRCs and at least two coded audio frames. Audiobox and
+tested FFmpeg versions return the original frame count without consumer trimming.
+The identifier marks audiobox's compatible layout; the encoder remains audiobox's
+own implementation. Older exports remain readable. See the
+[priming, padding and compatibility contract](docs/mp3-gapless.md).
 
 For 0.5, MP3 reproducibility is checked for 246 named fixtures across native and
 WASI CI, with input PCM, encoded bytes and decoded PCM compared separately.
