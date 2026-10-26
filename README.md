@@ -272,6 +272,12 @@ trimming for a whitelist of encoder names; they may expose priming and trailing 
 for audiobox's own encoder name. The independent MP3 encoding tests explicitly align
 that reference by the tag before checking samples and gain.
 
+For 0.5, MP3 reproducibility is checked for 246 named fixtures across native and
+WASI CI, with input PCM, encoded bytes and decoded PCM compared separately.
+Arbitrary-input MP3 byte identity across hosts/compiler versions is not promised;
+select WAV/FLAC for an exact-byte export policy. See the
+[MP3 contract, matrix and comparison artifacts](docs/mp3-export-contract.md).
+
 ### Seeded dither for integer exports
 
 On the development branch for 0.5, set `EncodeOptions::dither` to

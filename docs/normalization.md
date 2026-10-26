@@ -96,15 +96,17 @@ use this normalization contract.
 | Normalization PCM and report | Same samples/values for identical Audio and options on supported native/WASM targets; all units use deterministic measurement/control math. Peak PCM is unchanged from 0.4.1. |
 | Gain, fades, filtering, resampling, sample/true-peak limiting | Existing deterministic PCM contract. Any upstream host-dependent analysis that chooses their settings remains the caller's responsibility. |
 | Raw integer PCM, WAV, FLAC | Same destination integers/bytes for identical PCM and format/options/tags. Seeded dither is added once at the final quantizer; FLAC's predictor, Rice coding, CRC and MD5 then operate on integers. |
-| MP3 encode/decode | Exact encoded/decoded checksums are tested for the named mastering fixtures. Its transform tables and quantizer retain platform transcendental functions. A general arbitrary-input exact-byte guarantee is not established here; [#100](https://github.com/jmsansan/audiobox-rs/issues/100) tracks the validation/contract follow-up. |
+| MP3 encode/decode | Exact encoded/decoded checksums are tested for the named mastering fixtures and the 246-case [MP3 contract matrix](mp3-export-contract.md). Transform/quantizer/decoder math retains platform transcendental functions; arbitrary-input cross-host byte/PCM identity is not promised. |
 | Public loudness/true-peak/spectral reports | Existing numeric/reporting API, using platform math. Normalization reuses the algorithms with deterministic preparation/logarithms rather than rounding those public reports. |
 | `measure_deterministic` | Non-mutating final PCM validation with the same deterministic LUFS/true-peak estimators as normalization; no rounding or hidden acceptance tolerance. |
 
 The tests compare normalized PCM first, encoded bytes second and decoded PCM third
 so a container/codec difference cannot be mistaken for a normalization difference.
 No MP3 encoded-byte divergence was reproduced by the Windows/WASI fixtures.
-The MP3 implementation is unchanged. #100 calls for broader adversarial/bitrate
-comparisons and requires an actual reproducer before any proposed codec fix.
+The MP3 implementation is unchanged. The broader #100 fixture matrix includes
+mono/stereo, all encoder rates, representative bitrates, short/quiet signals and
+adjacent-f32 output-decision boundaries. It compares source, encoded and decoded
+hashes in that order and requires an actual reproducer before any codec fix.
 Studio can select LUFS directly through this API and use WAV/FLAC when its export
 policy requires a general exact-byte promise. Independent-decoder MP3 gapless
 timing remains tracked separately in #95.
