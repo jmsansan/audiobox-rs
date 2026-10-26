@@ -524,13 +524,17 @@ fn analysis_cases(cases: &mut Vec<Case>, seconds: f64, tag: &str) {
         })
     }));
     type Transform = fn(&Audio) -> Audio;
-    let transforms: [(&str, Transform); 7] = [
+    let transforms: [(&str, Transform); 8] = [
         ("resample-44k1", |a| a.resample(44_100).unwrap()),
         ("filter-lowpass", |a| {
             a.filter(FilterOptions::new(FilterType::Lowpass, 2000.0))
                 .unwrap()
         }),
         ("limit", |a| a.limit(LimiterOptions::default()).unwrap()),
+        ("limit-true-peak", |a| {
+            a.limit_true_peak(TruePeakLimiterOptions::default())
+                .unwrap()
+        }),
         ("normalize-lufs", |a| {
             a.normalize(NormalizeOptions {
                 to: -16.0,
@@ -553,6 +557,11 @@ fn analysis_cases(cases: &mut Vec<Case>, seconds: f64, tag: &str) {
     for (name, transform) in transforms {
         cases.push(case(format!("dsp/{name}/{tag}"), move || {
             let audio = music(seconds, RATE, 2);
+            let audio = if name == "limit-true-peak" {
+                audio.gain(3.0).unwrap()
+            } else {
+                audio
+            };
             Box::new(move |r: &mut Recorder| {
                 let out = r.phase("transform", || {
                     (transform(&audio), work(audio.frames(), RATE))

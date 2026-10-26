@@ -377,7 +377,7 @@ FFmpeg installation.
 - Construction: `Audio::new`, `Audio::silence`, `Audio::from_interleaved`, `Audio::merge`.
 - Editing: `cut`, `remove`, `concat`, `pad`, `reverse`, `mix`, `crossfade_to`.
 - Channels: `to_mono`, `to_stereo`, `to_channels`, `map_channels`, `pan`, `split`.
-- DSP: `resample`, `gain`, `gain_db`, `fade`, `filter`, `limit`, `remove_dc_offset`.
+- DSP: `resample`, `gain`, `gain_db`, `fade`, `filter`, `limit`, `limit_true_peak`, `remove_dc_offset`.
 - Silence: `detect_silence`, `trim_silence`.
 - Time/pitch: `speed`, WSOLA `tempo`, `pitch`.
 - Measurement: `peak`, `peak_db`, `true_peak_db`, `rms_db`, `loudness`, `waveform`.
@@ -414,6 +414,27 @@ fn normalize_podcast(bytes: &[u8]) -> audiobox::Result<audiobox::Audio> {
     })
 }
 ```
+
+For an offline true-peak ceiling (0.5 development), use `limit_true_peak`. Its
+8x/64-tap detector, linked lookahead/release and final reconstructed-peak check
+preserve the input length and leading alignment. The existing `limit` remains the
+sample-peak limiter. The explicit default safety margin is 0.3 dB.
+
+```rust
+use audiobox::{Audio, TruePeakLimiterOptions};
+
+fn limit_master(audio: &Audio) -> audiobox::Result<Audio> {
+    audio.limit_true_peak(TruePeakLimiterOptions {
+        ceiling_db: -1.0,
+        safety_margin_db: 0.3,
+        ..Default::default()
+    })
+}
+```
+
+`max_working_bytes` bounds output PCM and the retained detector/peak queue.
+See [the algorithm, timing, bounds and independent checks](docs/true-peak-limiter.md),
+or run `cargo run --example true_peak_limiter` for three synthetic comparison WAVs.
 
 Positions accept seconds (`f64`), `TimePosition::Frames(i64)`, or parsed timestamps
 such as `"1:30".parse::<TimePosition>()?` and `"500ms".parse::<TimePosition>()?`.
