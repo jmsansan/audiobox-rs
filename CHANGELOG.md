@@ -4,6 +4,14 @@
 
 ### Added
 
+- Ogg Opus import (#30): SILK, CELT and hybrid packet decoding, mapping families
+  0/1 and 1–8 output channels at 48 kHz. Whole and incremental decoding apply
+  pre-skip, final granule trim, header gain and channel mapping; replay seeks
+  equal whole decoding and allocate/free nothing. Preparation and packet limits
+  bound memory independently of duration. Independent float libopus fixtures,
+  RFC 8251 vectors, malformed input and allocator controls verify the decoder.
+  No encoder, FFI or Cargo dependency is added; source MIT/BSD notices are retained.
+
 - Ogg Vorbis I import (#21), whole and incremental with sample-exact replay seeks:
   1–8 channels, floor 0/1, residue 0/1/2, block switching and granule trimming.
   Page CRC/lacing/sequence checks and preparation budgets bound decoding;
@@ -118,7 +126,7 @@
 
 ### Breaking
 
-- Exhaustive `AudioFormat` matches must handle the new decode-only `Vorbis` variant.
+- Exhaustive `AudioFormat` matches must handle the decode-only `Vorbis` and `Opus` variants.
 
 - Full `MixerConfig` literals need `virtual_voices`, full `Play` literals need
   `resampling`, or use `..Default::default()`. Exhaustive `VoiceState` matches

@@ -29,11 +29,18 @@ unsafe impl GlobalAlloc for Count {
 #[global_allocator]
 static GLOBAL: Count = Count;
 #[test]
-fn vorbis_read_seek_and_rewind_reuse_all_prepared_memory() {
+fn ogg_read_seek_and_rewind_reuse_all_prepared_memory() {
     for bytes in [
         include_bytes!("fixtures/ogg/vorbis-floor0.ogg").as_slice(),
         include_bytes!("fixtures/ogg/vorbis-floor0-even.ogg").as_slice(),
         include_bytes!("fixtures/ogg/vorbis-floor0-vector.ogg").as_slice(),
+        include_bytes!("fixtures/ogg/opus-silk-8000-1ch.opus").as_slice(),
+        include_bytes!("fixtures/ogg/opus-hybrid-2ch.opus").as_slice(),
+        include_bytes!("fixtures/ogg/opus-transitions.opus").as_slice(),
+        include_bytes!("fixtures/ogg/opus-8ch.opus").as_slice(),
+        include_bytes!("fixtures/ogg/opus-fec.opus").as_slice(),
+        include_bytes!("fixtures/ogg/opus-dtx.opus").as_slice(),
+        include_bytes!("fixtures/ogg/opus-celt-120ms.opus").as_slice(),
         include_bytes!("fixtures/ogg/vorbis-stereo-q4.ogg").as_slice(),
         include_bytes!("fixtures/ogg/vorbis-8ch.ogg").as_slice(),
     ] {

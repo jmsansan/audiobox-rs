@@ -238,13 +238,14 @@ of it. See [CHANGELOG.md](CHANGELOG.md) for releases.
 | FLAC | Yes | Yes | Fixed/LPC prediction and stereo decorrelation decoding; fixed prediction + Rice encoding, CRC and MD5 verification |
 | MP3 | Yes | Yes | MPEG-1/2/2.5 Layer III decoding, CBR/VBR and gapless tags; MPEG-1 CBR encoding |
 | Ogg Vorbis I | Yes | — | 1–8 channels, floor 0/1, residue 0/1/2, exact granule trim and incremental seeking; single logical link |
+| Ogg Opus | Yes | — | SILK/CELT/hybrid, mapping families 0/1, 1–8 channels at 48 kHz, pre-skip, gain and exact replay seeking |
 | Raw PCM | Explicit shape | Yes | `pcm::decode_pcm` and `pcm::encode_pcm` |
 
 Formats are detected from bytes. To override detection, use `decode_with_options`.
 An extension is only used to choose the **output** format in `write_audio_file`.
 Unsupported input and malformed or truncated containers return an error.
 
-Vorbis import uses `AudioFormat::Vorbis` or byte detection. Whole/incremental PCM
+Ogg import uses `AudioFormat::Vorbis`, `AudioFormat::Opus` or byte detection. Whole/incremental PCM
 agrees, and prepared reads/seeks allocate nothing. See [Ogg timing, workspace,
 precision and source contracts](docs/ogg-decoding.md). Native `FileStream`
 retains its WAV/FLAC/MP3 disk-reader scope.
@@ -536,7 +537,8 @@ fn play(bytes: &'static [u8]) -> audiobox::Result<()> {
 - **Errors:** malformed or truncated input gives the crate's errors, never a panic.
   After an error, reads return it again until a seek or rewind.
 
-AIFF, CAF and AU, and Ogg Vorbis and Opus, are not decoded incrementally.
+AIFF, CAF and AU are not decoded incrementally. Ogg Vorbis/Opus prepare bounded
+packet DSP storage; exact seeking replays from the beginning and costs O(distance).
 
 ### Streaming from disk (`file-stream` feature)
 
@@ -1417,5 +1419,5 @@ merge to `main`, run `cargo publish`, then tag `vX.Y.Z` and publish a GitHub rel
 
 MIT, same as the original TypeScript implementation. Specification tables and transform
 windows were ported from [the original audiobox repository](https://github.com/jmsansan/audiobox).
-The Vorbis packet DSP adapts pinned MIT-licensed source; its license, provenance
+The Vorbis/Opus packet DSP adapts pinned MIT/BSD-licensed source; its licenses, provenance
 and corrections are retained in [src/ogg/NOTICE.md](src/ogg/NOTICE.md).

@@ -2,7 +2,8 @@
 
 `decode`, `read_audio_file` and `stream::Decoder` recognize Ogg Vorbis I from
 its identification packet. `AudioFormat::Vorbis` explicitly selects it; `ogg`,
-`oga` and `vorbis` parse to that format. Vorbis encoding is not implemented.
+`oga` and `vorbis` parse to that format. Opus is detected from `OpusHead`;
+`AudioFormat::Opus` or `opus` selects it explicitly. Neither codec encodes.
 
 ```rust
 use audiobox::{decode, stream::Decoder};
@@ -41,7 +42,7 @@ arbitrary number of decoded packets. `frames()` reports the presented count.
 sample-exact and allocates/frees nothing after preparation, but costs O(distance
 from the start). `rewind` resets immediately without reparsing/replanning.
 `next_chunk` creates owned `Audio`, as for other formats; use `read` for streaming.
-Native `FileStream` retains its WAV/FLAC/MP3 disk-reader scope. For Vorbis use
+Native `FileStream` retains its WAV/FLAC/MP3 disk-reader scope. For Ogg use
 resident encoded bytes with `Decoder`, or whole-file import and shared `Audio`.
 
 ## Bounds and metadata
@@ -68,7 +69,8 @@ native metadata; this reader does not extract their image payloads.
 
 ## Verification and source provenance
 
-Packet DSP adapts a pinned MIT-licensed TPT Cadence revision. Its license,
+Packet DSP adapts a pinned MIT-licensed TPT Cadence revision and its BSD-licensed
+Opus reference port. Their licenses,
 [provenance and corrections](../src/ogg/NOTICE.md) are retained in the package.
 No Cargo dependency, C, FFI or build-time download is introduced. Ogg framing,
 API/limit integration and seek policy are audiobox code.
@@ -93,3 +95,42 @@ setup budgets, repaired-CRC mutations and allocator activity (floor 0 and 7.1).
 The [fixture manifest](../tests/fixtures/ogg/vorbis.csv) records encoded/reference
 hashes; [the generator](../tests/fixtures/generate_ogg.py) authors integer signals
 and minimal floor-0 packets. FFmpeg and libvorbisfile are development oracles only.
+
+## Opus
+
+Opus supports SILK, CELT and hybrid, mono/stereo mode changes, 2.5–120 ms packets,
+CBR/VBR packing, padding, DTX and in-band FEC-bearing packets (normal decoding,
+not an exposed loss-recovery API). Mapping families 0/1 cover 1–8 output channels,
+including coupled/uncoupled streams, duplicated and silent mappings. Output is
+always 48 kHz in WAV speaker order. The original input-rate field is informational.
+Other mapping families, chained links and multiplexed links return errors.
+
+The public timeline removes `pre_skip` and final EOS trim, and subtracts a
+positive initial granule origin. Header gain in signed Q8 dB is applied once,
+without clipping float headroom. All stream durations must agree in a multistream
+packet. Each coded frame is at most 1275 bytes, each packet at most 120 ms and each
+decoder at most eight coded streams. Reusable PCM capacity is 5760 frames.
+Preparation charges 2 MiB per coded stream plus packet, output and metadata
+storage within the same Ogg workspace budget.
+
+35 synthetic libopus-encoded fixtures and complete, aligned float libopus
+references (FFmpeg 9.0.1, explicitly requested float sample format) cover all
+three modes, durations, internal rates, 1–8 channels, short trim, transitions,
+gain, DTX and FEC. Each sample uses absolute tolerance 0.006 and each complete
+fixture requires SNR >50 dB (or exact equality). Observed native maximum error is
+0.005711 and minimum SNR 54.15 dB; most SILK cases are exact. CELT floating-point
+synthesis differs from libopus builds. No lag search, resampling or consumer trim
+is allowed. Whole/read/replayed-seek samples are bit-identical within a host.
+Tests cover malformed packets, limits, silent/duplicate mappings, CRC-repaired
+mutations and zero callback allocations/frees. The manifest is
+[`opus.csv`](../tests/fixtures/ogg/opus.csv); regenerate with
+`python tests/fixtures/generate_opus.py /path/to/ffmpeg`.
+
+The optional ignored unit test `official_rfc8251_ranges_and_pcm` reads the
+[official RFC 8251 vectors](https://opus-codec.org/docs/) from
+`AUDIOBOX_OPUS_TESTVECTORS`. The archive SHA-256 is
+`6b26a22f9ba87b2b836906a9bb7afec5f8e54d49553b1200382520ee6fedfa55`.
+All 20,075 packet final ranges match; full stereo PCM lengths agree and measured
+SNR is 85.17–111.44 dB, with vectors 2/3/4 integer-exact. The optional check
+requires >80 dB or exact equality. External vector audio is not bundled or downloaded
+by Cargo or normal CI. Synthetic fixture controls run offline on native/MSRV/WASI.

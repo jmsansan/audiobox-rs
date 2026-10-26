@@ -11,6 +11,8 @@ pub enum AudioFormat {
     Mp3,
     /// Ogg Vorbis I, decode only.
     Vorbis,
+    /// Ogg Opus, decode only, with 48 kHz output.
+    Opus,
     Raw,
 }
 impl FromStr for AudioFormat {
@@ -24,6 +26,7 @@ impl FromStr for AudioFormat {
             "flac" => Ok(Self::Flac),
             "mp3" => Ok(Self::Mp3),
             "ogg" | "oga" | "vorbis" => Ok(Self::Vorbis),
+            "opus" => Ok(Self::Opus),
             "raw" | "pcm" => Ok(Self::Raw),
             _ => Err(Error::new(
                 crate::ErrorCode::UnsupportedFormat,
