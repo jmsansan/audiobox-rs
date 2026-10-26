@@ -1,0 +1,12 @@
+pub(super) mod decode_indices;
+pub(super) mod decoder;
+pub(super) mod excitation;
+pub(super) mod gains;
+pub(super) mod nlsf;
+pub(super) mod pitch;
+pub(super) mod plc;
+pub(super) mod resampler;
+pub(super) mod sigproc;
+pub(super) mod stereo;
+pub(super) mod synthesis;
+pub(super) mod tables;

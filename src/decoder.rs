@@ -1,4 +1,4 @@
-//! Incremental decoding of WAV, FLAC and MP3 held in memory.
+//! Incremental decoding of WAV, FLAC, MP3, Vorbis and Opus held in memory.
 use crate::flac::{FlacFrame, FlacInfo, Md5};
 use crate::formats::WavLayout;
 use crate::mp3::{self, Header, Mp3State, Vbr};
@@ -29,7 +29,7 @@ impl Default for DecoderOptions {
     }
 }
 
-/// Decodes WAV, FLAC, MP3 or Ogg Vorbis bytes held in memory a chunk at a time.
+/// Decodes WAV, FLAC, MP3, Ogg Vorbis or Ogg Opus in memory a chunk at a time.
 ///
 /// The bytes can be anything that holds them: `&'static [u8]` from
 /// `include_bytes!`, a `Vec<u8>` read from a file, or an `Arc<[u8]>` shared with
@@ -47,7 +47,7 @@ impl Default for DecoderOptions {
 /// enough to refill the bit reservoir and the filter state, so the samples after a
 /// seek equal those of a whole decode. [`Decoder::rewind`] returns to the start at
 /// once, for looping music.
-/// Ogg Vorbis validates page framing/granules at open and prepares bounded packet
+/// Ogg validates page framing/granules at open and prepares bounded packet
 /// DSP storage. Seeking replays from the first audio packet with existing storage;
 /// it is exact but O(distance from the start). Chained/multiplexed links are rejected.
 ///
@@ -137,7 +137,7 @@ impl<B: AsRef<[u8]>> Decoder<B> {
             })?;
         let limits = &options.limits;
         let (inner, channels, rate, frames, capacity) = match format {
-            AudioFormat::Vorbis => {
+            AudioFormat::Vorbis | AudioFormat::Opus => {
                 let s = crate::ogg::Stream::open(input, format, limits)?;
                 let (channels, rate, frames, capacity) = (s.channels, s.rate, s.frames, s.capacity);
                 (

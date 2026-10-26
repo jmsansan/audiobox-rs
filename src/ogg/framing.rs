@@ -224,6 +224,8 @@ pub(crate) fn sniff(bytes: &[u8]) -> Option<crate::AudioFormat> {
     let body = bytes.get(p.body..p.end)?;
     if body.starts_with(b"\x01vorbis") {
         Some(crate::AudioFormat::Vorbis)
+    } else if body.starts_with(b"OpusHead") {
+        Some(crate::AudioFormat::Opus)
     } else {
         None
     }

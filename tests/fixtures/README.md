@@ -1,3 +1,9 @@
+`ogg/opus.csv` records 35 synthetic Ogg Opus inputs and full float libopus
+references. `generate_opus.py /path/to/ffmpeg` regenerates them with FFmpeg 9.0.1;
+request `flt` before opening input, otherwise FFmpeg defaults to quantized i16.
+These cover SILK, CELT, hybrid, multistream, 2.5–120 ms, short trim, gain, DTX and
+FEC. Official RFC 8251 audio is only used by an optional local ignored test.
+
 `ogg/` contains synthetic Vorbis inputs and independent libvorbisfile f32
 references. `generate_ogg.py` uses FFmpeg 9.0.1 and SoundFile 0.14.0 / libsndfile
 1.2.2 as development oracles; they are not crate dependencies. `ogg/vorbis.csv`

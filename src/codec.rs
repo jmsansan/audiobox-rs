@@ -55,7 +55,7 @@ pub fn decode_with_options(bytes: &[u8], options: &DecodeOptions) -> Result<Audi
         AudioFormat::Au => crate::formats::decode_au(bytes, options),
         AudioFormat::Flac => crate::flac::decode(bytes, options),
         AudioFormat::Mp3 => crate::mp3::decode(bytes, options),
-        AudioFormat::Vorbis => crate::ogg::decode(bytes, format, options),
+        AudioFormat::Vorbis | AudioFormat::Opus => crate::ogg::decode(bytes, format, options),
         AudioFormat::Raw => Err(Error::invalid(
             "Raw PCM requires pcm::decode_pcm with an explicit shape",
         )),
@@ -83,9 +83,9 @@ pub fn encode_with_options(
         AudioFormat::Au => crate::formats::encode_au(audio, options),
         AudioFormat::Flac => crate::flac::encode(audio, options),
         AudioFormat::Mp3 => crate::mp3::encode(audio, options),
-        AudioFormat::Vorbis => Err(Error::new(
+        AudioFormat::Vorbis | AudioFormat::Opus => Err(Error::new(
             ErrorCode::UnsupportedFormat,
-            "Vorbis encoding is not supported",
+            "Ogg encoding is not supported",
         )),
         AudioFormat::Raw => crate::pcm::encode_pcm_with_dither(
             audio,

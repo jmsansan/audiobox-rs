@@ -4,6 +4,7 @@ pub(super) enum CodecError {
     InvalidFormat(String),
     CorruptData(String),
     UnsupportedFeature(String),
+    BufferTooSmall { needed: usize, provided: usize },
     LimitExceeded(&'static str),
 }
 impl From<CodecError> for crate::Error {
@@ -12,6 +13,9 @@ impl From<CodecError> for crate::Error {
         match error {
             InvalidFormat(s) | CorruptData(s) => Self::decode(s),
             UnsupportedFeature(s) => Self::new(crate::ErrorCode::UnsupportedFormat, s),
+            BufferTooSmall { needed, provided } => {
+                Self::invalid(format!("Codec needs {needed} samples, got {provided}"))
+            }
             LimitExceeded(s) => Self::limit(s),
         }
     }
