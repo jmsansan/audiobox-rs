@@ -70,3 +70,13 @@ e2ab405d0d1e6e9db2b73e3bd9cec9dfabccf7d9e31885ec70c1bcd7e38b9c66  src/silk/resam
 bb8e80bf14fac6abfa72576d70cab3c1fb95b4aec8ca3b777f25ca69870692e2  src/silk/synthesis.rs
 fe39c7aac3fd52e2279381bef5a1585e34bbfa0dedd8e1f8f7a1e3b3ff34d311  src/silk/tables.rs
 ```
+
+## Additional audiobox review corrections
+
+Nonzero coupling propagation follows forward pair order; inverse coupling keeps
+reverse order. Packet exhaustion has a dedicated nonallocating signal: floor
+exhaustion marks that floor unused and residue exhaustion retains partial output,
+including type-2 deinterleaving. Floor-1 line slopes retain the authored endpoint
+when a long-block floor is used by a short block; only writes are clipped. Lookup
+1 divisors advance incrementally, bounding setup work to O(decoded table cells).
+Seven independent libvorbisfile controls retain these review regressions.

@@ -35,7 +35,8 @@ impl Default for DecoderOptions {
 /// `include_bytes!`, a `Vec<u8>` read from a file, or an `Arc<[u8]>` shared with
 /// other decoders. Apart from them, the decoder's memory is bounded: it holds at
 /// most one block of the input format (a FLAC block, an MP3 frame, an IMA ADPCM block
-/// or `chunk_frames` of PCM) and the MP3 bit reservoir, all allocated when it opens.
+/// or `chunk_frames` of PCM), the MP3 bit reservoir, or bounded Ogg packet, table
+/// and DSP scratch storage, all allocated when it opens.
 /// [`Decoder::read`] allocates nothing, so it can run on an audio thread.
 ///
 /// The concatenated output equals what [`decode`](crate::decode) gives for the same

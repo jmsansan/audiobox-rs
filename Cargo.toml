@@ -12,7 +12,7 @@ documentation = "https://docs.rs/audiobox"
 readme = "README.md"
 keywords = ["audio", "gamedev", "mp3", "flac", "synthesizer"]
 categories = ["multimedia::audio", "multimedia::encoding", "game-development", "encoding", "wasm"]
-include = ["/Cargo.toml", "/Cargo.lock", "/src/**", "/tests/**", "/examples/*.rs", "/README.md", "/CHANGELOG.md", "/LICENSE"]
+include = ["/Cargo.toml", "/Cargo.lock", "/src/**", "/tests/**", "/docs/*.md", "/benches/engine.rs", "/examples/*.rs", "/README.md", "/CHANGELOG.md", "/LICENSE"]
 
 [features]
 default = []

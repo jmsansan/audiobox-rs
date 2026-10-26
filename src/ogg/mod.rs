@@ -289,7 +289,13 @@ fn opus_timeline(
 ) -> Result<(usize, usize)> {
     let mut total = 0u64;
     let mut origin = None;
+    let mut page = None;
+    let mut page_start = 0;
     while let Some(packet) = cursor.next(bytes, scratch)? {
+        if page != Some(packet.page_end) {
+            page = Some(packet.page_end);
+            page_start = total;
+        }
         let span = core.duration(packet.data)? as u64;
         total = total
             .checked_add(span)
@@ -299,8 +305,9 @@ fn opus_timeline(
                 let upper = total
                     .checked_add(origin.unwrap_or(0))
                     .ok_or_else(|| Error::limit("Opus granule overflow"))?;
-                if granule > upper || granule < upper.saturating_sub(span) {
-                    return Err(Error::decode("Opus EOS trim exceeds the final packet"));
+                let lower = page_start + origin.unwrap_or(0);
+                if granule > upper || granule < lower {
+                    return Err(Error::decode("Opus EOS trim exceeds the final page"));
                 }
             } else {
                 let offset =

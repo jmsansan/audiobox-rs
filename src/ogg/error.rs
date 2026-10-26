@@ -1,6 +1,7 @@
 //! Private error bridge for the adapted packet DSP.
 #[derive(Debug)]
 pub(super) enum CodecError {
+    PacketEnd,
     InvalidFormat(String),
     CorruptData(String),
     UnsupportedFeature(String),
@@ -11,6 +12,7 @@ impl From<CodecError> for crate::Error {
     fn from(error: CodecError) -> Self {
         use CodecError::*;
         match error {
+            PacketEnd => Self::decode("Unexpected end of codec header or packet"),
             InvalidFormat(s) | CorruptData(s) => Self::decode(s),
             UnsupportedFeature(s) => Self::new(crate::ErrorCode::UnsupportedFormat, s),
             BufferTooSmall { needed, provided } => {
