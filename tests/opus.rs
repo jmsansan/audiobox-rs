@@ -365,7 +365,7 @@ fn opus_final_page_trim_and_positive_origin_preserve_pcm() {
     let mut laces = Vec::new();
     let mut body = Vec::<u8>::new();
     for packet in &p[2..] {
-        laces.extend(std::iter::repeat(255u8).take(packet.len() / 255));
+        laces.extend(std::iter::repeat_n(255u8, packet.len() / 255));
         laces.push((packet.len() % 255) as u8);
         body.extend_from_slice(packet);
     }
