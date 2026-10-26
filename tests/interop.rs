@@ -395,3 +395,82 @@ fn incremental_decoding_of_external_files() {
         }
     }
 }
+
+#[test]
+fn true_peak_limiter_meets_an_independent_ffmpeg_reconstruction() {
+    if !enabled() {
+        return;
+    }
+    let tmp = Temp::new();
+    for rate in [32000, 44100, 48000] {
+        let samples: Vec<f32> = (0..1025)
+            .map(|i| if i % 4 < 2 { 1.0 } else { -1.0 })
+            .collect();
+        let input = Audio::new(vec![samples.clone(), samples], rate).unwrap();
+        for (label, limited) in [
+            ("sample", input.limit(LimiterOptions::default()).unwrap()),
+            (
+                "true",
+                input
+                    .limit_true_peak(TruePeakLimiterOptions::default())
+                    .unwrap(),
+            ),
+        ] {
+            assert_eq!(limited.frames(), input.frames());
+            // Explicit zeros keep FFmpeg's own edge handling away from the clip,
+            // while including the reconstructed leading/trailing filter response.
+            let padded: Vec<Vec<f32>> = limited
+                .all_channels()
+                .iter()
+                .map(|channel| {
+                    let mut data = vec![0.0; 128];
+                    data.extend_from_slice(channel);
+                    data.resize(channel.len() + 256, 0.0);
+                    data
+                })
+                .collect();
+            let padded = Audio::new(padded, rate).unwrap();
+            let input = tmp.path(&format!("true-peak-{rate}-{label}.wav"));
+            let output = tmp.path("oversampled.raw");
+            std::fs::write(
+                &input,
+                encode_with_options(
+                    &padded,
+                    AudioFormat::Wav,
+                    &EncodeOptions {
+                        sample_format: SampleFormat::F32,
+                        ..Default::default()
+                    },
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let filter = format!(
+                "aresample={}:resampler=swr:filter_size=128:phase_shift=10:exact_rational=1:cutoff=1:filter_type=kaiser:kaiser_beta=9",
+                rate * 16
+            );
+            run(&[
+                "-i",
+                text(&input),
+                "-map",
+                "0:a:0",
+                "-af",
+                &filter,
+                "-c:a",
+                "pcm_f32le",
+                "-f",
+                "f32le",
+                text(&output),
+            ]);
+            let samples = raw(&output);
+            assert!(!samples.is_empty());
+            let peak = samples.iter().map(|s| s.abs() as f64).fold(0.0, f64::max);
+            let level = 20.0 * peak.log10();
+            if label == "sample" {
+                assert!(level > -0.5, "sample-limited {rate} Hz: {level} dBTP");
+            } else {
+                assert!(level <= -0.95, "true-peak-limited {rate} Hz: {level} dBTP");
+            }
+        }
+    }
+}

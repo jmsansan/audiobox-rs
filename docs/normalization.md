@@ -44,7 +44,8 @@ a four-times oversampled estimate, with the existing edge behavior. LUFS's
 `peak_ceiling_db` is used only in LUFS mode. It limits the global gain instead of
 applying dynamic limiting. `limited_by_peak` is true only when requested gain is
 strictly greater than the ceiling's gain; equality leaves it false. The separate
-offline/mixer limiter still limits sample peaks; the true-peak limiter is #65.
+offline/mixer sample-peak limiter keeps its existing behavior. Use
+`Audio::limit_true_peak` for the opt-in offline reconstructed-peak limiter (#65).
 
 The K-weighting shelf is at 1681.974450955533 Hz and the high-pass stage at
 38.13547087602444 Hz. LUFS normalization requires at least 4000 Hz so that both
@@ -89,7 +90,7 @@ use this normalization contract.
 | Stage | Contract |
 | --- | --- |
 | Normalization PCM and report | Same samples/values for identical Audio and options on supported native/WASM targets; all units use deterministic measurement/control math. Peak PCM is unchanged from 0.4.1. |
-| Gain, fades, filtering, resampling, sample-peak limiting | Existing deterministic PCM contract. Any upstream host-dependent analysis that chooses their settings remains the caller's responsibility. |
+| Gain, fades, filtering, resampling, sample/true-peak limiting | Existing deterministic PCM contract. Any upstream host-dependent analysis that chooses their settings remains the caller's responsibility. |
 | Raw integer PCM, WAV, FLAC | Same destination integers/bytes for identical PCM and format/options/tags. Seeded dither is added once at the final quantizer; FLAC's predictor, Rice coding, CRC and MD5 then operate on integers. |
 | MP3 encode/decode | Exact encoded/decoded checksums are tested for the named mastering fixtures. Its transform tables and quantizer retain platform transcendental functions. A general arbitrary-input exact-byte guarantee is not established here; [#100](https://github.com/jmsansan/audiobox-rs/issues/100) tracks the validation/contract follow-up. |
 | Public loudness/true-peak/spectral reports | Existing numeric/reporting API, using platform math. Normalization reuses the algorithms with deterministic preparation/logarithms rather than rounding those public reports. |

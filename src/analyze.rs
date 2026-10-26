@@ -216,7 +216,10 @@ impl Audio {
         to_db(self.true_peak::<false>())
     }
     pub(crate) fn render_true_peak_db(&self) -> f64 {
-        render_db(self.true_peak::<true>())
+        render_db(self.render_true_peak())
+    }
+    pub(crate) fn render_true_peak(&self) -> f64 {
+        self.true_peak::<true>()
     }
     fn true_peak<const RENDER: bool>(&self) -> f64 {
         let mut peak = self.peak();

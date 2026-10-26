@@ -4,6 +4,13 @@
 
 ### Added
 
+- Opt-in offline true-peak limiting (#65): `Audio::limit_true_peak` and
+  `TruePeakLimiterOptions`, 8x/64-tap detection, linked lookahead/release,
+  a final reconstruction guard and an explicit safety/workspace budget.
+  Frame count and alignment are retained; the sample-peak limiter is unchanged.
+  Independent 16x Kaiser/FFmpeg checks, native/WASI hashes, benchmarks and
+  a `true_peak_limiter` comparison example cover the new path.
+
 - Opt-in seeded TPDF dither at final integer PCM quantization (#66), through
   `EncodeOptions::dither`, `pcm::encode_pcm_with_dither` and
   `stream::PcmEncoder::with_dither`. Per-channel streams preserve bytes across

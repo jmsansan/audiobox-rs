@@ -50,7 +50,8 @@
 //! These give the same samples on every platform, including WebAssembly: the
 //! synthesizer, the sound effects and the mixer, and the offline transforms that render
 //! audio — [`Audio::pan`], [`Audio::gain`] and [`Audio::gain_db`], [`Audio::fade`],
-//! [`Audio::crossfade_to`], [`Audio::filter`], [`Audio::limit`], [`Audio::resample`],
+//! [`Audio::crossfade_to`], [`Audio::filter`], [`Audio::limit`], [`Audio::limit_true_peak`],
+//! [`Audio::resample`],
 //! [`Audio::tempo`], [`Audio::pitch`], [`Audio::trim_silence`],
 //! [`Audio::normalize`], and [`analyze::from_db`]. They compute with the crate's own
 //! sine and `2^x` series instead of the platform's `sin`, `cos`, `exp` and `powf`, whose
@@ -105,6 +106,7 @@ pub mod stream;
 #[cfg(feature = "synth")]
 #[cfg_attr(docsrs, doc(cfg(feature = "synth")))]
 pub mod synth;
+mod true_peak;
 mod types;
 pub use audio::Audio;
 pub use codec::{
@@ -114,4 +116,5 @@ pub use codec::{
 pub use dsp::*;
 pub use error::{Error, ErrorCode, Result};
 pub use metadata::{CoverArt, Tags};
+pub use true_peak::TruePeakLimiterOptions;
 pub use types::*;
