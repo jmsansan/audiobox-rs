@@ -126,7 +126,8 @@ then select `floor(relative_beats * TPQ / macro_step_ticks)`. They follow tempo
 changes even on a held/releasing note and restart on a normal note trigger. Macro
 simulation-frame clocks retain their explicit Hz and note-relative frame age.
 Envelope/release/glide/duty/vibrato/arpeggio millisecond settings retain their
-existing units. This introduces no new control/automation API; #68 remains separate.
+existing units. The separate [held-note control API](synth-controls.md) (#68)
+adds supported value/depth ramps while preserving these clocks and DSP state.
 
 ## Preparation, rendering and limits
 

@@ -1,4 +1,8 @@
 use super::chip::{ChipPlan, ChipVoice};
+use super::controls::{
+    self, ControlEvent, ControlId, ControlParameter, ControlReport, ControlState, ControlTarget,
+    MAX_SYNTH_CONTROLS, Resolved, Values,
+};
 use super::drum::{DrumPlan, DrumVoice};
 use super::prepared::{BeatClock, FrameScore, TempoMap};
 use super::score::{Instrument, Score};
@@ -97,6 +101,30 @@ struct Plan {
     duty_sweep: Option<(Vec<Duty>, u64)>,
 }
 impl Plan {
+    fn control_base(&self, parameter: ControlParameter) -> Option<f64> {
+        use ControlParameter::*;
+        match parameter {
+            Expression => Some(1.0),
+            Pan => Some(
+                self.wide
+                    .as_ref()
+                    .map_or(0.0, |p| p.settings.pan as f64 / 100.0),
+            ),
+            _ => {
+                let s = self.wide.as_ref()?.settings;
+                Some(match parameter {
+                    CutoffHz => s.filter?.cutoff_hz as f64,
+                    ResonanceQ => s.filter?.resonance as f64 / 100.0,
+                    PitchCents => 0.0,
+                    PitchLfoDepth => s.pitch_lfo?.depth as f64,
+                    CutoffLfoDepth => s.cutoff_lfo?.depth as f64,
+                    AmplitudeLfoDepth => s.amplitude_lfo?.depth as f64,
+                    PanLfoDepth => s.pan_lfo?.depth as f64,
+                    _ => unreachable!(),
+                })
+            }
+        }
+    }
     fn new(instrument: &Instrument, rate: u32, tempo: u16, ticks: u16) -> Self {
         let samples = |ms: u32| (ms as u64 * rate as u64 + 500) / 1000;
         let step = |ms: u32| samples(ms).max(1);
@@ -164,6 +192,7 @@ impl Plan {
 /// A note scheduled in samples.
 #[derive(Clone, Copy, Debug)]
 struct Event {
+    note: usize,
     on: u64,
     off: u64,
     cents: f64,
@@ -311,13 +340,21 @@ impl Voice {
         }
         level
     }
-    fn sample(&mut self, plans: &[Plan], rate: u32, musical: Option<BeatClock>) -> f64 {
+    fn sample(
+        &mut self,
+        plans: &[Plan],
+        rate: u32,
+        musical: Option<BeatClock>,
+        controls: Option<Values>,
+    ) -> f64 {
         let Some(event) = self.event else {
             return 0.0;
         };
         let plan = &plans[event.instrument];
+        let expression = controls.and_then(|c| c.get(ControlParameter::Expression));
+        let express = |sample| expression.map_or(sample, |gain| sample * gain);
         if let Some(drum) = &plan.drum {
-            return self.drum.sample(drum) * event.amplitude * plan.volume;
+            return express(self.drum.sample(drum) * event.amplitude * plan.volume);
         }
         if self.stage == Stage::Idle {
             return 0.0;
@@ -348,10 +385,12 @@ impl Voice {
                 self.stage = Stage::Idle;
                 self.level = 0.0;
             }
-            return sample * gain;
+            return express(sample * gain);
         }
         self.elapsed += 1;
-        self.oscillator.next(waveform, frequency, rate) * level * event.amplitude * plan.volume
+        express(
+            self.oscillator.next(waveform, frequency, rate) * level * event.amplitude * plan.volume,
+        )
     }
     fn active(&self) -> bool {
         if self.drumming {
@@ -366,23 +405,38 @@ impl Voice {
         rate: u32,
         clock: u64,
         musical: Option<BeatClock>,
+        controls: Option<Values>,
     ) -> [f64; 2] {
         let Some(event) = self.event else {
             return [0.0; 2];
         };
         let plan = &plans[event.instrument];
         let Some(wide) = &plan.wide else {
-            let sample = self.sample(plans, rate, musical);
-            return [sample; 2];
+            let sample = self.sample(plans, rate, musical, controls);
+            return controls
+                .and_then(|c| c.get(ControlParameter::Pan))
+                .map_or([sample; 2], |pan| {
+                    [sample * (1.0 - pan.max(0.0)), sample * (1.0 + pan.min(0.0))]
+                });
         };
         if self.stage == Stage::Idle {
             return [0.0; 2];
         }
         let gain = self.envelope(plan) * event.amplitude * plan.volume;
         let offset = plan.cents(0.0, self.elapsed);
-        let mut result =
-            self.wide
-                .sample(wide, plan.waveform(self.elapsed), offset, clock, musical);
+        let mut result = self.wide.sample(
+            wide,
+            plan.waveform(self.elapsed),
+            offset,
+            clock,
+            musical,
+            controls,
+        );
+        if let Some(expression) = controls.and_then(|c| c.get(ControlParameter::Expression)) {
+            for value in &mut result {
+                *value *= expression;
+            }
+        }
         self.elapsed += 1;
         for value in &mut result {
             *value *= gain;
@@ -479,6 +533,7 @@ pub struct Synth {
     produced: u64,
     max_release: u64,
     tempo_map: Option<TempoMap>,
+    controls: Option<ControlState>,
 }
 impl Synth {
     pub fn new(score: &Score, sample_rate: u32, options: &RenderOptions) -> Result<Self> {
@@ -522,10 +577,12 @@ impl Synth {
                 let events: Vec<Event> = channel
                     .notes()
                     .iter()
-                    .map(|n| {
+                    .enumerate()
+                    .map(|(note, n)| {
                         let on = to_samples(n.start);
                         let end = to_samples(n.start + n.length);
                         Event {
+                            note,
                             on,
                             off: on + (end - on) * n.gate as u64 / 8,
                             cents: (n.pitch.midi() as f64 - 69.0) * 100.0,
@@ -600,6 +657,7 @@ impl Synth {
             finished: false,
             produced: 0,
             tempo_map: None,
+            controls: None,
         })
     }
     /// Prepare absolute note frames for mono output, using existing instruments
@@ -664,7 +722,9 @@ impl Synth {
             .map(|notes| {
                 let events: Vec<_> = notes
                     .iter()
-                    .map(|n| Event {
+                    .enumerate()
+                    .map(|(note, n)| Event {
+                        note,
                         on: n.on,
                         off: n.off,
                         cents: (n.pitch.midi() as f64 - 69.0) * 100.0,
@@ -713,7 +773,171 @@ impl Synth {
             finished: false,
             produced: 0,
             tempo_map: Some(map.clone()),
+            controls: None,
         })
+    }
+    /// Prepare a replayable control plan before the first fill (or after reset).
+    /// Events must be frame-ordered; equal frames follow input order after note
+    /// onsets/gate-offs. Capacity includes retained history for reset, up to
+    /// 65536 events/results. Zero capacity with no events disables controls.
+    /// Preparation allocates; rejection preserves the current plan and renderer.
+    /// Implicit loops must be disabled. Controls start before the body end and
+    /// ramps end by it; held/releasing voices retain final values afterward.
+    pub fn prepare_controls(&mut self, events: &[ControlEvent], capacity: usize) -> Result<()> {
+        if self.produced != 0 || self.finished {
+            return Err(Error::invalid(
+                "Prepare synth controls before playback or after reset",
+            ));
+        }
+        if capacity > MAX_SYNTH_CONTROLS || events.len() > capacity {
+            return Err(Error::limit("Synth control capacity exceeded"));
+        }
+        if capacity == 0 {
+            self.controls = None;
+            return Ok(());
+        }
+        if self.loops != Some(0) {
+            return Err(Error::invalid("Synth controls require no implicit loops"));
+        }
+        let mut used = vec![false; self.tracks.len() * self.plans.len()];
+        for (t, track) in self.tracks.iter().enumerate() {
+            for event in &track.events {
+                used[t * self.plans.len() + event.instrument] = true;
+            }
+        }
+        let mut state =
+            ControlState::new(used, self.tracks.iter().map(|t| t.poly.len() + 1), capacity)?;
+        let entries: Vec<_> = events
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(id, event)| (ControlId(id as u32), event))
+            .collect();
+        state.queue = controls::compile(&entries, capacity, |event| {
+            self.resolve_control(&state, event)
+        })?;
+        self.controls = Some(state);
+        Ok(())
+    }
+    /// Add/retarget future control under exclusive source ownership, between
+    /// fills. This is a control-thread operation: it may allocate and recompile
+    /// queued ramps. Past frames, unsupported/missing targets, invalid ranges or
+    /// exponential endpoints fail atomically. A full retained plan is
+    /// `LimitExceeded`. Same-frame ordering is submission order; IDs stay stable.
+    pub fn schedule_control(&mut self, event: ControlEvent) -> Result<ControlId> {
+        let state = self
+            .controls
+            .as_ref()
+            .ok_or_else(|| Error::limit("No synth control capacity prepared"))?;
+        if state.queue.len() >= state.capacity {
+            return Err(Error::limit("Synth control plan is full"));
+        }
+        if event.frame < self.produced || self.finished {
+            return Err(Error::invalid(
+                "Cannot schedule a past/finished synth control",
+            ));
+        }
+        let id = ControlId(state.queue.len() as u32);
+        let mut entries: Vec<_> = state.queue.iter().map(|c| (c.id, c.event)).collect();
+        let index = entries.partition_point(|(_, e)| e.frame <= event.frame);
+        entries.insert(index, (id, event));
+        let queue = controls::compile(&entries, state.capacity, |event| {
+            self.resolve_control(state, event)
+        })?;
+        self.controls.as_mut().unwrap().queue = queue;
+        Ok(id)
+    }
+    pub fn controls_len(&self) -> usize {
+        self.controls.as_ref().map_or(0, |s| s.queue.len())
+    }
+    pub fn controls_capacity(&self) -> usize {
+        self.controls.as_ref().map_or(0, |s| s.capacity)
+    }
+    /// One result for every executed event. An authored note stolen/ended before
+    /// its event reports TargetInactive without changing any other voice/lane.
+    pub fn poll_control_event(&mut self) -> Option<ControlReport> {
+        self.controls.as_mut()?.poll()
+    }
+    /// Applied controller value at the next source frame (`frames_rendered`),
+    /// before queued events at that frame execute. Note targets must be active.
+    /// Returns base values until their first event. Requires a prepared plan.
+    pub fn control_value(&self, target: ControlTarget, parameter: ControlParameter) -> Result<f64> {
+        let state = self
+            .controls
+            .as_ref()
+            .ok_or_else(|| Error::invalid("No synth controls prepared"))?;
+        let (resolved, base) = self.resolve_control_target(state, target, parameter)?;
+        if let Some((track, note)) = resolved.note {
+            let slot = std::iter::once(&self.tracks[track].voice)
+                .chain(&self.tracks[track].poly)
+                .position(|v| v.active() && v.event.is_some_and(|e| e.note == note))
+                .ok_or_else(|| Error::invalid("Synth control note is inactive"))?;
+            Ok(state
+                .values(resolved.group, track, slot, self.produced)
+                .get(parameter)
+                .unwrap_or(base))
+        } else {
+            Ok(state
+                .group_value(resolved.group, parameter, self.produced)
+                .unwrap_or(base))
+        }
+    }
+    fn resolve_control_target(
+        &self,
+        state: &ControlState,
+        target: ControlTarget,
+        parameter: ControlParameter,
+    ) -> Result<(Resolved, f64)> {
+        let (track, instrument, note) = match target {
+            ControlTarget::Instrument { track, instrument } => (track, instrument, None),
+            ControlTarget::Note { track, note } => {
+                let event = self
+                    .tracks
+                    .get(track)
+                    .and_then(|t| t.events.get(note))
+                    .ok_or_else(|| Error::invalid("Missing synth control note"))?;
+                (track, event.instrument, Some((track, note)))
+            }
+        };
+        if track >= self.tracks.len()
+            || instrument >= self.plans.len()
+            || !state.used[track * self.plans.len() + instrument]
+        {
+            return Err(Error::invalid("Missing synth control track/instrument"));
+        }
+        let base = self.plans[instrument]
+            .control_base(parameter)
+            .ok_or_else(|| Error::invalid("Control is unsupported by this instrument"))?;
+        Ok((
+            Resolved {
+                group: track * self.plans.len() + instrument,
+                note,
+            },
+            base,
+        ))
+    }
+    fn resolve_control(
+        &self,
+        state: &ControlState,
+        event: ControlEvent,
+    ) -> Result<(Resolved, f64)> {
+        let end = event
+            .frame
+            .checked_add(event.ramp_frames)
+            .ok_or_else(|| Error::limit("Synth ramp frame overflow"))?;
+        if event.frame >= self.song_end || end > self.song_end {
+            return Err(Error::invalid("Synth control exceeds the body"));
+        }
+        let resolved = self.resolve_control_target(state, event.target, event.parameter)?;
+        if let Some((track, note)) = resolved.0.note {
+            let n = self.tracks[track].events[note];
+            if event.frame < n.on || event.frame >= n.off {
+                return Err(Error::invalid(
+                    "Note control must start inside its authored gate",
+                ));
+            }
+        }
+        Ok(resolved)
     }
     pub fn sample_rate(&self) -> u32 {
         self.rate
@@ -740,6 +964,9 @@ impl Synth {
     }
     /// Starts again from the beginning, as if newly created.
     pub fn reset(&mut self) {
+        if let Some(controls) = &mut self.controls {
+            controls.reset();
+        }
         for track in &mut self.tracks {
             track.next = 0;
             track.voice = Voice::new(self.aliasing);
@@ -771,13 +998,56 @@ impl Synth {
             let mut sum = 0.0;
             let mut right = 0.0;
             let musical = self.tempo_map.as_ref().map(|map| map.clock(self.produced));
-            for track in &mut self.tracks {
-                let legacy = track.voice.sample(&self.plans, self.rate, musical);
-                sum += legacy;
-                right += legacy;
-                for voice in &mut track.poly {
-                    let [l, r] =
-                        voice.sample_stereo(&self.plans, self.rate, self.produced, musical);
+            if let Some(state) = &mut self.controls {
+                for (t, track) in self.tracks.iter().enumerate() {
+                    for (slot, voice) in
+                        std::iter::once(&track.voice).chain(&track.poly).enumerate()
+                    {
+                        state.sync(
+                            t,
+                            slot,
+                            voice.event.filter(|_| voice.active()).map(|e| e.note),
+                        );
+                    }
+                }
+                state.advance(self.produced);
+            }
+            for (t, track) in self.tracks.iter_mut().enumerate() {
+                let values = |slot: usize, instrument: usize| {
+                    self.controls.as_ref().and_then(|s| {
+                        s.values(t * self.plans.len() + instrument, t, slot, self.produced)
+                            .some()
+                    })
+                };
+                let control = track.voice.event.and_then(|e| values(0, e.instrument));
+                if control.is_some() {
+                    let [l, r] = track.voice.sample_stereo(
+                        &self.plans,
+                        self.rate,
+                        self.produced,
+                        musical,
+                        control,
+                    );
+                    if self.channels == 1 {
+                        sum += (l + r) * 0.5;
+                    } else {
+                        sum += l;
+                        right += r;
+                    }
+                } else {
+                    let legacy = track.voice.sample(&self.plans, self.rate, musical, None);
+                    sum += legacy;
+                    right += legacy;
+                }
+                for (slot, voice) in track.poly.iter_mut().enumerate() {
+                    let control = voice.event.and_then(|e| values(slot + 1, e.instrument));
+                    let [l, r] = voice.sample_stereo(
+                        &self.plans,
+                        self.rate,
+                        self.produced,
+                        musical,
+                        control,
+                    );
                     if self.channels == 1 {
                         sum += (l + r) * 0.5;
                     } else {
@@ -846,6 +1116,69 @@ impl Synth {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn scheduled_sweeps_preserve_oscillator_filter_and_envelope_state() {
+        use super::super::ControlCurve;
+        let score=Score::parse("tempo 120\ninstrument pad voices=1 wave=saw adsr=1000,0,100,40 filter=lowpass cutoff=1000 filter-adsr=1000,0,100,40 filter-env=1200\nchannel a=@pad c1").unwrap();
+        let mut source = Synth::new_stereo(&score, 1000, &Default::default()).unwrap();
+        let mut reference = source.clone();
+        source.prepare_controls(&[], 4).unwrap();
+        let mut a = [0.0; 800];
+        let mut b = [0.0; 800];
+        source.fill(&mut a);
+        reference.fill(&mut b);
+        assert_eq!(a, b);
+        let before = format!("{:?}", source.tracks[0].poly[0]);
+        for (parameter, value) in [
+            (ControlParameter::CutoffHz, 6000.0),
+            (ControlParameter::Expression, 0.2),
+        ] {
+            source
+                .schedule_control(ControlEvent {
+                    frame: 400,
+                    target: ControlTarget::Instrument {
+                        track: 0,
+                        instrument: 0,
+                    },
+                    parameter,
+                    value,
+                    ramp_frames: 400,
+                    curve: ControlCurve::Linear,
+                })
+                .unwrap();
+        }
+        assert_eq!(
+            format!("{:?}", source.tracks[0].poly[0]),
+            before,
+            "submission changes no DSP state"
+        );
+        let mut a = [0.0; 2];
+        let mut b = [0.0; 2];
+        source.fill(&mut a);
+        reference.fill(&mut b);
+        assert_eq!(a, b, "ramp start retains the current parameter values");
+        assert_eq!(
+            format!("{:?}", source.tracks[0].poly[0].wide),
+            format!("{:?}", reference.tracks[0].poly[0].wide),
+            "filter histories and oscillator phases retain their exact state"
+        );
+        source.fill(&mut [0.0; 798]);
+        assert_eq!(source.tracks[0].poly[0].elapsed, 800);
+        assert_eq!(source.tracks[0].poly[0].position, 800);
+        assert_eq!(source.tracks[0].poly[0].stage, Stage::Attack);
+        assert_eq!(
+            source
+                .control_value(
+                    ControlTarget::Instrument {
+                        track: 0,
+                        instrument: 0
+                    },
+                    ControlParameter::CutoffHz
+                )
+                .unwrap(),
+            6000.0
+        );
+    }
     #[test]
     fn legato_keeps_envelopes_but_short_gates_and_gaps_retrigger() {
         for gate in [4, 8] {

@@ -4,6 +4,15 @@
 
 ### Added
 
+- Scheduled held-note synth controls (#68): bounded `ControlEvent` plans for
+  expression/pan and supported synthwave filter, pitch and LFO-depth parameters,
+  with linear/geometric ramps and track/instrument or authored-note targeting.
+  `prepare_controls`, `schedule_control`, `control_value` and result polling
+  define validation, same-frame order, inactive targets and replay. Fill/reset/
+  polling remain allocation-free, including cloned sources; legacy Score PCM is
+  retained. Capability/clock/resource contracts, native/WASI controls and a
+  `synth_controls` held-note sweep example cover the new opt-in path.
+
 - Prepared synth timing (#67): `synth::TempoMap` maps absolute ticks with
   0.001-BPM precision, authored tempo changes and checked rational nearest-frame
   rounding shared with Music::Transport. `FrameScore` / `FrameNote` feed existing
