@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 — 2026-10-26
 
 ### Added
 
@@ -106,6 +106,12 @@
   mastering fixtures are pinned separately across native targets and WASI.
 
 ### Fixed
+
+- Pre-release Astra High review corrections: Vorbis chained coupling propagation,
+  valid floor/residue packet exhaustion, floor-1 shared short/long geometry and
+  quadratic lookup preparation. Seven independent libvorbisfile regression
+  fixtures preserve the corrected behavior. Opus EOS trimming covers the entire
+  final page as allowed by RFC 7845.
 
 - Disconnected mixer controls retain finished voices in bounded retirement storage
   until final mixer destruction, avoiding source frees inside `render` (#22).

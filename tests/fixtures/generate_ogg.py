@@ -113,3 +113,5 @@ for name,order,dims,amplitude in [("vorbis-floor0",1,1,8),("vorbis-floor0-even",
 print(subprocess.check_output([ffmpeg, "-version"], text=True).splitlines()[0])
 print("SoundFile", sf.__version__, "libsndfile", sf.__libsndfile_version__)
 print("\n".join(rows))
+
+subprocess.run([sys.executable, str(root / "tests/fixtures/generate_ogg_edges.py")], check=True)

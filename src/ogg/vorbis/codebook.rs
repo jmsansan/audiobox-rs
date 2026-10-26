@@ -292,14 +292,12 @@ impl Codebook {
                         continue;
                     }
                     let mut last = 0.0f32;
+                    let mut divisor = 1usize;
                     for i in 0..dimensions {
                         let multiplicand = if lookup_type == 1 {
                             // (entry / lookup_values^i) % lookup_values
-                            let mut divisor = 1usize;
-                            for _ in 0..i {
-                                divisor = divisor.saturating_mul(lookup_values.max(1));
-                            }
                             let multiplicand_offset = (entry / divisor) % lookup_values.max(1);
+                            divisor = divisor.saturating_mul(lookup_values.max(1));
                             multiplicands[multiplicand_offset]
                         } else {
                             multiplicands[entry * dimensions + i]

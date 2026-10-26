@@ -93,10 +93,14 @@ impl Residue {
         if ch == 0 {
             return Ok(());
         }
-        if self.residue_type == 2 {
+        let result = if self.residue_type == 2 {
             self.decode_type2(books, br, vectors, members, do_not_decode, ws, n)
         } else {
             self.decode_type01(books, br, vectors, members, do_not_decode, ws, n)
+        };
+        match result {
+            Err(CadenceError::PacketEnd) => Ok(()),
+            other => other,
         }
     }
 
@@ -229,58 +233,63 @@ impl Residue {
         let psize = self.partition_size as usize;
         ws.scratch[..total].fill(0.0);
 
-        for pass in 0..8u32 {
-            let mut partition_count = 0usize;
-            while partition_count < partitions_to_read {
-                // One classword per outer iteration (classifications for
-                // the next `classwords_per_codeword` partitions), read in
-                // pass 0 only — mirroring `decode_type01` and the spec's
-                // per-chunk interleaving of classifications and VQ reads.
-                if pass == 0 {
-                    read_classifications(
-                        classbook,
-                        self.classifications,
-                        classwords_per_codeword,
-                        br,
-                        &mut ws.classes,
-                    )?;
-                    for (k, c) in ws.classes.iter().enumerate() {
-                        let idx = partition_count + k;
-                        if idx < partitions_to_read {
-                            ws.all_classes[idx] = *c;
+        let result = (|| {
+            for pass in 0..8u32 {
+                let mut partition_count = 0usize;
+                while partition_count < partitions_to_read {
+                    // One classword per outer iteration (classifications for
+                    // the next `classwords_per_codeword` partitions), read in
+                    // pass 0 only — mirroring `decode_type01` and the spec's
+                    // per-chunk interleaving of classifications and VQ reads.
+                    if pass == 0 {
+                        read_classifications(
+                            classbook,
+                            self.classifications,
+                            classwords_per_codeword,
+                            br,
+                            &mut ws.classes,
+                        )?;
+                        for (k, c) in ws.classes.iter().enumerate() {
+                            let idx = partition_count + k;
+                            if idx < partitions_to_read {
+                                ws.all_classes[idx] = *c;
+                            }
                         }
                     }
-                }
-                let mut i = 0usize;
-                while i < classwords_per_codeword && partition_count < partitions_to_read {
-                    let vqclass = ws.all_classes[partition_count];
-                    let vqbook = self.books[vqclass as usize * 8 + pass as usize];
-                    if vqbook >= 0 {
-                        let book = &books[vqbook as usize];
-                        let mut inter = &mut ws.scratch[..total];
-                        decode_partition(
-                            1,
-                            book,
-                            br,
-                            &mut inter,
-                            begin + partition_count * psize,
-                            psize,
-                            total,
-                            &mut ws.vec_buf,
-                        )?;
+                    let mut i = 0usize;
+                    while i < classwords_per_codeword && partition_count < partitions_to_read {
+                        let vqclass = ws.all_classes[partition_count];
+                        let vqbook = self.books[vqclass as usize * 8 + pass as usize];
+                        if vqbook >= 0 {
+                            let book = &books[vqbook as usize];
+                            let mut inter = &mut ws.scratch[..total];
+                            decode_partition(
+                                1,
+                                book,
+                                br,
+                                &mut inter,
+                                begin + partition_count * psize,
+                                psize,
+                                total,
+                                &mut ws.vec_buf,
+                            )?;
+                        }
+                        partition_count += 1;
+                        i += 1;
                     }
-                    partition_count += 1;
-                    i += 1;
                 }
             }
-        }
+            Ok(())
+        })();
+        // Even packet exhaustion retains/deinterleaves the partial residue.
+        // Other failures still propagate to the caller.
         // Deinterleave into the channel vectors.
         for (j, &member) in members.iter().enumerate() {
             for (i, out) in vectors[member].iter_mut().enumerate().take(n) {
                 *out = ws.scratch[i * ch + j];
             }
         }
-        Ok(())
+        result
     }
 }
 

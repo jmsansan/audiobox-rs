@@ -348,3 +348,72 @@ fn opus_incremental_and_replayed_seek_preserve_state_exactly() {
         }
     }
 }
+
+#[test]
+fn opus_final_page_trim_and_positive_origin_preserve_pcm() {
+    let c = CASES.iter().find(|c| c.name == "opus-celt-20ms").unwrap();
+    let p = packets(c.bytes);
+    let (_, frames) = shape(c);
+    let skip = u16::from_le_bytes(p[0][10..12].try_into().unwrap()) as usize;
+    let expected = decode(c.bytes).unwrap().to_interleaved();
+    let headers = repage(&p[..2], 0);
+    // Keep headers on separate non-EOS pages; all audio completes on one EOS page.
+    let mut bytes = headers;
+    let second = bytes[26] as usize + 27 + p[0].len();
+    bytes[second + 5] = 0;
+    checksum(&mut bytes[second..]);
+    let mut laces = Vec::new();
+    let mut body = Vec::<u8>::new();
+    for packet in &p[2..] {
+        laces.extend(std::iter::repeat_n(255u8, packet.len() / 255));
+        laces.push((packet.len() % 255) as u8);
+        body.extend_from_slice(packet);
+    }
+    assert!(laces.len() <= 255);
+    let kept = frames - 1920;
+    let mut page = Vec::from(*b"OggS");
+    page.extend([0, 4]);
+    page.extend(((kept + skip) as u64).to_le_bytes());
+    page.extend(17u32.to_le_bytes());
+    page.extend(2u32.to_le_bytes());
+    page.extend([0; 4]);
+    page.push(laces.len() as u8);
+    page.extend(laces);
+    page.extend(body);
+    checksum(&mut page);
+    bytes.extend(page);
+    let actual = decode(&bytes).unwrap();
+    assert_eq!(actual.frames(), kept);
+    assert_eq!(actual.to_interleaved(), expected[..kept * 2]);
+    let mut d = Decoder::new(bytes).unwrap();
+    d.seek((kept - 3) as u64).unwrap();
+    let mut out = [0.0; 6];
+    assert_eq!(d.read(&mut out).unwrap(), 3);
+    assert_eq!(out, expected[(kept - 3) * 2..kept * 2]);
+    // A cropped/live stream can preserve a positive source granule origin.
+    let mut bytes = repage(&p, (frames + skip) as u64);
+    let mut at = 0;
+    let mut index = 0;
+    while at < bytes.len() {
+        let n = bytes[at + 26] as usize;
+        let end = at
+            + 27
+            + n
+            + bytes[at + 27..at + 27 + n]
+                .iter()
+                .map(|&n| n as usize)
+                .sum::<usize>();
+        if index >= 2 {
+            let gp = if index + 1 == p.len() {
+                frames + skip
+            } else {
+                (index - 1) * 960
+            };
+            bytes[at + 6..at + 14].copy_from_slice(&((gp + 12345) as u64).to_le_bytes());
+            checksum(&mut bytes[at..end]);
+        }
+        at = end;
+        index += 1;
+    }
+    assert_eq!(decode(&bytes).unwrap().to_interleaved(), expected);
+}

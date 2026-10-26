@@ -31,6 +31,12 @@ static GLOBAL: Count = Count;
 #[test]
 fn ogg_read_seek_and_rewind_reuse_all_prepared_memory() {
     for bytes in [
+        include_bytes!("fixtures/ogg/vorbis-floor1-short-shared.ogg").as_slice(),
+        include_bytes!("fixtures/ogg/vorbis-residue2-eop-stereo.ogg").as_slice(),
+        include_bytes!("fixtures/ogg/vorbis-coupling-forward.ogg").as_slice(),
+        include_bytes!("fixtures/ogg/vorbis-residue-eop.ogg").as_slice(),
+        include_bytes!("fixtures/ogg/vorbis-eop-mono.ogg").as_slice(),
+        include_bytes!("fixtures/ogg/vorbis-floor-eop.ogg").as_slice(),
         include_bytes!("fixtures/ogg/vorbis-floor0.ogg").as_slice(),
         include_bytes!("fixtures/ogg/vorbis-floor0-even.ogg").as_slice(),
         include_bytes!("fixtures/ogg/vorbis-floor0-vector.ogg").as_slice(),

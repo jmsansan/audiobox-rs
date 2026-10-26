@@ -190,14 +190,18 @@ impl Core {
             };
             let _ = submap;
             let curve = &mut self.floors[ch][..vlen];
-            let nonzero = crate::ogg::vorbis::floor::floor_decode(
+            let nonzero = match crate::ogg::vorbis::floor::floor_decode(
                 &mut self.setup.floors[floor_idx],
                 &self.setup.codebooks,
                 &mut br,
                 blockflag as usize,
                 curve,
                 vlen,
-            )?;
+            ) {
+                Ok(value) => value,
+                Err(CadenceError::PacketEnd) => false,
+                Err(error) => return Err(error),
+            };
             *is_empty = !nonzero;
             if !nonzero {
                 self.floors[ch][..vlen].fill(0.0);
@@ -207,7 +211,7 @@ impl Core {
         // Nonzero propagate through coupling pairs.
         {
             let m = &self.setup.mappings[mapping_idx];
-            for i in (0..m.coupling_steps).rev() {
+            for i in 0..m.coupling_steps {
                 let (a, b) = (m.magnitude[i], m.angle[i]);
                 if !(no_residue[a] && no_residue[b]) {
                     no_residue[a] = false;

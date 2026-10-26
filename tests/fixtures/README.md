@@ -38,3 +38,8 @@ and individual-case/boundary reproduction helpers. The test and data are MIT-lic
 The #95 gapless correction updates only the MP3 encoded lengths/hashes in this
 246-case CSV. Every source and decoded-PCM hash was compared and retained. Its
 separate 32..=48-frame tail compatibility control is in `tests/mp3_gapless.rs`.
+
+`generate_ogg.py` also invokes `generate_ogg_edges.py` for seven authored review
+regressions. These independently exercise coupling order, floor/residue packet
+exhaustion, type-2 deinterleaving, floor-1 long endpoints in short blocks and a
+bounded large-dimension lookup setup. All full references use libvorbisfile.

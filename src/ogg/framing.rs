@@ -171,6 +171,7 @@ pub(super) struct Packet<'a> {
     pub data: &'a [u8],
     pub granule: Option<u64>,
     pub eos: bool,
+    pub page_end: usize,
 }
 impl Cursor {
     pub fn next<'a>(
@@ -208,6 +209,7 @@ impl Cursor {
                 let last = !bytes[p.laces + self.lace..p.body].iter().any(|&n| n < 255);
                 return Ok(Some(Packet {
                     data: scratch,
+                    page_end: p.end,
                     granule: (last && p.granule >= 0).then_some(p.granule as u64),
                     eos: p.flags & 4 != 0 && last,
                 }));

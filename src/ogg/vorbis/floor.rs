@@ -565,7 +565,7 @@ impl Floor1 {
         for i in 1..values {
             let pos = self.sort[i];
             if flag[pos] {
-                let hx = (self.x[pos] as usize).min(n);
+                let hx = self.x[pos] as usize;
                 let hy = y_final[pos] as usize * self.multiplier as usize;
                 if lx < n {
                     render_line(lx, ly, hx, hy, curve);
@@ -604,7 +604,7 @@ pub(crate) fn render_line(x0: usize, y0: usize, x1: usize, y1: usize, buf: &mut 
     let mut y = y0 as i64;
     let mut err = -adx;
     let ady = ady - base.abs() * adx;
-    while x + 1 < x1 as i64 {
+    while x + 1 < x1.min(buf.len()) as i64 {
         x += 1;
         y += base;
         err += ady;

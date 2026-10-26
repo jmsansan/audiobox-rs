@@ -14,6 +14,13 @@ macro_rules! case {
     };
 }
 const VORBIS: &[Case] = &[
+    case!("vorbis-floor1-short-shared"),
+    case!("vorbis-residue2-eop-stereo"),
+    case!("vorbis-lookup-work"),
+    case!("vorbis-coupling-forward"),
+    case!("vorbis-residue-eop"),
+    case!("vorbis-eop-mono"),
+    case!("vorbis-floor-eop"),
     case!("vorbis-floor0"),
     case!("vorbis-floor0-even"),
     case!("vorbis-floor0-vector"),

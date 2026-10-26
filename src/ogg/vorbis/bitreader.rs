@@ -4,14 +4,14 @@
 //! Vorbis packs bits into packets least-significant-bit first within each
 //! octet, and multi-bit integers are stored least-significant-bit first in
 //! that bit stream. All reads are bounds-checked; reading past the end of the
-//! packet returns [`CadenceError::CorruptData`] (the spec's "end-of-packet"
+//! packet returns [`CadenceError::PacketEnd`] (the spec's "end-of-packet"
 //! condition) and never panics.
 
 use crate::ogg::error::CodecError as CadenceError;
 
 /// End-of-packet read error.
 fn overread() -> CadenceError {
-    CadenceError::CorruptData("vorbis packet overread".to_string())
+    CadenceError::PacketEnd
 }
 
 /// LSB-first bit reader over a completed packet.
@@ -19,12 +19,17 @@ pub struct BitReader<'a> {
     data: &'a [u8],
     /// Next bit to serve, counted from the start of `data`.
     pub bit_pos: usize,
+    exhausted: bool,
 }
 
 impl<'a> BitReader<'a> {
     /// Wraps a packet's bytes.
     pub fn new(data: &'a [u8]) -> Self {
-        BitReader { data, bit_pos: 0 }
+        BitReader {
+            data,
+            bit_pos: 0,
+            exhausted: false,
+        }
     }
 
     /// Number of bits still readable.
@@ -36,11 +41,15 @@ impl<'a> BitReader<'a> {
     #[inline]
     pub fn read_bits(&mut self, n: u32) -> Result<u32, CadenceError> {
         debug_assert!(n <= 32);
+        if self.exhausted {
+            return Err(overread());
+        }
         if n == 0 {
             return Ok(0);
         }
         if self.bits_left() < n as usize {
             self.bit_pos = self.data.len() * 8;
+            self.exhausted = true;
             return Err(overread());
         }
         let mut value: u64 = 0;

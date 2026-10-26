@@ -75,9 +75,11 @@ Opus reference port. Their licenses,
 No Cargo dependency, C, FFI or build-time download is introduced. Ogg framing,
 API/limit integration and seek policy are audiobox code.
 
-28 synthetic encoded inputs and full f32 references cover mono rates 8–96 kHz,
+35 synthetic encoded inputs and full f32 references cover mono rates 8–96 kHz,
 all channel counts 1–8, qualities −1/0/4/10, short lengths 1–1025 and authored
-floor-0 odd/even/vector cases. libsndfile 1.2.2 / libvorbisfile (SoundFile 0.14.0)
+floor-0 odd/even/vector cases. Seven review regressions add forward chained
+coupling, valid floor/residue packet exhaustion (including type-2 interleaving),
+floor-1 shared short/long geometry and a 256-book/8192-dimension lookup setup. libsndfile 1.2.2 / libvorbisfile (SoundFile 0.14.0)
 independently decoded every reference. The 25 libvorbis-encoded cases were also
 compared against aligned FFmpeg 9.0.1 samples where available. FFmpeg can expose
 padding or omit a very short packet, so its raw length is not the trim oracle.
@@ -105,7 +107,9 @@ including coupled/uncoupled streams, duplicated and silent mappings. Output is
 always 48 kHz in WAV speaker order. The original input-rate field is informational.
 Other mapping families, chained links and multiplexed links return errors.
 
-The public timeline removes `pre_skip` and final EOS trim, and subtracts a
+EOS may trim within the final page, including more than one packet (RFC 7845
+§4.4); it cannot discard audio from previous pages. The public timeline removes
+`pre_skip` and final EOS trim, and subtracts a
 positive initial granule origin. Header gain in signed Q8 dB is applied once,
 without clipping float headroom. All stream durations must agree in a multistream
 packet. Each coded frame is at most 1275 bytes, each packet at most 120 ms and each

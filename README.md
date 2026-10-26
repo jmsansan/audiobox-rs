@@ -33,7 +33,7 @@ your own audio files the same way.
 
 ```toml
 [dependencies]
-audiobox = "0.4"
+audiobox = "0.5"
 ```
 
 Rust 1.85 or newer. Optional features add modules, never dependencies, so you compile
@@ -51,7 +51,7 @@ only what you use:
 
 ```toml
 [dependencies]
-audiobox = { version = "0.4", features = ["mixer", "synth", "sfx"] }
+audiobox = { version = "0.5", features = ["mixer", "synth", "sfx"] }
 ```
 
 ## Examples
@@ -531,7 +531,9 @@ fn play(bytes: &'static [u8]) -> audiobox::Result<()> {
   match a whole decode. `rewind()` returns to the start at once.
 - **Bounded memory:** apart from the input bytes, the decoder holds one block of the
   input format (a FLAC block, an MP3 frame, an IMA ADPCM block or `chunk_frames` of
-  PCM) and the MP3 bit reservoir: tens of kilobytes, allocated when it opens.
+  PCM), the MP3 bit reservoir, or prepared Ogg packet/tables/DSP scratch storage,
+  allocated when it opens. Ogg workspace is capped at 64 MiB or the configured
+  byte limit, whichever is smaller.
   `read` allocates nothing, so it can run on an audio thread. `DecoderOptions` takes
   the same `Limits` as `decode`, checked against the declared stream on opening.
 - **Errors:** malformed or truncated input gives the crate's errors, never a panic.
