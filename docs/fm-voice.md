@@ -413,6 +413,87 @@ the hardware. Unlike that project, the depth is zero during the delay.
 value does not depend on how the output is chunked. The hardware's own sequence is
 not reproduced.
 
+## DX7 voice data
+
+`read_dx7` reads a single voice or a 32-voice bank from bytes; `write_dx7_voice` and
+`write_dx7_bank` write them. This is file conversion only: there is no MIDI port.
+`examples/dx7_import.rs` prints a file as patch text. No patch data ships with the
+crate, and the rights to an imported file are for whoever supplies it to check.
+
+| Message | Bytes | Header | Data |
+| --- | --- | --- | --- |
+| Single voice | 163 | `F0 43 0n 00 01 1B` | 155 parameter bytes |
+| 32-voice bank | 4104 | `F0 43 0n 09 20 00` | 32 packed voices of 128 bytes |
+
+`n` is a channel and is ignored. After the data come a checksum (the two's complement
+of the sum of the data bytes, in seven bits) and `F7`.
+
+The 155 single-voice bytes hold operator 6 first, then 5 down to 1, 21 bytes each:
+
+| Offset | Field | Range | Patch key |
+| --- | --- | --- | --- |
+| 0..=3 | Envelope rates | 0..=99 | `rates` |
+| 4..=7 | Envelope levels | 0..=99 | `levels` |
+| 8, 9, 10 | Break point, left depth, right depth | 0..=99 | `scaling` |
+| 11, 12 | Left curve, right curve | 0..=3: `-lin`, `-exp`, `+exp`, `+lin` | `curves` |
+| 13 | Rate scaling | 0..=7 | `rate-scaling` |
+| 14 | Amplitude modulation sensitivity | 0..=3 | `amp-sensitivity` |
+| 15 | Key velocity sensitivity | 0..=7 | `velocity` |
+| 16 | Output level | 0..=99 | `level` |
+| 17 | Mode | 0 ratio, 1 fixed | `ratio` or `fixed` |
+| 18 | Coarse | 0..=31 | first value of `ratio`; `fixed` uses the low two bits |
+| 19 | Fine | 0..=99 | second value |
+| 20 | Detune | 0..=14, 7 is none | `detune` minus 7 |
+
+then the voice:
+
+| Offset | Field | Range | Patch key |
+| --- | --- | --- | --- |
+| 126..=129 | Pitch envelope rates | 0..=99 | `pitch rates` |
+| 130..=133 | Pitch envelope levels | 0..=99 | `pitch levels` |
+| 134 | Algorithm | 0..=31 | `algorithm` minus 1 |
+| 135 | Feedback | 0..=7 | `feedback` |
+| 136 | Oscillator key sync | 0, 1 | `key-sync` |
+| 137, 138 | LFO speed, delay | 0..=99 | `lfo speed`, `delay` |
+| 139, 140 | LFO pitch depth, amplitude depth | 0..=99 | `lfo pitch`, `amp` |
+| 141 | LFO key sync | 0, 1 | `lfo sync` |
+| 142 | LFO wave | 0..=5, in the order of the wave table above | `lfo wave` |
+| 143 | Pitch modulation sensitivity | 0..=7 | `lfo pitch-sensitivity` |
+| 144 | Transpose | 0..=48, 24 is none | `transpose` plus 24 |
+| 145..=154 | Name | ten ASCII characters | the patch name |
+
+A bank voice packs these into 128 bytes. Per operator, 17 bytes: the first eleven as
+above, then `left curve | right curve << 2`, `rate scaling | detune << 3`,
+`amplitude sensitivity | velocity << 2`, output level, `mode | coarse << 1`, fine.
+Then offsets 102..=110 are the pitch envelope and algorithm, 111 is
+`feedback | key sync << 3`, 112..=115 the LFO speed, delay and depths, 116 is
+`LFO sync | wave << 1 | pitch sensitivity << 4`, 117 transpose and 118..=127 the name.
+
+The layout follows `patch.cc` in msfa (see the notice) and the instrument's
+published system-exclusive format.
+
+Rules:
+
+- **Faults.** A wrong size or terminator is `DecodeError`; a header that is not one
+  of the two above is `UnsupportedFormat`. A wrong checksum and parameter bytes
+  above their range are accepted with a `Dx7Warning`; such bytes are clamped.
+- **Names.** Trailing spaces are dropped, spaces inside become `_`, any other
+  character outside letters, digits, `_` and `-` becomes `-`, and an empty name
+  becomes `voice`. Equal names in a bank get `-2`, `-3` and so on. The original ten
+  characters are returned beside the patch. Writing turns `_` back into a space.
+- **What an import sets.** Only the fields in the tables. Engine extras stay at
+  their defaults, including `voices=8`.
+- **What cannot be written.** `volume`, `unison`, `unison-detune`, `spread`, `pan`,
+  `glide`, `legato`, `oversample`, LFO `beats` and `seed`, and names over ten
+  characters: the writer fails and names them. `voices` is not stored. A
+  switched-off operator is written at output level 0.
+- **Round trip.** Bytes to patch to text to patch to bytes is identical when every
+  byte is in range and the name uses letters, digits, `-` and spaces. The
+  exceptions are a fixed-mode coarse value above 3, which is stored reduced, and
+  names changed by the rules above.
+- Function data (controller assignments, portamento, pitch-bend range) and other
+  Yamaha formats are not read.
+
 ## Level and headroom
 
 - One carrier at full scale peaks at 0.5 before `volume`. Carriers add. There is no
@@ -492,6 +573,7 @@ The types and the text form are final, and every key is rendered.
 | #141 | `velocity`, `scaling`, `curves`, `rate-scaling` |
 | #142 | The `lfo` line and `amp-sensitivity` |
 | #144 | `oversample` |
+| #145 | Reading and writing DX7 voice data |
 
 The four rendering issues landed together because the operator loop is the same for
 two, four and six operators: a two-operator voice is algorithm 1 or 2 with two `op`
