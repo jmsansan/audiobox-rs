@@ -347,8 +347,9 @@ mod drum;
 pub use drum::{Drum, DrumKind, DrumKit};
 mod fm;
 pub use fm::{
-    FM_ALGORITHMS, FM_CARRIER_PEAK, FM_OPERATORS, Fm, FmCurve, FmEnvelope, FmFrequency, FmLfo,
-    FmLfoWave, FmOperator, FmPatch, FmRouting, FmScaling, MAX_FM_TEXT_BYTES, MAX_FM_UNISON_VOICES,
+    FM_ALGORITHMS, FM_CARRIER_PEAK, FM_OPERATORS, FM_OVERSAMPLE_DELAY, Fm, FmCurve, FmEnvelope,
+    FmFrequency, FmLfo, FmLfoWave, FmOperator, FmPatch, FmRouting, FmScaling, MAX_FM_TEXT_BYTES,
+    MAX_FM_UNISON_VOICES,
 };
 mod parse;
 mod prepared;

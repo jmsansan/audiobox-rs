@@ -4,6 +4,15 @@
 
 ### Added
 
+- FM aliasing policy (#144): `oversample=2` on an `fm` line runs the operators at
+  twice the sample rate and filters the result down with a 49-tap half-band
+  filter, removing the folded partials of bright patches on high notes at about
+  twice the cost and `FM_OVERSAMPLE_DELAY` (12) frames of delay. It is off by
+  default, so existing FM patches keep their samples. `docs/fm-aliasing.md`
+  records the measurements across patches, notes and rates, the options compared
+  and the reasons; `examples/fm_aliasing.rs` reproduces the table. `Fm` gains the
+  public field `oversample`.
+
 - FM LFO (#142): one LFO per voice with triangle, saw down, saw up, square, sine
   and seeded sample-and-hold waves, a delay, key sync or a free-running clock, and
   an optional tempo-synced rate (`beats`). `pitch` and `pitch-sensitivity` set

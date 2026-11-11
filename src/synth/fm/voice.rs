@@ -14,6 +14,8 @@ const ATTACK_JUMP: f64 = 1716.0;
 const NATIVE_RATE: f64 = 49096.0;
 /// Octaves per detune step.
 const DETUNE: f64 = 12606.0 / 16_777_216.0;
+/// Taps of the half-band filter that brings a twice-oversampled voice down.
+const TAPS: usize = 4 * super::FM_OVERSAMPLE_DELAY + 1;
 /// Release tails are cut after this many seconds.
 const MAX_TAIL_SECONDS: u64 = 60;
 
@@ -278,8 +280,42 @@ pub(in crate::synth) struct FmPlan {
     pans: [f64; 8],
     glide: u64,
     lfo: Option<LfoPlan>,
+    /// Operator passes per output frame, and the filter that follows two of them.
+    passes: usize,
+    taps: [f64; TAPS],
     /// Frames after key-off at which a voice is cut.
     pub tail: u64,
+}
+/// A Kaiser-windowed sinc low-pass at a quarter of the doubled rate, with unit gain
+/// at DC: flat to 0.4 of the output rate and about 80 dB down from 0.6, so what
+/// still folds lands above 0.4.
+fn half_band() -> [f64; TAPS] {
+    // Zeroth-order modified Bessel function, by its power series.
+    let bessel = |x: f64| {
+        let (mut sum, mut term) = (1.0, 1.0);
+        for k in 1..40 {
+            term *= x / 2.0 / k as f64;
+            sum += term * term;
+        }
+        sum
+    };
+    const BETA: f64 = 7.857;
+    let centre = (TAPS / 2) as f64;
+    let mut taps: [f64; TAPS] = std::array::from_fn(|i| {
+        let k = i as f64 - centre;
+        let ideal = if k == 0.0 {
+            0.5
+        } else {
+            sine(k / 4.0) / (std::f64::consts::PI * k)
+        };
+        let r = k / centre;
+        ideal * bessel(BETA * (1.0 - r * r).max(0.0).sqrt()) / bessel(BETA)
+    });
+    let sum: f64 = taps.iter().sum();
+    for tap in &mut taps {
+        *tap /= sum;
+    }
+    taps
 }
 impl FmPlan {
     pub fn new(settings: Fm, rate: u32, tempo: u16) -> Self {
@@ -339,6 +375,8 @@ impl FmPlan {
             pans,
             glide: (settings.glide_ms as u64 * rate as u64 + 500) / 1000,
             lfo: LfoPlan::new(&settings, rate, tempo),
+            passes: settings.oversample as usize,
+            taps: half_band(),
             tail: (tail.ceil() as u64 + 1).min(MAX_TAIL_SECONDS * rate as u64),
         }
     }
@@ -433,6 +471,10 @@ pub(in crate::synth) struct FmVoice {
     beat_start: Option<u128>,
     /// The last pitch in cents (as bits) and its frequency.
     hz: (u64, f64),
+    /// The last oversampled stereo outputs, newest at `head`. One more than the
+    /// filter needs, so its centre falls on the first pass of a frame.
+    history: [[f64; 2]; TAPS + 1],
+    head: usize,
 }
 impl FmVoice {
     pub fn new() -> Self {
@@ -452,6 +494,8 @@ impl FmVoice {
             age: 0,
             beat_start: None,
             hz: (f64::NAN.to_bits(), 0.0),
+            history: [[0.0; 2]; TAPS + 1],
+            head: 0,
         }
     }
     /// `gliding`: the slot still sounds an FM note to glide from. `legato` keeps the
@@ -481,6 +525,7 @@ impl FmVoice {
             for envelope in &mut self.envelopes {
                 (envelope.level, envelope.gain) = (0.0, 0.0);
             }
+            self.history = [[0.0; 2]; TAPS + 1];
         }
         self.sounding = true;
         self.released = 0;
@@ -594,43 +639,60 @@ impl FmVoice {
             carriers_done &= !o.carrier || envelope.stage >= 4;
         }
 
-        let limit = 0.45 * plan.rate;
+        let passes = plan.passes;
+        let limit = 0.45 * plan.rate * passes as f64;
+        let step = plan.rate * passes as f64;
         let unison = s.unison as usize;
         let mut out = [0.0; 2];
-        for copy in 0..unison {
-            // Outputs in turns of phase: full scale is 2.
-            let mut outputs = [0.0; FM_OPERATORS];
-            let mut sum = 0.0;
-            for index in (0..FM_OPERATORS).rev() {
-                let Some(o) = &plan.operators[index] else {
-                    continue;
-                };
-                let hz = o.fixed.unwrap_or(note * o.ratio * plan.ratios[copy]);
-                let mut modulation = 0.0;
-                for (source, output) in outputs.iter().enumerate().skip(index + 1) {
-                    if o.modulators & (1 << source) != 0 {
-                        modulation += output;
+        for _ in 0..passes {
+            out = [0.0; 2];
+            for copy in 0..unison {
+                // Outputs in turns of phase: full scale is 2.
+                let mut outputs = [0.0; FM_OPERATORS];
+                let mut sum = 0.0;
+                for index in (0..FM_OPERATORS).rev() {
+                    let Some(o) = &plan.operators[index] else {
+                        continue;
+                    };
+                    let hz = o.fixed.unwrap_or(note * o.ratio * plan.ratios[copy]);
+                    let mut modulation = 0.0;
+                    for (source, output) in outputs.iter().enumerate().skip(index + 1) {
+                        if o.modulators & (1 << source) != 0 {
+                            modulation += output;
+                        }
+                    }
+                    if index == plan.feedback_to {
+                        let [older, last] = self.feedback[copy];
+                        modulation += (older + last) * 0.5 * plan.feedback;
+                    }
+                    let phase = &mut self.phases[copy][index];
+                    let gain = self.envelopes[index].gain * tremolo[index];
+                    if hz <= limit && gain != 0.0 {
+                        outputs[index] = sine(*phase + modulation) * gain * 2.0;
+                    }
+                    *phase += hz / step;
+                    *phase -= phase.floor();
+                    if o.carrier {
+                        sum += outputs[index];
                     }
                 }
-                if index == plan.feedback_to {
-                    let [older, last] = self.feedback[copy];
-                    modulation += (older + last) * 0.5 * plan.feedback;
-                }
-                let phase = &mut self.phases[copy][index];
-                let gain = self.envelopes[index].gain * tremolo[index];
-                if hz <= limit && gain != 0.0 {
-                    outputs[index] = sine(*phase + modulation) * gain * 2.0;
-                }
-                *phase += hz / plan.rate;
-                *phase -= phase.floor();
-                if o.carrier {
-                    sum += outputs[index];
-                }
+                self.feedback[copy] = [self.feedback[copy][1], outputs[plan.feedback_from]];
+                let pan = plan.pans[copy];
+                out[0] += sum * (1.0 - pan.max(0.0));
+                out[1] += sum * (1.0 + pan.min(0.0));
             }
-            self.feedback[copy] = [self.feedback[copy][1], outputs[plan.feedback_from]];
-            let pan = plan.pans[copy];
-            out[0] += sum * (1.0 - pan.max(0.0));
-            out[1] += sum * (1.0 + pan.min(0.0));
+            if passes > 1 {
+                self.head = (self.head + 1) % (TAPS + 1);
+                self.history[self.head] = out;
+            }
+        }
+        if passes > 1 {
+            out = [0.0; 2];
+            for (i, tap) in plan.taps.iter().enumerate() {
+                let past = self.history[(self.head + TAPS - i) % (TAPS + 1)];
+                out[0] += past[0] * tap;
+                out[1] += past[1] * tap;
+            }
         }
 
         if !self.held {

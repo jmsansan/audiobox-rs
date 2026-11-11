@@ -223,6 +223,7 @@ fn generated(seed: u64) -> FmPatch {
             pan: r.next(-100, 100) as i8,
             glide_ms: if mono { r.next(0, 60000) as u32 } else { 0 },
             legato: mono && r.next(0, 1) == 0,
+            oversample: r.next(1, 2) as u8,
         },
     }
 }

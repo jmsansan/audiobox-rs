@@ -118,7 +118,7 @@ fn fill_does_not_allocate() {
         },
     )
     .unwrap();
-    let fm_score = Score::parse("tempo 240\nfm keys algorithm=5 feedback=6 voices=3 unison=2 unison-detune=8 spread=60\npitch rates=80,80,80,80 levels=55,50,50,50\nlfo wave=sample-hold speed=60 delay=20 pitch=20 amp=40 sync=off\nop 1 rates=96,45,35,60 levels=99,80,0,0 velocity=4 amp-sensitivity=2 scaling=39,20,30 rate-scaling=3\nop 2 ratio=14 level=62\nop 3 detune=3\nop 4 level=80 rates=95,45,30,55\nop 5 ratio=2\nop 6 fixed=100 level=70\nend\nfm bass algorithm=2 feedback=5 voices=1 glide=30 legato=on key-sync=off\nop 1 ratio=0.5\nop 2 level=75 rates=99,50,40,70 levels=99,60,40,0\nend\nchannel k=@keys l16 {c e g} L [{c f a} {d f a} {e g b} {c e g}]2\nchannel b=@bass o2 l16 c L l8 [e g c]2").unwrap();
+    let fm_score = Score::parse("tempo 240\nfm keys algorithm=5 feedback=6 voices=3 unison=2 unison-detune=8 spread=60\npitch rates=80,80,80,80 levels=55,50,50,50\nlfo wave=sample-hold speed=60 delay=20 pitch=20 amp=40 sync=off\nop 1 rates=96,45,35,60 levels=99,80,0,0 velocity=4 amp-sensitivity=2 scaling=39,20,30 rate-scaling=3\nop 2 ratio=14 level=62\nop 3 detune=3\nop 4 level=80 rates=95,45,30,55\nop 5 ratio=2\nop 6 fixed=100 level=70\nend\nfm bass algorithm=2 feedback=5 voices=1 glide=30 legato=on key-sync=off oversample=2\nop 1 ratio=0.5\nop 2 level=75 rates=99,50,40,70 levels=99,60,40,0\nend\nchannel k=@keys l16 {c e g} L [{c f a} {d f a} {e g b} {c e g}]2\nchannel b=@bass o2 l16 c L l8 [e g c]2").unwrap();
     let mut fm_synth = Synth::new_stereo(
         &fm_score,
         48000,

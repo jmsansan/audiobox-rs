@@ -19,6 +19,8 @@ pub const MAX_FM_UNISON_VOICES: u16 = 32;
 /// Peak of one carrier at output level 99, envelope level 99 and no velocity or
 /// scaling offset, before instrument volume. Carriers add without normalization.
 pub const FM_CARRIER_PEAK: f64 = 0.5;
+/// Frames by which `oversample=2` delays a voice: the centre of its decimation filter.
+pub const FM_OVERSAMPLE_DELAY: usize = 12;
 /// Patch text longer than this is rejected.
 pub const MAX_FM_TEXT_BYTES: usize = 64 * 1024;
 
@@ -383,6 +385,11 @@ pub struct Fm {
     pub glide_ms: u32,
     /// Requires `voices == 1`.
     pub legato: bool,
+    /// Engine extension: 1, or 2 to run the operators at twice the sample rate and
+    /// filter the result down, which removes most folded partials of bright patches
+    /// on high notes. It costs about twice as much and delays the voice by
+    /// [`FM_OVERSAMPLE_DELAY`] frames.
+    pub oversample: u8,
 }
 impl Default for Fm {
     /// One sine carrier: algorithm 1 with only operator 1 switched on.
@@ -404,6 +411,7 @@ impl Default for Fm {
             pan: 0,
             glide_ms: 0,
             legato: false,
+            oversample: 1,
         }
     }
 }
@@ -450,6 +458,9 @@ impl Fm {
         }
         if (self.glide_ms > 0 || self.legato) && self.voices != 1 {
             return Err(Error::invalid("Glide and legato require voices=1"));
+        }
+        if !(1..=2).contains(&self.oversample) {
+            return Err(Error::invalid("FM oversample must be 1 or 2"));
         }
         Ok(())
     }
@@ -547,6 +558,9 @@ impl fmt::Display for FmPatch {
         }
         if v.legato != d.legato {
             write!(f, " legato={}", switch(v.legato))?;
+        }
+        if v.oversample != d.oversample {
+            write!(f, " oversample={}", v.oversample)?;
         }
         writeln!(f)?;
         if v.pitch_envelope != d.pitch_envelope {

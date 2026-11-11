@@ -822,3 +822,72 @@ fn fm_samples_have_a_cross_platform_pinned_hash() {
     }
     assert_eq!(hash, 0x6ce585a9631ad164, "{hash:#018x}");
 }
+
+#[test]
+fn oversampling_removes_folded_partials_and_delays_the_voice() {
+    // A bright bell two octaves above middle C folds badly at 48 kHz.
+    let bell = |header: &str| {
+        mono(&format!(
+            "tempo 30\nfm s algorithm=1 {header}\nop 1\nop 2 ratio=3,50 level=85\nend\nchannel a=@s q8 o6 c1"
+        ))
+    };
+    // The modulator is at 4.5 times the note. Sidebands 6 to 8 lie at 29 to 39 kHz
+    // and fold to 18.7, 14.0 and 9.3 kHz.
+    let c6 = 440.0 * 2f64.powf(1.25);
+    let (plain, clean) = (bell(""), bell("oversample=2"));
+    let body = |samples: &[f32]| samples[RATE as usize..2 * RATE as usize].to_vec();
+    for order in 6..=8 {
+        let hz = RATE as f64 - c6 * (1.0 + 4.5 * order as f64);
+        let (before, after) = (level(&body(&plain), hz), level(&body(&clean), hz));
+        assert!(
+            before > 1e-5 && after < before / 300.0,
+            "order {order}: {before} -> {after}"
+        );
+    }
+    assert!((level(&body(&clean), c6) - level(&body(&plain), c6)).abs() < 1e-3);
+
+    // In the passband it is the same voice, FM_OVERSAMPLE_DELAY frames later.
+    let voice = |header: &str| {
+        mono(&format!(
+            "tempo 60\nfm s algorithm=1 {header}\nop 1 rates=80,40,30,50 levels=99,80,60,0\nop 2 ratio=2 level=70\nend\nchannel a=@s q8 o3 a2 r4"
+        ))
+    };
+    let (plain, delayed) = (voice(""), voice("oversample=2"));
+    let worst = (0..RATE as usize * 2)
+        .map(|i| (plain[i] - delayed[i + FM_OVERSAMPLE_DELAY]).abs())
+        .fold(0.0f32, f32::max);
+    assert!(worst < 2e-3, "{worst}");
+    assert!(
+        delayed[..FM_OVERSAMPLE_DELAY - 2]
+            .iter()
+            .all(|x| x.abs() < 1e-3)
+    );
+    let high = |header: &str| {
+        let samples = mono(&format!(
+            "tempo 60\nfm s {header}\nop 1 fixed=1000,95\nend\nchannel a=@s q8 c1"
+        ));
+        level(&samples[RATE as usize..2 * RATE as usize], 10f64.powf(3.95))
+    };
+    assert!((high("oversample=2") - high("")).abs() < 1e-3);
+
+    // Chunks, reset and stereo behave as without it.
+    let score = Score::parse(&SONG.replace("voices=6", "voices=6 oversample=2")).unwrap();
+    assert_eq!(score.instruments()[0].1.fm.unwrap().oversample, 2);
+    let whole = score.render_stereo_with(RATE, &options()).unwrap();
+    let mut synth = Synth::new_stereo(&score, RATE, &options()).unwrap();
+    let mut out = vec![0.0f32; whole.frames() * 2];
+    let mut written = 0;
+    while written < whole.frames() {
+        let end = (written + 333).min(whole.frames());
+        written += synth.fill(&mut out[written * 2..end * 2]);
+    }
+    for channel in 0..2 {
+        let side: Vec<f32> = out.iter().skip(channel).step_by(2).copied().collect();
+        assert!(side == whole.channel_data(channel).unwrap());
+    }
+    let e = Score::parse("fm a oversample=3\nop 1\nend").unwrap_err();
+    assert_eq!(
+        (e.line, e.column, e.code),
+        (1, 17, ErrorCode::InvalidArgument)
+    );
+}

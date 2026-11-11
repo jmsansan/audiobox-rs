@@ -335,6 +335,20 @@ end
 channel a=@keys o4 l8 L [{c e g b} {d f a >c<}]4
 channel b=@keys o5 l16 L [c e g >c< g e d g]2";
 
+/// The six-operator case with `oversample=2`.
+const FM_SIX_OVERSAMPLED: &str = "tempo 110
+fm keys algorithm=5 feedback=6 voices=8 oversample=2
+  pitch rates=80,80,80,80 levels=52,50,50,50
+  op 1 ratio=1 rates=96,45,35,60 levels=99,80,0,0
+  op 2 ratio=14 level=62 rates=95,60,50,70 levels=99,60,0,0
+  op 3 ratio=1 detune=3 rates=95,40,30,55 levels=99,90,0,0
+  op 4 ratio=1 level=80 rates=95,45,30,55 levels=99,85,0,0
+  op 5 ratio=1 detune=-4 rates=95,40,30,55 levels=99,90,0,0
+  op 6 ratio=1 level=74 rates=95,50,30,55 levels=99,85,0,0
+end
+channel a=@keys o4 l8 L [{c e g b} {d f a >c<}]4
+channel b=@keys o5 l16 L [c e g >c< g e d g]2";
+
 const SYNTHWAVE: &str = "tempo 110
 instrument bass wave=saw voices=1 glide=80 legato=on adsr=5,120,60,40 filter=lowpass cutoff=500 resonance=160 filter-env=2400 filter-adsr=0,200,0,40
 instrument pad wave=saw unison=5 detune=18 spread=90 voices=6 adsr=120,150,70,300 filter=lowpass cutoff=1800 resonance=90 keytrack=40 lfo-cutoff=beats,4,1,600
@@ -604,6 +618,7 @@ fn synth_cases(cases: &mut Vec<Case>, seconds: f64, tag: &str) {
         ("drums", DRUMS, false),
         ("fm-2op", FM_TWO, true),
         ("fm-6op", FM_SIX, true),
+        ("fm-6op-2x", FM_SIX_OVERSAMPLED, true),
     ] {
         cases.push(case(format!("synth/{name}/{tag}"), move || {
             let frames = (seconds * RATE as f64) as usize;

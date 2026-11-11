@@ -683,7 +683,9 @@ algorithms, feedback, a four-rate, four-level envelope per operator and a pitch
 envelope, in the instrument's own 0..=99 units, plus pan, unison, glide and legato.
 Velocity changes tone as well as level through each operator's sensitivity, and
 keyboard scaling shapes level and envelope speed across the range. One LFO per voice
-with six waveforms, a delay and tempo sync adds vibrato, and tremolo per operator. See [the FM voice contract](docs/fm-voice.md) for every key,
+with six waveforms, a delay and tempo sync adds vibrato, and tremolo per operator.
+`oversample=2` cleans up bright patches on high notes; see [the aliasing
+measurements](docs/fm-aliasing.md). See [the FM voice contract](docs/fm-voice.md) for every key,
 the algorithm table and the conversion curves.
 
 ```rust
