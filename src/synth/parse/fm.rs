@@ -196,6 +196,7 @@ impl Block {
                     unison = Some(pair.value_pos);
                 }
                 "unison-detune" => voice.unison_detune = pair.int(0, 100)? as u16,
+                "oversample" => voice.oversample = pair.int(1, 2)? as u8,
                 "spread" => voice.spread = pair.int(0, 100)? as u8,
                 "pan" => voice.pan = pair.int(-100, 100)? as i8,
                 "glide" => {

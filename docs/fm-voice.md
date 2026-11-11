@@ -47,6 +47,7 @@ is switched off: it is silent and modulates nothing.
 | `pan` | `pan` | -100..=100 percent | 0 |
 | `glide_ms` | `glide` | 0..=60000 ms, needs `voices=1` | 0 |
 | `legato` | `legato` | `on`, `off`, needs `voices=1` | `off` |
+| `oversample` | `oversample` | 1 or 2; see [Aliasing](#aliasing) | 1 |
 
 `voices * unison` is at most 32 (`MAX_FM_UNISON_VOICES`), which bounds one instrument
 to 192 operators. #148 may raise or lower this from benchmarks.
@@ -467,10 +468,18 @@ not reproduced.
 
 ## Aliasing
 
-Phase modulation is not band-limited. The renderer guarantees only that
+Phase modulation is not band-limited. By default the renderer guarantees only that
 no operator's own frequency exceeds 0.45 times the sample rate: an operator above it
-is silent for that note. Sidebands may fold. #144 measures this and sets the policy,
-which is on by default if the measurements justify it.
+is silent for that note. Sidebands may fold, as on the instrument. Measured on
+representative patches, folded energy is at the measurement floor up to C5 and
+becomes audible from about C6 on bright patches.
+
+`oversample=2` on the `fm` line runs the operators at twice the rate and filters
+the result down. It removes the folded energy below 0.4 of the rate at C6, costs
+about twice as much, and delays the voice by `FM_OVERSAMPLE_DELAY` (12) frames.
+Keyboard level scaling on the modulators is the other tool, and costs nothing.
+[`fm-aliasing.md`](fm-aliasing.md) has the measurements, the options compared and
+the reasons for the default.
 
 ## Implementation slices
 
@@ -482,6 +491,7 @@ The types and the text form are final, and every key is rendered.
 | #122, #139, #128, #140 | All six operators and 32 algorithms, feedback, ratio and fixed frequency, detune, levels, operator envelopes, pitch envelope, key sync, transpose, voices, unison, pan, glide, legato |
 | #141 | `velocity`, `scaling`, `curves`, `rate-scaling` |
 | #142 | The `lfo` line and `amp-sensitivity` |
+| #144 | `oversample` |
 
 The four rendering issues landed together because the operator loop is the same for
 two, four and six operators: a two-operator voice is algorithm 1 or 2 with two `op`
@@ -500,4 +510,4 @@ legato note does not attack, so it keeps the values of the note that did.
 
 `benches/engine.rs` has `synth/fm-2op` and `synth/fm-6op`: two tracks of eight
 voices each. Run `cargo bench --bench engine --all-features -- --quick synth/fm`.
-Measured numbers and the aliasing policy's cost belong to #148 and #144.
+Measured numbers on named hardware belong to #148.
