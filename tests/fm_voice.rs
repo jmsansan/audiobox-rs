@@ -117,8 +117,10 @@ struct Chart {
 }
 fn chart() -> Vec<Chart> {
     let doc = include_str!("../docs/fm-voice.md");
+    let section = &doc[doc.find("\n## Algorithms").expect("section")..];
+    let section = &section[..section[3..].find("\n## ").expect("next section")];
     let mut rows = Vec::new();
-    for line in doc.lines() {
+    for line in section.lines() {
         let cells: Vec<&str> = line.split('|').map(str::trim).collect();
         if cells.len() != 6 || cells[1].parse::<usize>().is_err() {
             continue;

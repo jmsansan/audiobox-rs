@@ -4,6 +4,14 @@
 
 ### Added
 
+- DX7 voice data (#145): `synth::read_dx7` reads a single voice (163 bytes) or a
+  32-voice bank (4104 bytes) into `FmPatch`es with sanitized, unique names and the
+  original name beside each; `write_dx7_voice` and `write_dx7_bank` write them
+  back. A wrong checksum and out-of-range parameter bytes are accepted with
+  warnings; a wrong size, header or terminator is an error. The writer refuses,
+  by name, engine extensions the format cannot hold. No patch data ships with the
+  crate. `examples/dx7_import.rs` prints a file as patch text.
+
 - FM aliasing policy (#144): `oversample=2` on an `fm` line runs the operators at
   twice the sample rate and filters the result down with a 49-tap half-band
   filter, removing the folded partials of bright patches on high notes at about

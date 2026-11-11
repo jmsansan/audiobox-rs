@@ -119,5 +119,9 @@ name = "fm_aliasing"
 required-features = ["synth"]
 
 [[example]]
+name = "dx7_import"
+required-features = ["synth"]
+
+[[example]]
 name = "keyboard_voices"
 required-features = ["synth"]

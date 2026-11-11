@@ -7,7 +7,12 @@ use std::fmt;
 
 use crate::{Error, Result};
 
+mod dx7;
 mod voice;
+pub use dx7::{
+    DX7_BANK_BYTES, DX7_BANK_VOICES, DX7_VOICE_BYTES, Dx7Voice, Dx7Voices, Dx7Warning, read_dx7,
+    write_dx7_bank, write_dx7_voice,
+};
 pub(super) use voice::{FmPlan, FmVoice};
 
 /// Operators per voice.

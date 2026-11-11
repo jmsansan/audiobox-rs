@@ -17,6 +17,7 @@ What is taken, and where it is used:
 | `pitchenv.cc` | Pitch envelope level and rate tables | `docs/fm-voice.md`, `src/synth/fm/voice.rs` |
 | `lfo.cc` | LFO speed and delay formulas, wave shapes and start phase | `docs/fm-voice.md`, `src/synth/fm/voice.rs` |
 | `fm_op_kernel.cc` | Full-scale modulation depth and feedback scaling | `docs/fm-voice.md`, `src/synth/fm/voice.rs` |
+| `patch.cc` | Packed bank voice layout | `docs/fm-voice.md`, `src/synth/fm/dx7.rs` |
 | `fm_core.cc` | Algorithm bus flags, used only to check the routing table | `src/synth/fm.rs`, `ALGORITHMS` |
 | `wiki/Dx7Envelope.wiki`, `wiki/Dx7Hardware.wiki` | Units and envelope description | `docs/fm-voice.md`, `src/synth/fm/voice.rs` |
 
@@ -35,6 +36,7 @@ bcd52b05c6d316f413088b6ff31486c491abd9ad4a114d0f3309bb555b8fdf24  dx7note.cc
 47a34fc38eab4cfc46376732a6ddfd24631b8ef27a67ec4177300a264e5ff867  lfo.cc
 da4d85e5957f103e9aae7418fc803ecc61933b42c1d4add67f4ea1dcc8b597e3  pitchenv.cc
 e91aa1e067bf67c799871344eb1f3cdd92c2c0e4797b2efc2403ac7bb7113af5  fm_op_kernel.cc
+b4a70d7812052dc52621c2d80f480dcc17b6ff0044cc6e215caae88df41d07b7  patch.cc
 ```
 
 ## LFO amplitude modulation
