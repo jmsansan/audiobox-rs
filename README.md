@@ -676,6 +676,28 @@ fn render_song() -> audiobox::Result<audiobox::Audio> {
 - **Rust API:** `Score::channel` returns a writer that builds the same score in code;
   a parsed score compares equal to the same score built in code.
 
+### FM voices (contract only)
+
+`synth::FmPatch` describes a six-operator, DX7-class FM voice and reads and writes
+its text form. It is the agreed parameter model for the FM instrument; **it does not
+render yet** and scores do not accept it. See [the FM voice
+contract](docs/fm-voice.md) for the units, the 32 algorithms and the plan.
+
+```rust
+use audiobox::synth::FmPatch;
+
+fn bell() -> audiobox::Result<FmPatch> {
+    let bell: FmPatch = "
+        fm bell algorithm=2 feedback=3
+          op 1 ratio=1 rates=95,30,30,40 levels=99,0,0,0
+          op 2 ratio=3,50 level=78 rates=95,45,45,50 levels=99,0,0,0 velocity=5
+        end"
+    .parse()?;
+    assert_eq!(bell.voice.operators[1].unwrap().frequency.ratio(), Some(4.5));
+    Ok(bell)
+}
+```
+
 ### Score format
 
 One directive per line; `;` starts a comment.

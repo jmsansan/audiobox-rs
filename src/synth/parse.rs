@@ -8,7 +8,9 @@ use super::score::{
 use super::wave::{Duty, NoiseMode, Waveform};
 use crate::{Error, ErrorCode};
 mod chip;
+mod fm;
 mod synthwave;
+pub(super) use fm::parse_patch as parse_fm_patch;
 
 /// An error in score text, with the 1-based line and column (in characters) where it was found.
 #[derive(Clone, Debug, Eq, PartialEq)]

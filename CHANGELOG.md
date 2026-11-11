@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- FM voice contract (#138): `synth::Fm`, `FmOperator`, `FmPatch` and related types
+  describe a six-operator, DX7-class voice in the instrument's own units, with the
+  32 algorithm routings (`FmRouting`), range validation and a multi-line `fm NAME`
+  … `end` text form that parses with positioned errors and prints back to an equal
+  patch. Nothing renders FM yet and scores do not accept `fm` blocks; existing
+  scores and samples are unchanged. `docs/fm-voice.md` fixes the conversion curves,
+  limits and implementation slices; their Apache-2.0 source is credited in
+  `src/synth/NOTICE-FM.md`.
+
 ## 0.5.1 — 2026-10-26
 
 ### Fixed

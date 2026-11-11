@@ -1,0 +1,38 @@
+# FM voice source provenance
+
+The FM voice contract in `docs/fm-voice.md` takes its conversion curves from
+*music-synthesizer-for-android* (msfa), Copyright 2012 Google Inc.,
+https://github.com/google/music-synthesizer-for-android at revision
+`f67d41d313b7dc85f6fb99e79e515cc9d208cfff`, under the Apache License 2.0
+reproduced in `LICENSE-MSFA-APACHE`. No Cargo dependency, FFI or build-time
+download is introduced, and no msfa source file is included.
+
+What is taken, and where it is used:
+
+| From (under `app/src/main/jni/`) | Taken | Used in |
+| --- | --- | --- |
+| `env.cc` | Output-level table, level and rate formulas | `docs/fm-voice.md` |
+| `dx7note.cc` | Velocity table, keyboard level and rate scaling formulas and exponential table, detune constant, pitch sensitivity table | `docs/fm-voice.md` |
+| `pitchenv.cc` | Pitch envelope level and rate tables | `docs/fm-voice.md` |
+| `lfo.cc` | LFO speed and delay formulas | `docs/fm-voice.md` |
+| `fm_op_kernel.cc` | Full-scale modulation depth and feedback scaling | `docs/fm-voice.md` |
+| `fm_core.cc` | Algorithm bus flags, used only to check the routing table | `src/synth/fm.rs`, `ALGORITHMS` |
+| `wiki/Dx7Envelope.wiki`, `wiki/Dx7Hardware.wiki` | Units and envelope description | `docs/fm-voice.md` |
+
+Changes: the formulas are restated in prose and plain arithmetic, in the engine's
+units; nothing is copied as code. The routing table in `fm.rs` is written in this
+crate's own representation from the instrument's algorithm chart. The types, text
+form, parser, limits and engine extensions are original to audiobox.
+
+SHA-256 of the upstream files consulted:
+
+```text
+bcd52b05c6d316f413088b6ff31486c491abd9ad4a114d0f3309bb555b8fdf24  dx7note.cc
+83bf4debc5ea480466892ccf572adcc27b55ee2ac3c21979485e6fa73e5b9ccc  env.cc
+5039002970c22183944aa9719b3342231ceee441244b8a7dfdf039d2fafaa07d  fm_core.cc
+47a34fc38eab4cfc46376732a6ddfd24631b8ef27a67ec4177300a264e5ff867  lfo.cc
+da4d85e5957f103e9aae7418fc803ecc61933b42c1d4add67f4ea1dcc8b597e3  pitchenv.cc
+e91aa1e067bf67c799871344eb1f3cdd92c2c0e4797b2efc2403ac7bb7113af5  fm_op_kernel.cc
+```
+
+Rendering issues that port these curves into Rust tables extend this notice.
