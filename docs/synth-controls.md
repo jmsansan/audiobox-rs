@@ -56,6 +56,10 @@ level measurements or final modulated/clamped filter coefficients.
 | `CutoffLfoDepth` / `cutoff-lfo-depth` | 0..9600 cents | Synthwave with that LFO/filter configured |
 | `AmplitudeLfoDepth` / `amplitude-lfo-depth` | 0..100 percent | Synthwave with that LFO configured |
 | `PanLfoDepth` / `pan-lfo-depth` | 0..100 percent | Synthwave with that LFO configured |
+| `FmOperator1Level` … `FmOperator6Level` / `op1-level` … `op6-level` | Operator output level 0..99 in patch units; fractions interpolate | FM, for an operator the patch switches on |
+| `FmFeedback` / `feedback` | 0..7; fractions interpolate | FM |
+| `FmLfoPitchDepth` / `lfo-pitch` | 0..99 | FM whose patch sets `lfo pitch` above 0 |
+| `FmLfoAmplitudeDepth` / `lfo-amp` | 0..99 | FM whose patch sets `lfo amp` above 0 and gives an operator `amp-sensitivity` |
 
 The strong enum includes these controls only. Its `FromStr` resolver accepts the
 listed exact names and returns `InvalidArgument` for unsupported or structural
@@ -69,6 +73,18 @@ At note boundaries callers can choose a different existing instrument, pitch,
 volume or velocity through FrameNote / Score. Waveform, voice/unison count,
 filter type, ADSR, sample/table data and LFO topology/rate belong in that prepared
 instrument. Live structural edits and arbitrary modulation graphs are unsupported.
+
+FM has no filter: its sweep is a modulator's level or the feedback. A level
+control replaces the patch's `level` for that operator and keeps the note's
+velocity and keyboard-scaling offsets on top; it is logarithmic like the patch
+value, about 0.75 dB per unit above 20, so a linear ramp is a steady change in
+decibels. On a carrier it changes loudness, on a modulator brightness. The patch's
+clamp of the scaled level at its maximum is not re-applied. Feedback at exactly 0
+is off; just above it the scale starts at 2^-8, a step too small to hear. LFO depth
+controls need a depth above 0 in the patch because a patch without one prepares no
+LFO; set it to 1 to automate up from almost nothing. `ControlParameter::
+fm_operator_level(n)` gives the variant for operator n. Algorithm, ratios, envelope
+shapes, LFO wave and speed are structure and are not controls.
 
 Expression scales the existing voice output independently of authored velocity,
 instrument/channel volume and ADSR; zero expression still advances DSP state.

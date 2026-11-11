@@ -87,6 +87,9 @@ struct LfoPlan {
     pitch: f64,
     /// Share of each operator's gain removed at the top of the wave.
     amplitude: [f64; FM_OPERATORS],
+    /// The same two per unit of a depth set by a held-note control.
+    pitch_unit: f64,
+    amplitude_unit: [f64; FM_OPERATORS],
 }
 impl LfoPlan {
     fn new(settings: &Fm, rate: u32, tempo: u16) -> Option<Self> {
@@ -114,7 +117,12 @@ impl LfoPlan {
                 (unit / a as f64, unit / (a & 0xff80).max(0x80) as f64)
             }
         };
+        let sensitivity = PITCH_SENSITIVITY[l.pitch_sensitivity as usize];
         Some(Self {
+            pitch_unit: 1200.0 * 165.0 / 64.0 * sensitivity / 65536.0,
+            amplitude_unit: std::array::from_fn(|i| {
+                settings.operators[i].map_or(0.0, |o| 0.01 * o.amplitude_sensitivity as f64 / 3.0)
+            }),
             wave: l.wave,
             rate: match l.beats {
                 Some((n, d)) => (tempo as u128 * d as u128, rate as u128 * 60 * n as u128),
@@ -185,6 +193,13 @@ fn scale(level: u8) -> i32 {
     } else {
         LEVELS[level as usize] as i32
     }
+}
+/// `scale` for a fractional level, interpolating between whole levels.
+fn scale_between(level: f64) -> f64 {
+    let low = level.floor().clamp(0.0, 99.0);
+    let high = (low + 1.0).min(99.0);
+    let (a, b) = (scale(low as u8) as f64, scale(high as u8) as f64);
+    a + (b - a) * (level - low).clamp(0.0, 1.0)
 }
 /// Steps per second of a falling stage.
 fn slope(rate: u8, scaling: i32) -> f64 {
@@ -471,6 +486,10 @@ pub(in crate::synth) struct FmVoice {
     beat_start: Option<u128>,
     /// The last pitch in cents (as bits) and its frequency.
     hz: (u64, f64),
+    /// The last value of each level control (as bits) and its gain ratio; the same
+    /// for the feedback control and its scale.
+    level_control: [(u64, f64); FM_OPERATORS],
+    feedback_control: (u64, f64),
     /// The last oversampled stereo outputs, newest at `head`. One more than the
     /// filter needs, so its centre falls on the first pass of a frame.
     history: [[f64; 2]; TAPS + 1],
@@ -494,6 +513,8 @@ impl FmVoice {
             age: 0,
             beat_start: None,
             hz: (f64::NAN.to_bits(), 0.0),
+            level_control: [(f64::NAN.to_bits(), 1.0); FM_OPERATORS],
+            feedback_control: (f64::NAN.to_bits(), 0.0),
             history: [[0.0; 2]; TAPS + 1],
             head: 0,
         }
@@ -620,11 +641,37 @@ impl FmVoice {
         let mut tremolo = [1.0; FM_OPERATORS];
         if let Some(lfo) = &plan.lfo {
             let (wave, fade) = self.lfo(lfo, clock, musical);
-            cents += lfo.pitch * fade * (2.0 * wave - 1.0);
-            for (gain, depth) in tremolo.iter_mut().zip(&lfo.amplitude) {
+            let pitch = get(ControlParameter::FmLfoPitchDepth)
+                .map_or(lfo.pitch, |depth| depth * lfo.pitch_unit);
+            cents += pitch * fade * (2.0 * wave - 1.0);
+            let amount = get(ControlParameter::FmLfoAmplitudeDepth);
+            for (index, gain) in tremolo.iter_mut().enumerate() {
+                let depth = amount.map_or(lfo.amplitude[index], |a| a * lfo.amplitude_unit[index]);
                 *gain = 1.0 - depth * fade * wave;
             }
         }
+        // A level control offsets the operator by the steps between its value and
+        // the patch's level, on top of this note's velocity and scaling.
+        for (index, operator) in plan.operators.iter().enumerate() {
+            let control = ControlParameter::fm_operator_level(index as u8 + 1).and_then(get);
+            if let (Some(o), Some(level)) = (operator, control) {
+                if self.level_control[index].0 != level.to_bits() {
+                    let steps = 32.0 * (scale_between(level) - scale(o.settings.level) as f64);
+                    self.level_control[index] = (level.to_bits(), exp2(steps / 256.0));
+                }
+                tremolo[index] *= self.level_control[index].1;
+            }
+        }
+        let feedback = match get(ControlParameter::FmFeedback) {
+            Some(amount) if amount > 0.0 => {
+                if self.feedback_control.0 != amount.to_bits() {
+                    self.feedback_control = (amount.to_bits(), exp2(amount - 8.0));
+                }
+                self.feedback_control.1
+            }
+            Some(_) => 0.0,
+            None => plan.feedback,
+        };
         self.age += 1;
         if self.hz.0 != cents.to_bits() {
             self.hz = (cents.to_bits(), cents_to_hz(cents));
@@ -663,7 +710,7 @@ impl FmVoice {
                     }
                     if index == plan.feedback_to {
                         let [older, last] = self.feedback[copy];
-                        modulation += (older + last) * 0.5 * plan.feedback;
+                        modulation += (older + last) * 0.5 * feedback;
                     }
                     let phase = &mut self.phases[copy][index];
                     let gain = self.envelopes[index].gain * tremolo[index];

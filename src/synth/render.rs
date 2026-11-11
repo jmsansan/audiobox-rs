@@ -105,26 +105,40 @@ struct Plan {
 impl Plan {
     fn control_base(&self, parameter: ControlParameter) -> Option<f64> {
         use ControlParameter::*;
+        if let Some(fm) = &self.fm {
+            let s = &fm.settings;
+            let tremolo = (s.operators.iter().flatten()).any(|o| o.amplitude_sensitivity > 0);
+            return match parameter {
+                Expression => Some(1.0),
+                Pan => Some(s.pan as f64 / 100.0),
+                PitchCents => Some(0.0),
+                FmFeedback => Some(s.feedback as f64),
+                FmLfoPitchDepth if s.lfo.pitch_depth > 0 => Some(s.lfo.pitch_depth as f64),
+                FmLfoAmplitudeDepth if s.lfo.amplitude_depth > 0 && tremolo => {
+                    Some(s.lfo.amplitude_depth as f64)
+                }
+                p => s.operators[p.fm_operator()?].map(|o| o.level as f64),
+            };
+        }
         match parameter {
             Expression => Some(1.0),
-            Pan => Some(match (&self.wide, &self.fm) {
-                (Some(p), _) => p.settings.pan as f64 / 100.0,
-                (_, Some(p)) => p.settings.pan as f64 / 100.0,
-                _ => 0.0,
-            }),
-            PitchCents if self.fm.is_some() => Some(0.0),
+            Pan => Some(
+                self.wide
+                    .as_ref()
+                    .map_or(0.0, |p| p.settings.pan as f64 / 100.0),
+            ),
             _ => {
                 let s = self.wide.as_ref()?.settings;
-                Some(match parameter {
-                    CutoffHz => s.filter?.cutoff_hz as f64,
-                    ResonanceQ => s.filter?.resonance as f64 / 100.0,
-                    PitchCents => 0.0,
-                    PitchLfoDepth => s.pitch_lfo?.depth as f64,
-                    CutoffLfoDepth => s.cutoff_lfo?.depth as f64,
-                    AmplitudeLfoDepth => s.amplitude_lfo?.depth as f64,
-                    PanLfoDepth => s.pan_lfo?.depth as f64,
-                    _ => unreachable!(),
-                })
+                match parameter {
+                    CutoffHz => Some(s.filter?.cutoff_hz as f64),
+                    ResonanceQ => Some(s.filter?.resonance as f64 / 100.0),
+                    PitchCents => Some(0.0),
+                    PitchLfoDepth => Some(s.pitch_lfo?.depth as f64),
+                    CutoffLfoDepth => Some(s.cutoff_lfo?.depth as f64),
+                    AmplitudeLfoDepth => Some(s.amplitude_lfo?.depth as f64),
+                    PanLfoDepth => Some(s.pan_lfo?.depth as f64),
+                    _ => None,
+                }
             }
         }
     }

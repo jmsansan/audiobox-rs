@@ -161,8 +161,11 @@ channel melody = @bell o5 l4 c e g {c e g}2
   notes, the same stealing order as synthwave.
 - Existing one-line `instrument` entries are unchanged, and none of their keys gain
   an FM meaning.
-- Held-note controls: `Expression`, `Pan` and `PitchCents` apply. `PitchCents` does
-  not move fixed-frequency operators. The filter and LFO-depth controls are rejected.
+- Held-note controls: `Expression`, `Pan` and `PitchCents` apply (`PitchCents` does
+  not move fixed-frequency operators), and FM has its own: `op1-level` to
+  `op6-level`, `feedback`, `lfo-pitch` and `lfo-amp`. See
+  [`synth-controls.md`](synth-controls.md). The synthwave filter and LFO-depth
+  controls are rejected.
 
 ## Algorithms
 
@@ -545,7 +548,6 @@ Rules:
 
 - Loop laps: a free-running LFO or operator phase is not restarted at the loop
   point (#136).
-- Held-note controls for operator level, feedback and LFO depths (#143).
 
 ## Aliasing
 
@@ -574,6 +576,8 @@ The types and the text form are final, and every key is rendered.
 | #142 | The `lfo` line and `amp-sensitivity` |
 | #144 | `oversample` |
 | #145 | Reading and writing DX7 voice data |
+| #143 | Held-note controls for operator level, feedback and LFO depths |
+| #146 | `sfx::FmEffect`: one note of a patch as a sound effect, with seeded presets |
 
 The four rendering issues landed together because the operator loop is the same for
 two, four and six operators: a two-operator voice is algorithm 1 or 2 with two `op`

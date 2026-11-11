@@ -4,6 +4,22 @@
 
 ### Added
 
+- FM sound effects (#146): `sfx::FmEffect` renders one note of any FM patch as an
+  effect, with a note, velocity, gate time, pitch slide and volume, in mono or
+  stereo, cut with a fade at `sfx::MAX_DURATION`. It reads and writes text (a line
+  of `key=value` pairs and an `fm` block) with positioned errors, and
+  `FmEffect::preset` draws `FmPreset::Laser`, `MetalHit`, `Chime` or `Alarm` from a
+  seed. Existing `Effect`s and presets are unchanged.
+
+- FM held-note controls (#143): `ControlParameter::FmOperator1Level` to
+  `FmOperator6Level` (`op1-level` … `op6-level`), `FmFeedback` (`feedback`),
+  `FmLfoPitchDepth` (`lfo-pitch`) and `FmLfoAmplitudeDepth` (`lfo-amp`) ramp an
+  operator's level, the feedback and the LFO depths on held notes without
+  retriggering envelopes or phases. Levels stay in patch units and keep each
+  note's velocity and keyboard scaling. Controls on a switched-off operator, on
+  an LFO depth the patch leaves at zero, or on another kind of instrument fail at
+  preparation.
+
 - DX7 voice data (#145): `synth::read_dx7` reads a single voice (163 bytes) or a
   32-voice bank (4104 bytes) into `FmPatch`es with sanitized, unique names and the
   original name beside each; `write_dx7_voice` and `write_dx7_bank` write them
