@@ -4,6 +4,13 @@
 
 ### Added
 
+- FM LFO (#142): one LFO per voice with triangle, saw down, saw up, square, sine
+  and seeded sample-and-hold waves, a delay, key sync or a free-running clock, and
+  an optional tempo-synced rate (`beats`). `pitch` and `pitch-sensitivity` set
+  vibrato for the voice; `amp` and each operator's `amp-sensitivity` set tremolo,
+  which changes the tone when it acts on a modulator. Every key of the FM patch
+  format is now rendered; patches without LFO depth keep their samples.
+
 - FM velocity and keyboard response (#141): each operator's `velocity`
   sensitivity turns note velocity into a level offset, so modulators brighten the
   tone on harder notes; `scaling` and `curves` offset an operator's level by
