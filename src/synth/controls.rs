@@ -5,7 +5,7 @@ use std::str::FromStr;
 
 /// Maximum retained controls/results in one source's replayable plan.
 pub const MAX_SYNTH_CONTROLS: usize = 65536;
-pub(super) const PARAMETERS: usize = 9;
+pub(super) const PARAMETERS: usize = 18;
 
 /// Supported continuous quantities. Structural instrument edits are not controls.
 /// `FromStr` accepts the documented kebab-case names; unsupported names return
@@ -31,8 +31,41 @@ pub enum ControlParameter {
     AmplitudeLfoDepth,
     /// Existing pan LFO depth, 0..=100 percent.
     PanLfoDepth,
+    /// Output level of FM operator 1, 0..=99 in the patch's units; fractions
+    /// interpolate. The operator must be switched on. The same for 2 to 6.
+    FmOperator1Level,
+    FmOperator2Level,
+    FmOperator3Level,
+    FmOperator4Level,
+    FmOperator5Level,
+    FmOperator6Level,
+    /// FM feedback, 0..=7; fractions interpolate.
+    FmFeedback,
+    /// FM LFO pitch depth, 0..=99. The patch must set a depth above zero.
+    FmLfoPitchDepth,
+    /// FM LFO amplitude depth, 0..=99. The patch must set a depth above zero and
+    /// give an operator some amplitude sensitivity.
+    FmLfoAmplitudeDepth,
 }
 impl ControlParameter {
+    /// The level control of FM operator 1..=6.
+    pub fn fm_operator_level(operator: u8) -> Option<Self> {
+        Some(match operator {
+            1 => Self::FmOperator1Level,
+            2 => Self::FmOperator2Level,
+            3 => Self::FmOperator3Level,
+            4 => Self::FmOperator4Level,
+            5 => Self::FmOperator5Level,
+            6 => Self::FmOperator6Level,
+            _ => return None,
+        })
+    }
+    /// The zero-based operator a level control acts on.
+    pub(super) fn fm_operator(self) -> Option<usize> {
+        (self as usize)
+            .checked_sub(Self::FmOperator1Level as usize)
+            .filter(|i| *i < 6)
+    }
     pub(super) fn validate(self, value: f64) -> Result<()> {
         let (min, max) = match self {
             Self::Expression => (0.0, 1.0),
@@ -43,6 +76,8 @@ impl ControlParameter {
             Self::PitchLfoDepth => (0.0, 2400.0),
             Self::CutoffLfoDepth => (0.0, 9600.0),
             Self::AmplitudeLfoDepth | Self::PanLfoDepth => (0.0, 100.0),
+            Self::FmFeedback => (0.0, 7.0),
+            _ => (0.0, 99.0),
         };
         if !value.is_finite() || !(min..=max).contains(&value) {
             return Err(Error::invalid(
@@ -65,6 +100,15 @@ impl FromStr for ControlParameter {
             "cutoff-lfo-depth" => Self::CutoffLfoDepth,
             "amplitude-lfo-depth" => Self::AmplitudeLfoDepth,
             "pan-lfo-depth" => Self::PanLfoDepth,
+            "op1-level" => Self::FmOperator1Level,
+            "op2-level" => Self::FmOperator2Level,
+            "op3-level" => Self::FmOperator3Level,
+            "op4-level" => Self::FmOperator4Level,
+            "op5-level" => Self::FmOperator5Level,
+            "op6-level" => Self::FmOperator6Level,
+            "feedback" => Self::FmFeedback,
+            "lfo-pitch" => Self::FmLfoPitchDepth,
+            "lfo-amp" => Self::FmLfoAmplitudeDepth,
             _ => return Err(Error::invalid("Unsupported synth control parameter")),
         })
     }
@@ -188,7 +232,7 @@ impl Ramp {
 pub(super) type Lanes = [Option<Ramp>; PARAMETERS];
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct Values {
-    mask: u16,
+    mask: u32,
     values: [f64; PARAMETERS],
 }
 impl Values {

@@ -4,6 +4,15 @@
 
 ### Added
 
+- FM held-note controls (#143): `ControlParameter::FmOperator1Level` to
+  `FmOperator6Level` (`op1-level` … `op6-level`), `FmFeedback` (`feedback`),
+  `FmLfoPitchDepth` (`lfo-pitch`) and `FmLfoAmplitudeDepth` (`lfo-amp`) ramp an
+  operator's level, the feedback and the LFO depths on held notes without
+  retriggering envelopes or phases. Levels stay in patch units and keep each
+  note's velocity and keyboard scaling. Controls on a switched-off operator, on
+  an LFO depth the patch leaves at zero, or on another kind of instrument fail at
+  preparation.
+
 - DX7 voice data (#145): `synth::read_dx7` reads a single voice (163 bytes) or a
   32-voice bank (4104 bytes) into `FmPatch`es with sanitized, unique names and the
   original name beside each; `write_dx7_voice` and `write_dx7_bank` write them
