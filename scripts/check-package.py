@@ -19,7 +19,7 @@ ROOT_FILES = {
 REQUIRED_FILES = {
     'Cargo.toml', 'Cargo.lock', 'src/lib.rs', 'README.md', 'CHANGELOG.md',
     'LICENSE', 'src/ogg/LICENSE-TPT-MIT', 'src/ogg/LICENSE-OPUS-BSD',
-    'src/ogg/NOTICE.md',
+    'src/ogg/NOTICE.md', 'src/synth/LICENSE-MSFA-APACHE', 'src/synth/NOTICE-FM.md',
 }
 
 
