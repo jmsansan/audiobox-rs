@@ -214,6 +214,7 @@ struct Event {
     amplitude: f64,
     /// Channel volume alone: FM takes velocity through its operators.
     volume: f64,
+    velocity: u8,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -299,7 +300,8 @@ impl Voice {
             if !was_fm {
                 self.fm = FmVoice::new();
             }
-            self.fm.trigger(fm, event.cents, active && was_fm, legato);
+            self.fm
+                .trigger(fm, event.cents, event.velocity, active && was_fm, legato);
             self.event = Some(event);
             self.held = true;
             self.stage = Stage::Idle;
@@ -641,6 +643,7 @@ impl Synth {
                                 (n.volume as f64 / 15.0) * (n.velocity as f64 / 127.0)
                             },
                             volume: n.volume as f64 / 15.0,
+                            velocity: n.velocity,
                         }
                     })
                     .collect();
@@ -780,6 +783,7 @@ impl Synth {
                             (n.volume as f64 / 15.0) * (n.velocity as f64 / 127.0)
                         },
                         volume: n.volume as f64 / 15.0,
+                        velocity: n.velocity,
                     })
                     .collect();
                 let count = events

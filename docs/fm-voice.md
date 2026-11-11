@@ -6,9 +6,9 @@ that every later issue implements the same thing.
 
 **Status: six operators render.** A score takes `fm NAME` … `end` blocks, and
 `Synth` renders all 32 algorithms with feedback, operator envelopes and the pitch
-envelope, offline or as a prepared stream, without allocating. Velocity sensitivity,
-keyboard scaling and the LFO are accepted in a patch and rejected when the patch is
-added to a score. [Implementation slices](#implementation-slices) says which issue
+envelope, velocity sensitivity and keyboard level and rate scaling, offline or as a
+prepared stream, without allocating. The LFO is accepted in a patch and rejected
+when the patch is added to a score. [Implementation slices](#implementation-slices) says which issue
 adds them.
 
 ## Decisions
@@ -290,6 +290,9 @@ E = 0 1 2 3 4 5 6 7 8 9 11 14 16 19 23 27 33 39 47 56 66
 ```
 
 The result is in units of 32 steps (about 0.75 dB), the same as `scale(level)`.
+Keys act in groups of three. As measured on the instrument, the flat zone is not at
+the break point's own note (`break_point + 21`) but four semitones lower: notes
+`break_point + 15` to `break_point + 19` get no offset.
 
 ### Envelope rate
 
@@ -452,7 +455,7 @@ message naming the feature.
 | --- | --- | --- |
 | #138 | Types, validation, text | Everything |
 | #122, #139, #128, #140 | All six operators and 32 algorithms, feedback, ratio and fixed frequency, detune, levels, operator envelopes, pitch envelope, key sync, transpose, voices, unison, pan, glide, legato | `velocity`, non-zero `scaling` depths, `rate-scaling`, `amp-sensitivity`, LFO `pitch` and `amp` depths |
-| #141 | `velocity`, `scaling`, `curves`, `rate-scaling` | LFO depths, `amp-sensitivity` |
+| #141 | `velocity`, `scaling`, `curves`, `rate-scaling` | LFO `pitch` and `amp` depths, `amp-sensitivity` |
 | #142 | The `lfo` line and `amp-sensitivity` | — |
 
 The four rendering issues landed together because the operator loop is the same for
@@ -464,8 +467,9 @@ lines.
 - #128's "small documented set of algorithms" is the table above with at most four
   operators switched on.
 
-Until #141 lands an FM voice ignores velocity entirely, because the engine's linear
-velocity gain is not applied to FM.
+Velocity, level scaling and rate scaling are computed once at note-on, from the
+authored pitch plus `transpose` and the note's velocity, and held for the note. A
+legato note does not attack, so it keeps the values of the note that did.
 
 ## Cost
 

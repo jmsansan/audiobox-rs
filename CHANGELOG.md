@@ -4,6 +4,14 @@
 
 ### Added
 
+- FM velocity and keyboard response (#141): each operator's `velocity`
+  sensitivity turns note velocity into a level offset, so modulators brighten the
+  tone on harder notes; `scaling` and `curves` offset an operator's level by
+  distance from a break point with the four DX7 curves; `rate-scaling` runs
+  envelopes faster on higher notes. All three are fixed at note-on from the
+  authored pitch plus `transpose`, and a legato note keeps those of the note that
+  attacked. Patches that leave them at their defaults keep their samples.
+
 - FM instruments (#122, #139, #128, #140): a score takes `fm NAME` … `end` blocks
   and `Synth` renders six sine operators through the 32 algorithms, with feedback
   (including the loops through several operators), rate/level operator envelopes,

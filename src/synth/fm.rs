@@ -410,23 +410,11 @@ impl Default for Fm {
 impl Fm {
     /// A feature this version accepts in a patch but does not render yet.
     pub(super) fn unrendered(&self) -> Option<&'static str> {
-        let operator = |o: &FmOperator| {
-            if o.velocity != 0 {
-                Some("operator velocity sensitivity")
-            } else if o.scaling.left_depth != 0 || o.scaling.right_depth != 0 {
-                Some("keyboard level scaling")
-            } else if o.rate_scaling != 0 {
-                Some("keyboard rate scaling")
-            } else if o.amplitude_sensitivity != 0 {
-                Some("LFO amplitude sensitivity")
-            } else {
-                None
-            }
-        };
         if self.lfo.pitch_depth != 0 || self.lfo.amplitude_depth != 0 {
             return Some("the LFO");
         }
-        self.operators.iter().flatten().find_map(operator)
+        (self.operators.iter().flatten())
+            .find_map(|o| (o.amplitude_sensitivity != 0).then_some("LFO amplitude sensitivity"))
     }
     /// The routing of this voice's algorithm.
     pub fn routing(&self) -> Result<FmRouting> {

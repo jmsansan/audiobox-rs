@@ -1,5 +1,5 @@
 //! Rendering of [`Fm`] voices. Formulas and units are those of `docs/fm-voice.md`.
-use super::{FM_CARRIER_PEAK, FM_OPERATORS, Fm, FmEnvelope};
+use super::{FM_CARRIER_PEAK, FM_OPERATORS, Fm, FmCurve, FmEnvelope, FmOperator};
 use crate::math::{cents_to_hz, exp2};
 use crate::synth::controls::{ControlParameter, Values};
 
@@ -35,6 +35,50 @@ const PITCH_RATES: [u8; 100] = [
     98, 102, 106, 110, 115, 120, 125, 130, 135, 141, 147, 153, 159, 165, 171, 178, 185, 193, 202,
     211, 232, 243, 254, 255,
 ];
+
+#[rustfmt::skip]
+const VELOCITY: [u8; 64] = [
+    0, 70, 86, 97, 106, 114, 121, 126, 132, 138, 142, 148, 152, 156, 160, 163, 166, 170, 173, 174,
+    178, 181, 184, 186, 189, 190, 194, 196, 198, 200, 202, 205, 206, 209, 211, 214, 216, 218, 220,
+    222, 224, 225, 227, 229, 230, 232, 233, 235, 237, 238, 240, 241, 242, 243, 244, 246, 246, 248,
+    249, 250, 251, 252, 253, 254,
+];
+#[rustfmt::skip]
+const EXPONENTIAL: [u8; 33] = [
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 14, 16, 19, 23, 27, 33, 39, 47, 56, 66, 80, 94, 110, 126,
+    142, 158, 174, 190, 206, 222, 238, 250,
+];
+/// Level steps the strongest velocity adds at the highest sensitivity.
+const VELOCITY_HEADROOM: f64 = 224.0;
+
+/// Steps added to an operator's base level by the note's velocity.
+fn velocity_offset(sensitivity: u8, velocity: u8) -> i32 {
+    let value = VELOCITY[(velocity.min(127) >> 1) as usize] as i32 - 239;
+    ((sensitivity as i32 * value + 7) >> 3) << 4
+}
+/// Offset to the 0..=127 output level by distance from the break point.
+fn level_scaling(o: &FmOperator, note: i32) -> i32 {
+    let s = o.scaling;
+    let offset = note - s.break_point as i32 - 17;
+    let group = offset.abs() / 3;
+    let (depth, curve) = if offset >= 0 {
+        (s.right_depth, s.right_curve)
+    } else {
+        (s.left_depth, s.left_curve)
+    };
+    let amount = match curve {
+        FmCurve::NegativeLinear | FmCurve::PositiveLinear => (group * depth as i32 * 329) >> 12,
+        _ => (EXPONENTIAL[group.min(32) as usize] as i32 * depth as i32 * 329) >> 15,
+    };
+    match curve {
+        FmCurve::NegativeLinear | FmCurve::NegativeExponential => -amount,
+        _ => amount,
+    }
+}
+/// Added to an envelope's 0..=63 rate: higher notes run faster.
+fn rate_scaling(sensitivity: u8, note: i32) -> i32 {
+    (sensitivity as i32 * (note / 3 - 7).clamp(0, 31)) >> 3
+}
 
 /// A 0..=99 level on the 0..=127 scale of 32 steps each.
 fn scale(level: u8) -> i32 {
@@ -87,17 +131,40 @@ fn gain(steps: f64) -> f64 {
 
 #[derive(Clone, Copy, Debug)]
 struct OperatorPlan {
+    settings: FmOperator,
     /// Multiple of the note frequency, detune included; unused when `fixed` is set.
     ratio: f64,
     fixed: Option<f64>,
-    /// Envelope targets in steps and increments in steps per sample.
+    modulators: u8,
+    carrier: bool,
+}
+/// One note's envelope of one operator, fixed at note-on from pitch and velocity.
+#[derive(Clone, Copy, Debug, Default)]
+struct Shape {
+    /// Targets in steps and increments in steps per sample.
     targets: [f64; 4],
     increments: [f64; 4],
     /// Linear gain at each target, and the per-sample gain ratio of a falling stage.
     gains: [f64; 4],
     falls: [f64; 4],
-    modulators: u8,
-    carrier: bool,
+}
+impl Shape {
+    fn new(o: &FmOperator, note: i32, velocity: u8, per_sample: f64) -> Self {
+        let out = (scale(o.level) + level_scaling(o, note)).min(127);
+        let base = (32 * out + velocity_offset(o.velocity, velocity)).max(0);
+        let targets = o
+            .envelope
+            .levels
+            .map(|level| (64 * (scale(level) >> 1) + base - 4256).max(16) as f64);
+        let faster = rate_scaling(o.rate_scaling, note);
+        let increments = o.envelope.rates.map(|r| slope(r, faster) * per_sample);
+        Self {
+            targets,
+            increments,
+            gains: targets.map(gain),
+            falls: increments.map(|i| exp2(-i / 256.0)),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -124,23 +191,16 @@ impl FmPlan {
         let mut tail: f64 = 0.0;
         let operators = std::array::from_fn(|index| {
             let o = settings.operators[index]?;
-            let base = 32 * scale(o.level).min(127);
-            let targets = o
-                .envelope
-                .levels
-                .map(|level| (64 * (scale(level) >> 1) + base - 4256).max(16) as f64);
-            let increments = o.envelope.rates.map(|r| slope(r, 0) * per_sample);
             let carrier = routing.is_carrier(index as u8 + 1);
             if carrier {
-                tail = tail.max((FULL_SCALE - targets[3]).max(0.0) / increments[3]);
+                // Rate scaling only shortens a release, so the unscaled rate bounds it.
+                let slowest = slope(o.envelope.rates[3], 0) * per_sample;
+                tail = tail.max((FULL_SCALE + VELOCITY_HEADROOM - FLOOR) / slowest);
             }
             Some(OperatorPlan {
+                settings: o,
                 ratio: o.frequency.ratio().unwrap_or(1.0) * exp2(o.detune as f64 * DETUNE),
                 fixed: o.frequency.fixed_hz(),
-                targets,
-                increments,
-                gains: targets.map(gain),
-                falls: increments.map(|i| exp2(-i / 256.0)),
                 modulators: routing.modulators[index],
                 carrier,
             })
@@ -227,7 +287,7 @@ impl Stages {
         }
     }
     /// One sample of an operator level and its gain.
-    fn tick(&mut self, held: bool, o: &OperatorPlan) {
+    fn tick(&mut self, held: bool, o: &Shape) {
         if self.stage >= 4 || (self.stage == 3 && held) {
             return;
         }
@@ -259,6 +319,7 @@ impl Stages {
 #[derive(Clone, Debug)]
 pub(in crate::synth) struct FmVoice {
     envelopes: [Stages; FM_OPERATORS],
+    shapes: [Shape; FM_OPERATORS],
     pitch: Stages,
     phases: [[f64; FM_OPERATORS]; 8],
     feedback: [[f64; 2]; 8],
@@ -276,6 +337,7 @@ impl FmVoice {
     pub fn new() -> Self {
         Self {
             envelopes: [Stages::default(); FM_OPERATORS],
+            shapes: [Shape::default(); FM_OPERATORS],
             pitch: Stages::default(),
             phases: [[0.0; FM_OPERATORS]; 8],
             feedback: [[0.0; 2]; 8],
@@ -291,7 +353,14 @@ impl FmVoice {
     }
     /// `gliding`: the slot still sounds an FM note to glide from. `legato` keeps the
     /// envelopes and phases and only moves the pitch.
-    pub fn trigger(&mut self, plan: &FmPlan, cents: f64, gliding: bool, legato: bool) {
+    pub fn trigger(
+        &mut self,
+        plan: &FmPlan,
+        cents: f64,
+        velocity: u8,
+        gliding: bool,
+        legato: bool,
+    ) {
         let cents = cents + plan.settings.transpose as f64 * 100.0;
         self.from = if gliding && plan.glide > 0 {
             self.current
@@ -312,9 +381,12 @@ impl FmVoice {
         }
         self.sounding = true;
         self.released = 0;
-        for (envelope, operator) in self.envelopes.iter_mut().zip(&plan.operators) {
+        let note = (cents / 100.0).round() as i32 + 69;
+        for (index, operator) in plan.operators.iter().enumerate() {
             if let Some(o) = operator {
-                envelope.advance(0, &o.targets, &o.increments);
+                let shape = Shape::new(&o.settings, note, velocity, 1.0 / plan.rate);
+                self.envelopes[index].advance(0, &shape.targets, &shape.increments);
+                self.shapes[index] = shape;
             }
         }
         if let Some((targets, increments)) = &plan.pitch {
@@ -330,10 +402,8 @@ impl FmVoice {
         if !std::mem::replace(&mut self.held, false) {
             return;
         }
-        for (envelope, operator) in self.envelopes.iter_mut().zip(&plan.operators) {
-            if let Some(o) = operator {
-                envelope.advance(3, &o.targets, &o.increments);
-            }
+        for (envelope, shape) in self.envelopes.iter_mut().zip(&self.shapes) {
+            envelope.advance(3, &shape.targets, &shape.increments);
         }
         if let Some((targets, increments)) = &plan.pitch {
             self.pitch.advance(3, targets, increments);
@@ -370,7 +440,7 @@ impl FmVoice {
         for (index, operator) in plan.operators.iter().enumerate() {
             let Some(o) = operator else { continue };
             let envelope = &mut self.envelopes[index];
-            envelope.tick(self.held, o);
+            envelope.tick(self.held, &self.shapes[index]);
             carriers_done &= !o.carrier || envelope.stage >= 4;
         }
 

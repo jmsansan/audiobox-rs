@@ -726,10 +726,6 @@ fn score_text_accepts_fm_blocks_with_positions() {
 #[test]
 fn features_of_later_issues_are_rejected_by_name() {
     for (line, feature) in [
-        ("op 1 velocity=3", "velocity"),
-        ("op 1 scaling=39,10,0", "level scaling"),
-        ("op 1 scaling=39,0,10", "level scaling"),
-        ("op 1 rate-scaling=2", "rate scaling"),
         ("op 1 amp-sensitivity=1", "amplitude sensitivity"),
         ("lfo pitch=10\nop 1", "LFO"),
         ("lfo amp=10\nop 1", "LFO"),
