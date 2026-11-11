@@ -1,7 +1,8 @@
 //! Rendering of [`Fm`] voices. Formulas and units are those of `docs/fm-voice.md`.
-use super::{FM_CARRIER_PEAK, FM_OPERATORS, Fm, FmCurve, FmEnvelope, FmOperator};
+use super::{FM_CARRIER_PEAK, FM_OPERATORS, Fm, FmCurve, FmEnvelope, FmLfoWave, FmOperator};
 use crate::math::{cents_to_hz, exp2};
 use crate::synth::controls::{ControlParameter, Values};
+use crate::synth::prepared::BeatClock;
 
 /// Level steps at full scale; 256 steps double the amplitude.
 const FULL_SCALE: f64 = 3840.0;
@@ -48,6 +49,101 @@ const EXPONENTIAL: [u8; 33] = [
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 14, 16, 19, 23, 27, 33, 39, 47, 56, 66, 80, 94, 110, 126,
     142, 158, 174, 190, 206, 222, 238, 250,
 ];
+const PITCH_SENSITIVITY: [f64; 8] = [0.0, 10.0, 20.0, 33.0, 55.0, 92.0, 153.0, 255.0];
+/// Numerator of an LFO rate unit in Hz, over 2^32.
+const LFO_UNIT: u128 = 25_190_424;
+
+/// Fraction and whole cycles of `frames * num / den`, exactly.
+fn cycles(frames: u128, num: u128, den: u128) -> (f64, u64) {
+    let product = frames * num;
+    ((product % den) as f64 / den as f64, (product / den) as u64)
+}
+/// A value in 1/256..=1 for one sample-and-hold cycle.
+fn held_value(seed: u32, cycle: u64) -> f64 {
+    let mut x = seed ^ (cycle as u32).wrapping_mul(0x9e37_79b9) ^ ((cycle >> 32) as u32);
+    x ^= x >> 16;
+    x = x.wrapping_mul(0x85eb_ca6b);
+    x ^= x >> 13;
+    x = x.wrapping_mul(0xc2b2_ae35);
+    x ^= x >> 16;
+    ((x & 0xff) + 1) as f64 / 256.0
+}
+
+/// The voice LFO, prepared for one sample rate and tempo.
+#[derive(Clone, Copy, Debug)]
+struct LfoPlan {
+    wave: FmLfoWave,
+    /// Cycles per frame as a fraction.
+    rate: (u128, u128),
+    beats: Option<(u16, u16)>,
+    key_sync: bool,
+    seed: u32,
+    /// Frames of silence and of the ramp to full depth.
+    hold: f64,
+    ramp: f64,
+    /// Peak pitch deviation in cents.
+    pitch: f64,
+    /// Share of each operator's gain removed at the top of the wave.
+    amplitude: [f64; FM_OPERATORS],
+}
+impl LfoPlan {
+    fn new(settings: &Fm, rate: u32, tempo: u16) -> Option<Self> {
+        let l = settings.lfo;
+        let amplitude = std::array::from_fn(|i| {
+            settings.operators[i].map_or(0.0, |o| {
+                l.amplitude_depth as f64 * 0.01 * o.amplitude_sensitivity as f64 / 3.0
+            })
+        });
+        let depth = ((l.pitch_depth as u32 * 165) >> 6) as f64;
+        let pitch = 1200.0 * depth * PITCH_SENSITIVITY[l.pitch_sensitivity as usize] / 65536.0;
+        if pitch == 0.0 && amplitude.iter().all(|a| *a == 0.0) {
+            return None;
+        }
+        let speed = match (l.speed as u128 * 165) >> 6 {
+            _ if l.speed == 0 => 11,
+            sr if sr < 160 => sr * 11,
+            sr => sr * (11 + ((sr - 160) >> 4)),
+        };
+        let (hold, ramp) = match 99 - l.delay as u32 {
+            99 => (0.0, 0.0),
+            a => {
+                let a = (16 + (a & 15)) << (1 + (a >> 4));
+                let unit = (1u64 << 31) as f64 / LFO_UNIT as f64 * rate as f64;
+                (unit / a as f64, unit / (a & 0xff80).max(0x80) as f64)
+            }
+        };
+        Some(Self {
+            wave: l.wave,
+            rate: match l.beats {
+                Some((n, d)) => (tempo as u128 * d as u128, rate as u128 * 60 * n as u128),
+                None => (speed * LFO_UNIT, (rate as u128) << 32),
+            },
+            beats: l.beats,
+            key_sync: l.key_sync,
+            seed: l.seed,
+            hold,
+            ramp,
+            pitch,
+            amplitude,
+        })
+    }
+    /// The wave in 0..=1 for a phase in turns.
+    fn wave(&self, phase: f64, cycle: u64) -> f64 {
+        match self.wave {
+            FmLfoWave::Triangle if phase < 0.5 => 2.0 * phase,
+            FmLfoWave::Triangle => 2.0 - 2.0 * phase,
+            FmLfoWave::SawDown if phase < 0.5 => 0.5 - phase,
+            FmLfoWave::SawDown => 1.5 - phase,
+            FmLfoWave::SawUp if phase < 0.5 => phase + 0.5,
+            FmLfoWave::SawUp => phase - 0.5,
+            FmLfoWave::Square if phase < 0.5 => 1.0,
+            FmLfoWave::Square => 0.0,
+            FmLfoWave::Sine => 0.5 + 0.5 * sine(phase),
+            FmLfoWave::SampleHold => held_value(self.seed, cycle),
+        }
+    }
+}
+
 /// Level steps the strongest velocity adds at the highest sensitivity.
 const VELOCITY_HEADROOM: f64 = 224.0;
 
@@ -181,11 +277,12 @@ pub(in crate::synth) struct FmPlan {
     ratios: [f64; 8],
     pans: [f64; 8],
     glide: u64,
+    lfo: Option<LfoPlan>,
     /// Frames after key-off at which a voice is cut.
     pub tail: u64,
 }
 impl FmPlan {
-    pub fn new(settings: Fm, rate: u32) -> Self {
+    pub fn new(settings: Fm, rate: u32, tempo: u16) -> Self {
         let routing = settings.routing().expect("validated algorithm");
         let per_sample = 1.0 / rate as f64;
         let mut tail: f64 = 0.0;
@@ -241,6 +338,7 @@ impl FmPlan {
             ratios,
             pans,
             glide: (settings.glide_ms as u64 * rate as u64 + 500) / 1000,
+            lfo: LfoPlan::new(&settings, rate, tempo),
             tail: (tail.ceil() as u64 + 1).min(MAX_TAIL_SECONDS * rate as u64),
         }
     }
@@ -330,6 +428,9 @@ pub(in crate::synth) struct FmVoice {
     target: f64,
     current: f64,
     glide_age: u64,
+    /// Frames since the last attack, and the musical clock at it.
+    age: u64,
+    beat_start: Option<u128>,
     /// The last pitch in cents (as bits) and its frequency.
     hz: (u64, f64),
 }
@@ -348,6 +449,8 @@ impl FmVoice {
             target: 0.0,
             current: 0.0,
             glide_age: 0,
+            age: 0,
+            beat_start: None,
             hz: (f64::NAN.to_bits(), 0.0),
         }
     }
@@ -381,6 +484,8 @@ impl FmVoice {
         }
         self.sounding = true;
         self.released = 0;
+        self.age = 0;
+        self.beat_start = None;
         let note = (cents / 100.0).round() as i32 + 69;
         for (index, operator) in plan.operators.iter().enumerate() {
             if let Some(o) = operator {
@@ -412,7 +517,43 @@ impl FmVoice {
     pub fn active(&self) -> bool {
         self.sounding
     }
-    pub fn sample(&mut self, plan: &FmPlan, controls: Option<Values>) -> [f64; 2] {
+    /// The LFO's wave in 0..=1 scaled by its delay, for this frame.
+    fn lfo(&mut self, lfo: &LfoPlan, clock: u64, musical: Option<BeatClock>) -> (f64, f64) {
+        let fade = if self.age as f64 >= lfo.hold + lfo.ramp {
+            1.0
+        } else if self.age as f64 <= lfo.hold {
+            0.0
+        } else {
+            (self.age as f64 - lfo.hold) / lfo.ramp
+        };
+        let (phase, cycle) = match (musical, lfo.beats) {
+            (Some(c), Some((n, d))) => {
+                let start = match lfo.key_sync {
+                    true => *self.beat_start.get_or_insert(c.numerator),
+                    false => 0,
+                };
+                cycles(c.numerator - start, d as u128, c.denominator * n as u128)
+            }
+            _ => {
+                let frames = if lfo.key_sync { self.age } else { clock };
+                cycles(frames as u128, lfo.rate.0, lfo.rate.1)
+            }
+        };
+        // A synced LFO starts half a cycle in, as on the instrument.
+        let (phase, cycle) = match lfo.key_sync {
+            true if phase < 0.5 => (phase + 0.5, cycle),
+            true => (phase - 0.5, cycle + 1),
+            false => (phase, cycle),
+        };
+        (lfo.wave(phase, cycle), fade)
+    }
+    pub fn sample(
+        &mut self,
+        plan: &FmPlan,
+        clock: u64,
+        musical: Option<BeatClock>,
+        controls: Option<Values>,
+    ) -> [f64; 2] {
         if !self.sounding {
             return [0.0; 2];
         }
@@ -431,6 +572,15 @@ impl FmVoice {
             self.pitch.glide(self.held, targets, increments);
             cents += self.pitch.level;
         }
+        let mut tremolo = [1.0; FM_OPERATORS];
+        if let Some(lfo) = &plan.lfo {
+            let (wave, fade) = self.lfo(lfo, clock, musical);
+            cents += lfo.pitch * fade * (2.0 * wave - 1.0);
+            for (gain, depth) in tremolo.iter_mut().zip(&lfo.amplitude) {
+                *gain = 1.0 - depth * fade * wave;
+            }
+        }
+        self.age += 1;
         if self.hz.0 != cents.to_bits() {
             self.hz = (cents.to_bits(), cents_to_hz(cents));
         }
@@ -467,7 +617,7 @@ impl FmVoice {
                     modulation += (older + last) * 0.5 * plan.feedback;
                 }
                 let phase = &mut self.phases[copy][index];
-                let gain = self.envelopes[index].gain;
+                let gain = self.envelopes[index].gain * tremolo[index];
                 if hz <= limit && gain != 0.0 {
                     outputs[index] = sine(*phase + modulation) * gain * 2.0;
                 }

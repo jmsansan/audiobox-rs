@@ -682,8 +682,8 @@ An `fm NAME` … `end` block in a score is a six-operator, DX7-class FM instrume
 algorithms, feedback, a four-rate, four-level envelope per operator and a pitch
 envelope, in the instrument's own 0..=99 units, plus pan, unison, glide and legato.
 Velocity changes tone as well as level through each operator's sensitivity, and
-keyboard scaling shapes level and envelope speed across the range. The LFO is part
-of the patch format but is not rendered yet. See [the FM voice contract](docs/fm-voice.md) for every key,
+keyboard scaling shapes level and envelope speed across the range. One LFO per voice
+with six waveforms, a delay and tempo sync adds vibrato, and tremolo per operator. See [the FM voice contract](docs/fm-voice.md) for every key,
 the algorithm table and the conversion curves.
 
 ```rust

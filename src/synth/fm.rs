@@ -408,14 +408,6 @@ impl Default for Fm {
     }
 }
 impl Fm {
-    /// A feature this version accepts in a patch but does not render yet.
-    pub(super) fn unrendered(&self) -> Option<&'static str> {
-        if self.lfo.pitch_depth != 0 || self.lfo.amplitude_depth != 0 {
-            return Some("the LFO");
-        }
-        (self.operators.iter().flatten())
-            .find_map(|o| (o.amplitude_sensitivity != 0).then_some("LFO amplitude sensitivity"))
-    }
     /// The routing of this voice's algorithm.
     pub fn routing(&self) -> Result<FmRouting> {
         FmRouting::algorithm(self.algorithm)

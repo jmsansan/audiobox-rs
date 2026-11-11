@@ -15,7 +15,7 @@ What is taken, and where it is used:
 | `env.cc` | Output-level table, level and rate formulas, attack shape | `docs/fm-voice.md`, `src/synth/fm/voice.rs` |
 | `dx7note.cc` | Velocity table, keyboard level and rate scaling formulas and exponential table, detune constant, pitch sensitivity table | `docs/fm-voice.md`, `src/synth/fm/voice.rs` |
 | `pitchenv.cc` | Pitch envelope level and rate tables | `docs/fm-voice.md`, `src/synth/fm/voice.rs` |
-| `lfo.cc` | LFO speed and delay formulas | `docs/fm-voice.md`, `src/synth/fm/voice.rs` |
+| `lfo.cc` | LFO speed and delay formulas, wave shapes and start phase | `docs/fm-voice.md`, `src/synth/fm/voice.rs` |
 | `fm_op_kernel.cc` | Full-scale modulation depth and feedback scaling | `docs/fm-voice.md`, `src/synth/fm/voice.rs` |
 | `fm_core.cc` | Algorithm bus flags, used only to check the routing table | `src/synth/fm.rs`, `ALGORITHMS` |
 | `wiki/Dx7Envelope.wiki`, `wiki/Dx7Hardware.wiki` | Units and envelope description | `docs/fm-voice.md`, `src/synth/fm/voice.rs` |
@@ -37,4 +37,30 @@ da4d85e5957f103e9aae7418fc803ecc61933b42c1d4add67f4ea1dcc8b597e3  pitchenv.cc
 e91aa1e067bf67c799871344eb1f3cdd92c2c0e4797b2efc2403ac7bb7113af5  fm_op_kernel.cc
 ```
 
-Later rendering issues that port further curves extend this notice.
+## LFO amplitude modulation
+
+The form of the LFO's amplitude modulation (linear gain reduced by depth times
+sensitivity over three) follows `src/lfo-dx7.js` of *dx7-synth-js* by Matt Montag,
+https://github.com/mmontag/dx7-synth-js at revision
+`f269f0e02fc67b2f824b01a8416339cd5c4829e0` (SHA-256
+`8f54d450bf14ebc85ca37c2aafb3120b668568038dfcc5c5721c1762be34e7a6`), whose
+`package.json` declares the ISC licence. No code or table is copied; the formula is
+restated in `docs/fm-voice.md` and implemented in `src/synth/fm/voice.rs`, with the
+depth held at zero during the LFO delay.
+
+```text
+ISC License
+
+Copyright (c) Matt Montag
+
+Permission to use, copy, modify, and/or distribute this software for any purpose
+with or without fee is hereby granted, provided that the above copyright notice
+and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
+FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT,
+OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA
+OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+```

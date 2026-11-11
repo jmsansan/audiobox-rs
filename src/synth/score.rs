@@ -248,9 +248,6 @@ impl Instrument {
     pub fn validate(&self) -> Result<()> {
         if let Some(fm) = &self.fm {
             fm.validate()?;
-            if let Some(feature) = fm.unrendered() {
-                return Err(Error::invalid(format!("FM does not render {feature} yet")));
-            }
             if self.synthwave.is_some()
                 || self.chip.is_some()
                 || self.drum.is_some()

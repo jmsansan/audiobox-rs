@@ -724,30 +724,17 @@ fn score_text_accepts_fm_blocks_with_positions() {
 }
 
 #[test]
-fn features_of_later_issues_are_rejected_by_name() {
-    for (line, feature) in [
-        ("op 1 amp-sensitivity=1", "amplitude sensitivity"),
-        ("lfo pitch=10\nop 1", "LFO"),
-        ("lfo amp=10\nop 1", "LFO"),
+fn every_patch_feature_is_accepted_and_other_sources_are_not() {
+    for line in [
+        "op 1 velocity=3",
+        "op 1 scaling=39,10,20 curves=+lin,-exp",
+        "op 1 rate-scaling=2",
+        "lfo pitch=10 amp=20\nop 1 amp-sensitivity=1",
+        "lfo wave=sample-hold beats=1,4 sync=off\nop 1",
     ] {
         let text = format!("fm a\n{line}\nend\nchannel c=@a c");
-        let e = Score::parse(&text).unwrap_err();
-        assert_eq!((e.line, e.code), (1, ErrorCode::InvalidArgument), "{line}");
-        assert!(
-            e.message.contains(feature) && e.message.contains("yet"),
-            "{}",
-            e.message
-        );
-        // The patch itself is valid; only rendering it is not available.
-        assert!(FmPatch::parse(&format!("fm a\n{line}\nend")).is_ok());
+        assert!(Score::parse(&text).is_ok(), "{line}");
     }
-    // An LFO line that changes nothing audible is accepted.
-    assert!(
-        Score::parse(
-            "fm a\nlfo wave=sine speed=50 delay=20\nop 1 scaling=50,0,0 curves=+lin,-exp\nend"
-        )
-        .is_ok()
-    );
 
     let invalid = |change: fn(&mut Instrument)| {
         let mut instrument = Instrument::fm(Fm::default());

@@ -190,8 +190,8 @@
 //! as `algorithm`, `feedback`, `voices`, `unison`, `pan`, `glide` and `legato` on
 //! the first line. Values use the DX7's 0..=99 ranges. `docs/fm-voice.md` lists
 //! every key, the 32 algorithms and the conversion curves. Velocity acts through
-//! each operator's `velocity` sensitivity only. The LFO is parsed but rejected
-//! until it is rendered.
+//! each operator's `velocity` sensitivity only. The `lfo` line adds vibrato for the
+//! voice and tremolo per operator.
 //!
 //! ```
 //! use audiobox::synth::Score;

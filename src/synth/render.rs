@@ -149,7 +149,7 @@ impl Plan {
                 .as_ref()
                 .map(|chip| ChipPlan::new(chip, rate, tempo, ticks)),
             drum: instrument.drum.map(|d| DrumPlan::new(d, rate)),
-            fm: instrument.fm.map(|f| FmPlan::new(f, rate)),
+            fm: instrument.fm.map(|f| FmPlan::new(f, rate, tempo)),
             waveform: instrument.waveform,
             attack: samples(e.attack_ms),
             decay: samples(e.decay_ms),
@@ -458,7 +458,10 @@ impl Voice {
                 .and_then(|c| c.get(ControlParameter::Expression))
                 .unwrap_or(1.0);
             let gain = event.volume * plan.volume * expression;
-            return self.fm.sample(fm, controls).map(|side| side * gain);
+            return self
+                .fm
+                .sample(fm, clock, musical, controls)
+                .map(|side| side * gain);
         }
         let Some(wide) = &plan.wide else {
             let sample = self.sample(plans, rate, musical, controls);

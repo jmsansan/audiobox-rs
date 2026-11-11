@@ -3,18 +3,20 @@
 //! The patches are starting points written for this example: an electric piano from
 //! three operator pairs, an inharmonic bell, a brass whose modulator rises after the
 //! carrier, and a bass that layers two stacks an octave apart. The piano and the
-//! brass use velocity for tone: softer notes are darker, not only quieter.
+//! brass use velocity for tone: softer notes are darker, not only quieter. The piano
+//! has a light tremolo and the brass a delayed vibrato.
 use audiobox::synth::{RenderOptions, Score};
 use audiobox::{EncodeOptions, write_audio_file};
 
 const SONG: &str = "tempo 96
 ; Three pairs (algorithm 5): a short bright tine over two detuned bodies.
 fm piano algorithm=5 feedback=5 voices=6 volume=9
+  lfo wave=sine speed=30 amp=35
   op 1 ratio=1            rates=96,25,25,67 levels=99,75,0,0 velocity=2 rate-scaling=3
   op 2 ratio=14 level=58  rates=95,50,35,78 levels=99,75,0,0 velocity=7 scaling=39,0,45
-  op 3 ratio=1 detune=-5  rates=95,20,20,50 levels=99,95,0,0
+  op 3 ratio=1 detune=-5  rates=95,20,20,50 levels=99,95,0,0 amp-sensitivity=1
   op 4 ratio=1 level=82   rates=95,29,20,50 levels=99,95,0,0 velocity=6
-  op 5 ratio=1 detune=5   rates=95,20,20,50 levels=99,95,0,0
+  op 5 ratio=1 detune=5   rates=95,20,20,50 levels=99,95,0,0 amp-sensitivity=1
   op 6 ratio=1 level=76   rates=95,29,20,50 levels=99,95,0,0 velocity=6
 end
 ; A 3.5 ratio gives inharmonic partials; the modulator dies first, leaving a sine.
@@ -24,6 +26,7 @@ fm bell algorithm=1 voices=4 volume=8 pan=35
 end
 ; Feedback on the modulator (algorithm 2), which swells in after the carrier.
 fm brass algorithm=2 feedback=6 voices=3 volume=8 pan=-30 unison=2 unison-detune=6 spread=40
+  lfo wave=triangle speed=33 delay=55 pitch=14 pitch-sensitivity=3
   op 1 ratio=1            rates=62,40,30,55 levels=99,92,88,0
   op 2 ratio=1 level=77   rates=46,45,30,55 levels=99,85,80,0 velocity=5
 end

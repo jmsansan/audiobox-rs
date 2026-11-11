@@ -6,9 +6,9 @@ that every later issue implements the same thing.
 
 **Status: six operators render.** A score takes `fm NAME` … `end` blocks, and
 `Synth` renders all 32 algorithms with feedback, operator envelopes and the pitch
-envelope, velocity sensitivity and keyboard level and rate scaling, offline or as a
-prepared stream, without allocating. The LFO is accepted in a patch and rejected
-when the patch is added to a score. [Implementation slices](#implementation-slices) says which issue
+envelope, velocity sensitivity, keyboard level and rate scaling and the LFO, offline
+or as a prepared stream, without allocating. Every key of the patch format is
+rendered. [Implementation slices](#implementation-slices) says which issue
 adds them.
 
 ## Decisions
@@ -375,16 +375,42 @@ hold = 85.25 / a                      seconds with no modulation
 ramp = 85.25 / max(128, a & 0xff80)   seconds rising linearly to full depth
 ```
 
+The wave `w` runs from 0 to 1 over a phase `p` in turns:
+
+| Wave | `w(p)` |
+| --- | --- |
+| `triangle` | `2p` up to one half, then `2 - 2p` |
+| `saw-down` | `0.5 - p` up to one half, then `1.5 - p` |
+| `saw-up` | `p + 0.5` up to one half, then `p - 0.5` |
+| `square` | 1 in the first half, 0 in the second |
+| `sine` | `0.5 + 0.5 sin(2 pi p)` |
+| `sample-hold` | a new value in 1/256..=1 each cycle |
+
+With `sync=on` the LFO restarts at each note that attacks, half a cycle in (`p = 0.5`),
+as the instrument does; a legato note does not restart it. With `sync=off` the phase
+is `frames * frequency` from the synth's frame zero, so it is the same for every
+voice and does not depend on when a note starts. The delay always counts from the
+note's attack, with `fade` running from 0 to 1 over the ramp.
+
 Pitch: the peak deviation in octaves is `((pitch * 165) >> 6) * S[pitch_sensitivity]
-/ 65536`, with `S = 0 10 20 33 55 92 153 255` (at most about one octave).
+/ 65536`, with `S = 0 10 20 33 55 92 153 255` (at most about one octave). The offset
+is `peak * fade * (2w - 1)`.
 
-`sample-hold` takes a new value each cycle from a generator seeded by `seed`. The
-generator is the engine's own (#142 chooses it); the hardware sequence is not
-reproduced.
+Amplitude: each operator's linear gain is multiplied by
 
-**Open, owned by #142:** the mapping of `amp` and `amp-sensitivity` to a level
-change. msfa at this revision does not implement it, so #142 must find a published
-source and add the formula here before rendering it.
+```text
+1 - (amp * 0.01) * (amp_sensitivity / 3) * fade * w
+```
+
+so the LFO only lowers a level, and `amp=99` with sensitivity 3 reaches 1 % of it.
+On a modulator this moves the tone rather than the loudness. msfa at the pinned
+revision does not implement amplitude modulation; this form follows
+*dx7-synth-js* (ISC), which states it as an approximation and not a measurement of
+the hardware. Unlike that project, the depth is zero during the delay.
+
+`sample-hold` values come from a hash of `seed` and the cycle number, so a cycle's
+value does not depend on how the output is chunked. The hardware's own sequence is
+not reproduced.
 
 ## Level and headroom
 
@@ -435,8 +461,9 @@ source and add the formula here before rendering it.
 
 **Open, owned by the issue named:**
 
-- Loop laps and free-running phases (#136, with #142).
-- Held-note controls for operator level and feedback (#143).
+- Loop laps: a free-running LFO or operator phase is not restarted at the loop
+  point (#136).
+- Held-note controls for operator level, feedback and LFO depths (#143).
 
 ## Aliasing
 
@@ -447,16 +474,14 @@ which is on by default if the measurements justify it.
 
 ## Implementation slices
 
-The types and the text form are final. A patch that uses a feature not rendered yet
-is still a valid `FmPatch`; adding it to a score fails with `InvalidArgument` and a
-message naming the feature.
+The types and the text form are final, and every key is rendered.
 
-| Issue | Renders | Still rejected in a score |
-| --- | --- | --- |
-| #138 | Types, validation, text | Everything |
-| #122, #139, #128, #140 | All six operators and 32 algorithms, feedback, ratio and fixed frequency, detune, levels, operator envelopes, pitch envelope, key sync, transpose, voices, unison, pan, glide, legato | `velocity`, non-zero `scaling` depths, `rate-scaling`, `amp-sensitivity`, LFO `pitch` and `amp` depths |
-| #141 | `velocity`, `scaling`, `curves`, `rate-scaling` | LFO `pitch` and `amp` depths, `amp-sensitivity` |
-| #142 | The `lfo` line and `amp-sensitivity` | — |
+| Issue | Added |
+| --- | --- |
+| #138 | Types, validation, text |
+| #122, #139, #128, #140 | All six operators and 32 algorithms, feedback, ratio and fixed frequency, detune, levels, operator envelopes, pitch envelope, key sync, transpose, voices, unison, pan, glide, legato |
+| #141 | `velocity`, `scaling`, `curves`, `rate-scaling` |
+| #142 | The `lfo` line and `amp-sensitivity` |
 
 The four rendering issues landed together because the operator loop is the same for
 two, four and six operators: a two-operator voice is algorithm 1 or 2 with two `op`
