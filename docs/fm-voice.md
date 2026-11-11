@@ -4,10 +4,12 @@ This is the contract for the six-operator FM instrument planned in #137. It fixe
 parameter model, the units, the text form, the limits and the conversion curves, so
 that every later issue implements the same thing.
 
-**Status: contract and types only.** `audiobox::synth::{Fm, FmOperator, FmPatch, …}`
-exist, validate, parse and print. Nothing renders FM yet, and scores do not accept
-`fm` blocks yet. [Implementation slices](#implementation-slices) says which issue
-adds what.
+**Status: six operators render.** A score takes `fm NAME` … `end` blocks, and
+`Synth` renders all 32 algorithms with feedback, operator envelopes and the pitch
+envelope, offline or as a prepared stream, without allocating. Velocity sensitivity,
+keyboard scaling and the LFO are accepted in a patch and rejected when the patch is
+added to a score. [Implementation slices](#implementation-slices) says which issue
+adds them.
 
 ## Decisions
 
@@ -136,17 +138,30 @@ a missing `end` point at `fm`.
 default. Parsing that text gives back an equal `FmPatch`, and printing it again
 gives the same text.
 
-### In a score (from #122)
+### In a score
+
+```text
+tempo 110
+fm bell algorithm=2 feedback=3 voices=4
+  op 1 ratio=1    rates=95,28,25,40 levels=99,0,0,0
+  op 2 ratio=3,50 level=80 rates=95,38,30,45 levels=99,0,0,0
+end
+channel melody = @bell o5 l4 c e g {c e g}2
+```
 
 - An `fm` block is a top-level directive next to `instrument` lines. Its name shares
-  the instrument namespace and is selected with `@NAME`.
-- It becomes `Instrument { fm: Some(Fm), volume, .. }`. `fm` excludes `synthwave`,
-  `chip` and `drum`, and the legacy fields (`waveform`, `envelope`, `slide`,
-  `vibrato`, `arpeggio`, `duty_sweep`) must stay at their defaults.
-- The block parser is already line-driven (`parse::fm::Block`) so the score parser
-  can hand it lines.
+  the instrument namespace and is selected with `@NAME`. Errors inside the block
+  carry the score's line numbers.
+- It becomes `Instrument { fm: Some(Fm), volume, .. }`, also built in code with
+  `Instrument::fm`. `fm` excludes `synthwave`, `chip` and `drum`, and the legacy
+  fields (`waveform`, `envelope`, `slide`, `vibrato`, `arpeggio`, `duty_sweep`) must
+  stay at their defaults.
+- FM voices are always pooled: `voices` slots per track, chords up to that many
+  notes, the same stealing order as synthwave.
 - Existing one-line `instrument` entries are unchanged, and none of their keys gain
   an FM meaning.
+- Held-note controls: `Expression`, `Pan` and `PitchCents` apply. `PitchCents` does
+  not move fixed-frequency operators. The filter and LFO-depth controls are rejected.
 
 ## Algorithms
 
@@ -380,7 +395,8 @@ source and add the formula here before rendering it.
 
 ## Determinism and state
 
-- Phases are kept in turns and sines come from `math::sin_turns`. The same score,
+- Phases are kept in turns and sines come from a fixed polynomial that uses only
+  multiplication and addition. The same score,
   rate and options give the same samples on every host and for every chunk size.
 - `key-sync=on`: every operator phase is zero at note-on. `key-sync=off`: a voice
   slot's phases keep the value its previous note left (zero on first use and after
@@ -395,43 +411,64 @@ source and add the formula here before rendering it.
 - Voice allocation and stealing follow synthwave: idle slots first, then the oldest
   releasing, then the oldest held, ties by slot index.
 
+### Envelopes and voices
+
+- A note on an idle slot starts every operator at silence. A note that takes a slot
+  still sounding an FM note (stealing, or a mono retrigger) starts each envelope
+  from its current level, so there is no click from a reset.
+- With `legato=on`, an adjacent full-gate note of the same instrument keeps the
+  envelopes, phases and pitch envelope, and only moves the pitch (through `glide`).
+- Key-off moves every operator to stage four from wherever it is.
+- A voice ends when every switched-on carrier has reached its last level, whatever
+  that level is. A carrier whose `levels[3]` is above silence is cut there. A voice
+  is also cut 60 seconds after key-off; only the slowest release rates get that far.
+- `Synth::max_frames` allows for the longest release of the score's FM instruments.
+- An operator level at or below 16 steps (90 dB under full scale) is silent.
+- Gains follow the level by multiplication inside a stage and are set exactly at
+  each stage boundary; rising stages recompute the ratio once per 256-step band.
+- `feedback` 6 and 7 at full level are noise-like rather than saw-like: the loop is
+  chaotic there, on this engine as on the instrument. Output stays bounded by the
+  operator's own level.
+
 **Open, owned by the issue named:**
 
-- Envelope state on retrigger, stealing, ties and mono legato; the end-of-tail rule
-  when `levels[3]` is above zero (#139).
 - Loop laps and free-running phases (#136, with #142).
-- Held-note control units and ramps (#143).
+- Held-note controls for operator level and feedback (#143).
 
 ## Aliasing
 
-Phase modulation is not band-limited. The first renderer (#122) guarantees only that
+Phase modulation is not band-limited. The renderer guarantees only that
 no operator's own frequency exceeds 0.45 times the sample rate: an operator above it
 is silent for that note. Sidebands may fold. #144 measures this and sets the policy,
 which is on by default if the measurements justify it.
 
 ## Implementation slices
 
-The types and the text form are final from this issue. Each rendering issue accepts a
-larger subset and must reject the rest with `InvalidArgument` and a message naming
-the unsupported feature, when the instrument is added to a score.
+The types and the text form are final. A patch that uses a feature not rendered yet
+is still a valid `FmPatch`; adding it to a score fails with `InvalidArgument` and a
+message naming the feature.
 
-| Issue | Renders | Still rejected |
+| Issue | Renders | Still rejected in a score |
 | --- | --- | --- |
-| #138 (this) | Nothing; types, validation, text | — |
-| #122 | Algorithms 1 and 2 with operators 1 and 2 only; ratio and fixed frequency, detune, level, feedback, key sync, transpose, voices, unison, pan, glide, legato | Operators 3..=6, other algorithms, non-default `pitch` and `lfo` lines, `velocity`, `scaling`, `rate-scaling`, `amp-sensitivity` |
-| #139 | Operator envelopes and the pitch envelope | — |
-| #128 | Any algorithm with at most four operators switched on | Five or six operators |
-| #140 | All six operators | — |
-| #141 | `velocity`, `scaling`, `curves`, `rate-scaling` | — |
+| #138 | Types, validation, text | Everything |
+| #122, #139, #128, #140 | All six operators and 32 algorithms, feedback, ratio and fixed frequency, detune, levels, operator envelopes, pitch envelope, key sync, transpose, voices, unison, pan, glide, legato | `velocity`, non-zero `scaling` depths, `rate-scaling`, `amp-sensitivity`, LFO `pitch` and `amp` depths |
+| #141 | `velocity`, `scaling`, `curves`, `rate-scaling` | LFO depths, `amp-sensitivity` |
 | #142 | The `lfo` line and `amp-sensitivity` | — |
 
-Until #139 lands, #122 may render envelopes only when `rates` and `levels` are at
-their defaults (a gated sine), or land after #139.
-
-#122 and #128 were written before this contract. Where they differ, this file wins:
+The four rendering issues landed together because the operator loop is the same for
+two, four and six operators: a two-operator voice is algorithm 1 or 2 with two `op`
+lines.
 
 - #122's "modulation index" is the modulator's `level`; its "index envelope" is the
   modulator's operator envelope; its "fine detune" is `detune`.
-- #128's "small documented set of algorithms" is the table above restricted to four
-  operators, not a separate four-operator numbering.
-- Neither adds keys to the one-line `instrument` form.
+- #128's "small documented set of algorithms" is the table above with at most four
+  operators switched on.
+
+Until #141 lands an FM voice ignores velocity entirely, because the engine's linear
+velocity gain is not applied to FM.
+
+## Cost
+
+`benches/engine.rs` has `synth/fm-2op` and `synth/fm-6op`: two tracks of eight
+voices each. Run `cargo bench --bench engine --all-features -- --quick synth/fm`.
+Measured numbers and the aliasing policy's cost belong to #148 and #144.

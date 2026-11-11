@@ -4,6 +4,18 @@
 
 ### Added
 
+- FM instruments (#122, #139, #128, #140): a score takes `fm NAME` … `end` blocks
+  and `Synth` renders six sine operators through the 32 algorithms, with feedback
+  (including the loops through several operators), rate/level operator envelopes,
+  a pitch envelope, ratio and fixed frequencies, detune, key sync, transpose,
+  voices, chords, unison, pan, glide and legato. Rendering allocates nothing and is
+  independent of chunk size. Held-note expression, pan and pitch controls apply.
+  Velocity sensitivity, keyboard scaling and the LFO are rejected with a named
+  error until #141 and #142. `Instrument` gains the public field `fm` and the
+  constructor `Instrument::fm`; code that builds `Instrument` with a struct literal
+  needs `..Default::default()`. Existing scores keep their samples.
+  `examples/fm_voices.rs` renders four patches.
+
 - FM voice contract (#138): `synth::Fm`, `FmOperator`, `FmPatch` and related types
   describe a six-operator, DX7-class voice in the instrument's own units, with the
   32 algorithm routings (`FmRouting`), range validation and a multi-line `fm NAME`

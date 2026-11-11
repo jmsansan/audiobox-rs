@@ -818,12 +818,29 @@ pub(super) fn parse(text: &str, limits: &ScoreLimits) -> Parsed<Score> {
     let mut instruments = Vec::new();
     let mut patterns: Vec<Body> = Vec::new();
     let mut channels: Vec<Body> = Vec::new();
+    let mut block: Option<(fm::Block, Pos)> = None;
     for (index, raw) in text.lines().enumerate() {
         let content = raw.split(';').next().unwrap_or("");
         let mut cursor = Cursor::new(content, index + 1, 1);
         let (pos, keyword) = cursor.word();
+        if let Some((open, _)) = &mut block {
+            if !keyword.is_empty() && open.line(keyword, pos, &mut cursor)? {
+                let (open, start) = block.take().expect("open block");
+                let patch = open.finish()?;
+                let instrument = Instrument {
+                    volume: patch.volume,
+                    ..Instrument::fm(patch.voice)
+                };
+                instruments.push((patch.name, instrument, start));
+            }
+            continue;
+        }
         match keyword {
             "" => continue,
+            "fm" => {
+                block = Some((fm::Block::header(pos, &mut cursor)?, pos));
+                continue;
+            }
             "tempo" | "ticks" => {
                 cursor.skip_space();
                 let value_pos = cursor.pos();
@@ -865,6 +882,9 @@ pub(super) fn parse(text: &str, limits: &ScoreLimits) -> Parsed<Score> {
                 .pos()
                 .syntax("Unexpected text at the end of the line"));
         }
+    }
+    if let Some((open, _)) = &block {
+        return Err(open.unclosed());
     }
     let mut score = Score::with_limits(tempo.unwrap_or(120), ticks.unwrap_or(48), limits.clone())
         .map_err(|e| start.wrap(e))?;

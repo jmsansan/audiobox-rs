@@ -51,7 +51,7 @@ level measurements or final modulated/clamped filter coefficients.
 | `Pan` / `pan` | Linear pan -1..1; overrides base pan before pan LFO | All instruments |
 | `CutoffHz` / `cutoff-hz` | Base Hz 1..96000 | Synthwave with a configured filter |
 | `ResonanceQ` / `resonance-q` | Q 0.5..10 | Synthwave with a configured filter |
-| `PitchCents` / `pitch-cents` | Additive oscillator offset -2400..2400 cents; base zero | Synthwave |
+| `PitchCents` / `pitch-cents` | Additive oscillator offset -2400..2400 cents; base zero | Synthwave; FM, except fixed-frequency operators |
 | `PitchLfoDepth` / `pitch-lfo-depth` | 0..2400 cents | Synthwave with that LFO configured |
 | `CutoffLfoDepth` / `cutoff-lfo-depth` | 0..9600 cents | Synthwave with that LFO/filter configured |
 | `AmplitudeLfoDepth` / `amplitude-lfo-depth` | 0..100 percent | Synthwave with that LFO configured |

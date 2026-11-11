@@ -1,11 +1,14 @@
-//! The FM voice contract: a six-operator, DX7-class parameter model and its text form.
+//! Six-operator, DX7-class FM voices: the parameter model, its text form and the
+//! renderer in `voice`.
 //!
-//! This module defines and validates the patch; it does not render yet. Units are the
-//! instrument's own integer ranges ("DX units"). See `docs/fm-voice.md` for the
-//! conversion curves, the routing table, limits and the implementation slices.
+//! Units are the instrument's own integer ranges ("DX units"). See
+//! `docs/fm-voice.md` for the conversion curves, the routing table and limits.
 use std::fmt;
 
 use crate::{Error, Result};
+
+mod voice;
+pub(super) use voice::{FmPlan, FmVoice};
 
 /// Operators per voice.
 pub const FM_OPERATORS: usize = 6;
@@ -405,6 +408,26 @@ impl Default for Fm {
     }
 }
 impl Fm {
+    /// A feature this version accepts in a patch but does not render yet.
+    pub(super) fn unrendered(&self) -> Option<&'static str> {
+        let operator = |o: &FmOperator| {
+            if o.velocity != 0 {
+                Some("operator velocity sensitivity")
+            } else if o.scaling.left_depth != 0 || o.scaling.right_depth != 0 {
+                Some("keyboard level scaling")
+            } else if o.rate_scaling != 0 {
+                Some("keyboard rate scaling")
+            } else if o.amplitude_sensitivity != 0 {
+                Some("LFO amplitude sensitivity")
+            } else {
+                None
+            }
+        };
+        if self.lfo.pitch_depth != 0 || self.lfo.amplitude_depth != 0 {
+            return Some("the LFO");
+        }
+        self.operators.iter().flatten().find_map(operator)
+    }
     /// The routing of this voice's algorithm.
     pub fn routing(&self) -> Result<FmRouting> {
         FmRouting::algorithm(self.algorithm)

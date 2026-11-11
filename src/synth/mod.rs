@@ -183,6 +183,28 @@
 //! # Ok::<(), audiobox::Error>(())
 //! ```
 //!
+//! ## FM instruments
+//!
+//! A multi-line `fm NAME` … `end` block is a six-operator FM voice ([`Fm`]): one
+//! `op N` line per operator, optional `pitch` and `lfo` lines, and voice keys such
+//! as `algorithm`, `feedback`, `voices`, `unison`, `pan`, `glide` and `legato` on
+//! the first line. Values use the DX7's 0..=99 ranges. `docs/fm-voice.md` lists
+//! every key, the 32 algorithms and the conversion curves. Velocity sensitivity,
+//! keyboard scaling and the LFO are parsed but rejected until they are rendered.
+//!
+//! ```
+//! use audiobox::synth::Score;
+//! let score = Score::parse("tempo 110
+//! fm bell algorithm=2 feedback=3 voices=4
+//!   op 1 ratio=1    rates=95,28,25,40 levels=99,0,0,0
+//!   op 2 ratio=3,50 level=80 rates=95,38,30,45 levels=99,0,0,0
+//! end
+//! channel melody=@bell o5 l4 c e g {c e g}2")?;
+//! let stereo = score.render_stereo(48_000)?;
+//! assert_eq!(stereo.channels(), 2);
+//! # Ok::<(), audiobox::Error>(())
+//! ```
+//!
 //! ## Synthwave instruments (opt-in)
 //!
 //! Any synthwave key, or `synthwave=on`, enables [`Synthwave`]. Sources are saw,

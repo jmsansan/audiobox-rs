@@ -111,5 +111,9 @@ name = "synthwave"
 required-features = ["synth"]
 
 [[example]]
+name = "fm_voices"
+required-features = ["synth"]
+
+[[example]]
 name = "keyboard_voices"
 required-features = ["synth"]
