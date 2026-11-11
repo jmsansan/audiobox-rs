@@ -4,6 +4,26 @@
 
 ### Added
 
+- FM velocity and keyboard response (#141): each operator's `velocity`
+  sensitivity turns note velocity into a level offset, so modulators brighten the
+  tone on harder notes; `scaling` and `curves` offset an operator's level by
+  distance from a break point with the four DX7 curves; `rate-scaling` runs
+  envelopes faster on higher notes. All three are fixed at note-on from the
+  authored pitch plus `transpose`, and a legato note keeps those of the note that
+  attacked. Patches that leave them at their defaults keep their samples.
+
+- FM instruments (#122, #139, #128, #140): a score takes `fm NAME` … `end` blocks
+  and `Synth` renders six sine operators through the 32 algorithms, with feedback
+  (including the loops through several operators), rate/level operator envelopes,
+  a pitch envelope, ratio and fixed frequencies, detune, key sync, transpose,
+  voices, chords, unison, pan, glide and legato. Rendering allocates nothing and is
+  independent of chunk size. Held-note expression, pan and pitch controls apply.
+  Velocity sensitivity, keyboard scaling and the LFO are rejected with a named
+  error until #141 and #142. `Instrument` gains the public field `fm` and the
+  constructor `Instrument::fm`; code that builds `Instrument` with a struct literal
+  needs `..Default::default()`. Existing scores keep their samples.
+  `examples/fm_voices.rs` renders four patches.
+
 - FM voice contract (#138): `synth::Fm`, `FmOperator`, `FmPatch` and related types
   describe a six-operator, DX7-class voice in the instrument's own units, with the
   32 algorithm routings (`FmRouting`), range validation and a multi-line `fm NAME`

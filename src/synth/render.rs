@@ -4,6 +4,7 @@ use super::controls::{
     MAX_SYNTH_CONTROLS, Resolved, Values,
 };
 use super::drum::{DrumPlan, DrumVoice};
+use super::fm::{FmPlan, FmVoice};
 use super::prepared::{BeatClock, FrameScore, TempoMap};
 use super::score::{Instrument, Score};
 use super::synthwave::{WidePlan, WideVoice};
@@ -89,6 +90,7 @@ struct Plan {
     voices: usize,
     chip: Option<ChipPlan>,
     drum: Option<DrumPlan>,
+    fm: Option<FmPlan>,
     waveform: Waveform,
     attack: u64,
     decay: u64,
@@ -105,11 +107,12 @@ impl Plan {
         use ControlParameter::*;
         match parameter {
             Expression => Some(1.0),
-            Pan => Some(
-                self.wide
-                    .as_ref()
-                    .map_or(0.0, |p| p.settings.pan as f64 / 100.0),
-            ),
+            Pan => Some(match (&self.wide, &self.fm) {
+                (Some(p), _) => p.settings.pan as f64 / 100.0,
+                (_, Some(p)) => p.settings.pan as f64 / 100.0,
+                _ => 0.0,
+            }),
+            PitchCents if self.fm.is_some() => Some(0.0),
             _ => {
                 let s = self.wide.as_ref()?.settings;
                 Some(match parameter {
@@ -136,12 +139,17 @@ impl Plan {
                 .synthwave
                 .filter(|_| instrument.chip.is_none())
                 .map(|s| WidePlan::new(s, rate, tempo)),
-            voices: instrument.synthwave.map_or(0, |s| s.voices as usize),
+            voices: match (instrument.synthwave, &instrument.fm) {
+                (Some(s), _) => s.voices as usize,
+                (_, Some(f)) => f.voices as usize,
+                _ => 0,
+            },
             chip: instrument
                 .chip
                 .as_ref()
                 .map(|chip| ChipPlan::new(chip, rate, tempo, ticks)),
             drum: instrument.drum.map(|d| DrumPlan::new(d, rate)),
+            fm: instrument.fm.map(|f| FmPlan::new(f, rate)),
             waveform: instrument.waveform,
             attack: samples(e.attack_ms),
             decay: samples(e.decay_ms),
@@ -161,6 +169,12 @@ impl Plan {
                 .as_ref()
                 .map(|d| (d.duties.clone(), step(d.step_ms))),
         }
+    }
+    /// Frames a note of this instrument can sound after its gate ends.
+    fn tail(&self) -> u64 {
+        self.release
+            .max(self.drum.as_ref().map_or(0, |d| d.frames))
+            .max(self.fm.as_ref().map_or(0, |f| f.tail))
     }
     fn modulated(&self) -> bool {
         self.slide != 0.0 || self.vibrato.is_some() || self.arpeggio.is_some()
@@ -198,6 +212,9 @@ struct Event {
     cents: f64,
     instrument: usize,
     amplitude: f64,
+    /// Channel volume alone: FM takes velocity through its operators.
+    volume: f64,
+    velocity: u8,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -216,6 +233,8 @@ struct Voice {
     chip: ChipVoice,
     drum: DrumVoice,
     drumming: bool,
+    fm: FmVoice,
+    fming: bool,
     oscillator: Oscillator,
     event: Option<Event>,
     held: bool,
@@ -235,6 +254,8 @@ impl Voice {
             chip: ChipVoice::new(aliasing),
             drum: DrumVoice::new(aliasing),
             drumming: false,
+            fm: FmVoice::new(),
+            fming: false,
             oscillator: Oscillator::new(aliasing),
             event: None,
             held: false,
@@ -249,10 +270,9 @@ impl Voice {
     }
     fn start(&mut self, event: Event, plans: &[Plan]) {
         let active = self.active();
-        let legato = plans[event.instrument]
-            .wide
-            .as_ref()
-            .is_some_and(|p| p.settings.legato)
+        let plan = &plans[event.instrument];
+        let legato = (plan.wide.as_ref().is_some_and(|p| p.settings.legato)
+            || plan.fm.as_ref().is_some_and(|p| p.settings.legato))
             && active
             && self.held
             && self
@@ -273,6 +293,20 @@ impl Voice {
                     .event
                     .is_some_and(|old| plans[old.instrument].wide.is_some());
             self.wide.trigger(plan, event.cents, gliding, legato);
+        }
+        let was_fm = std::mem::replace(&mut self.fming, plan.fm.is_some());
+        if let Some(fm) = &plan.fm {
+            // Only another FM note leaves a pitch and envelopes to continue from.
+            if !was_fm {
+                self.fm = FmVoice::new();
+            }
+            self.fm
+                .trigger(fm, event.cents, event.velocity, active && was_fm, legato);
+            self.event = Some(event);
+            self.held = true;
+            self.stage = Stage::Idle;
+            self.drumming = false;
+            return;
         }
         self.event = Some(event);
         self.held = true;
@@ -298,6 +332,12 @@ impl Voice {
     fn release(&mut self, plans: &[Plan]) {
         self.held = false;
         self.wide.release();
+        if self.fming {
+            if let Some(fm) = self.event.and_then(|e| plans[e.instrument].fm.as_ref()) {
+                self.fm.release(fm);
+            }
+            return;
+        }
         if self.drumming {
             return;
         }
@@ -393,7 +433,9 @@ impl Voice {
         )
     }
     fn active(&self) -> bool {
-        if self.drumming {
+        if self.fming {
+            self.fm.active()
+        } else if self.drumming {
             self.drum.active()
         } else {
             self.stage != Stage::Idle
@@ -411,6 +453,13 @@ impl Voice {
             return [0.0; 2];
         };
         let plan = &plans[event.instrument];
+        if let Some(fm) = &plan.fm {
+            let expression = controls
+                .and_then(|c| c.get(ControlParameter::Expression))
+                .unwrap_or(1.0);
+            let gain = event.volume * plan.volume * expression;
+            return self.fm.sample(fm, controls).map(|side| side * gain);
+        }
         let Some(wide) = &plan.wide else {
             let sample = self.sample(plans, rate, musical, controls);
             return controls
@@ -467,6 +516,7 @@ impl Track {
                 voice.stage = Stage::Idle;
                 voice.held = false;
                 voice.level = 0.0;
+                voice.fming = false;
             }
             let voices = &mut self.poly[..limit];
             let slot = voices.iter().position(|v| !v.active()).unwrap_or_else(|| {
@@ -592,6 +642,8 @@ impl Synth {
                             } else {
                                 (n.volume as f64 / 15.0) * (n.velocity as f64 / 127.0)
                             },
+                            volume: n.volume as f64 / 15.0,
+                            velocity: n.velocity,
                         }
                     })
                     .collect();
@@ -641,11 +693,7 @@ impl Synth {
             channels,
             aliasing: options.aliasing,
             gain: options.gain as f64,
-            max_release: plans
-                .iter()
-                .map(|p| p.release.max(p.drum.as_ref().map_or(0, |d| d.frames)))
-                .max()
-                .unwrap_or(0),
+            max_release: plans.iter().map(Plan::tail).max().unwrap_or(0),
             plans,
             tracks,
             song_end,
@@ -734,6 +782,8 @@ impl Synth {
                         } else {
                             (n.volume as f64 / 15.0) * (n.velocity as f64 / 127.0)
                         },
+                        volume: n.volume as f64 / 15.0,
+                        velocity: n.velocity,
                     })
                     .collect();
                 let count = events
@@ -757,11 +807,7 @@ impl Synth {
             channels,
             aliasing: options.aliasing,
             gain: options.gain as f64,
-            max_release: plans
-                .iter()
-                .map(|p| p.release.max(p.drum.as_ref().map_or(0, |d| d.frames)))
-                .max()
-                .unwrap_or(0),
+            max_release: plans.iter().map(Plan::tail).max().unwrap_or(0),
             plans,
             tracks,
             song_end: score.end_frame,

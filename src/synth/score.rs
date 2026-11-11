@@ -195,6 +195,9 @@ pub struct Instrument {
     pub chip: Option<super::ChipInstrument>,
     /// A finite synthesized one-shot instead of a melodic oscillator/ADSR.
     pub drum: Option<super::Drum>,
+    /// A six-operator FM voice instead of the waveform and ADSR. Only `volume`
+    /// applies besides it; see [`Instrument::fm`].
+    pub fm: Option<super::Fm>,
     pub waveform: Waveform,
     pub envelope: Envelope,
     /// 0 through 15. The default is 15.
@@ -218,6 +221,7 @@ impl Instrument {
             synthwave: None,
             chip: None,
             drum: None,
+            fm: None,
             waveform,
             envelope: Envelope::default(),
             volume: 15,
@@ -234,7 +238,34 @@ impl Instrument {
             ..Self::default()
         }
     }
+    /// An FM voice at full instrument volume. Its operators carry the envelopes.
+    pub fn fm(settings: super::Fm) -> Self {
+        Self {
+            fm: Some(settings),
+            ..Self::default()
+        }
+    }
     pub fn validate(&self) -> Result<()> {
+        if let Some(fm) = &self.fm {
+            fm.validate()?;
+            if let Some(feature) = fm.unrendered() {
+                return Err(Error::invalid(format!("FM does not render {feature} yet")));
+            }
+            if self.synthwave.is_some()
+                || self.chip.is_some()
+                || self.drum.is_some()
+                || self.waveform != Waveform::default()
+                || self.envelope != Envelope::default()
+                || self.slide != 0
+                || self.vibrato.is_some()
+                || self.arpeggio.is_some()
+                || self.duty_sweep.is_some()
+            {
+                return Err(Error::invalid(
+                    "FM voices use their own operators and envelopes, without other sources or melodic modulation",
+                ));
+            }
+        }
         if let Some(wide) = self.synthwave {
             wide.validate()?;
             // A wavetable source may take a voice pool, opting in to per-note voices;
@@ -615,14 +646,15 @@ impl ChannelWriter<'_> {
         {
             return Err(Error::invalid("A chord needs 1..=16 distinct pitches"));
         }
-        if chord
-            && self.score.instruments[instrument]
-                .1
-                .synthwave
-                .is_none_or(|s| pitches.len() > s.voices as usize)
-        {
+        let chosen = &self.score.instruments[instrument].1;
+        let voices = match (chosen.synthwave, &chosen.fm) {
+            (Some(s), _) => s.voices as usize,
+            (_, Some(f)) => f.voices as usize,
+            _ => 0,
+        };
+        if chord && pitches.len() > voices {
             return Err(Error::invalid(
-                "Chord needs a synthwave instrument with enough voices",
+                "Chord needs a synthwave or FM instrument with enough voices",
             ));
         }
         if pitches.len() > self.score.limits.max_notes.saturating_sub(self.score.notes) {

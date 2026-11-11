@@ -676,27 +676,34 @@ fn render_song() -> audiobox::Result<audiobox::Audio> {
 - **Rust API:** `Score::channel` returns a writer that builds the same score in code;
   a parsed score compares equal to the same score built in code.
 
-### FM voices (contract only)
+### FM voices
 
-`synth::FmPatch` describes a six-operator, DX7-class FM voice and reads and writes
-its text form. It is the agreed parameter model for the FM instrument; **it does not
-render yet** and scores do not accept it. See [the FM voice
-contract](docs/fm-voice.md) for the units, the 32 algorithms and the plan.
+An `fm NAME` … `end` block in a score is a six-operator, DX7-class FM instrument: 32
+algorithms, feedback, a four-rate, four-level envelope per operator and a pitch
+envelope, in the instrument's own 0..=99 units, plus pan, unison, glide and legato.
+Velocity changes tone as well as level through each operator's sensitivity, and
+keyboard scaling shapes level and envelope speed across the range. The LFO is part
+of the patch format but is not rendered yet. See [the FM voice contract](docs/fm-voice.md) for every key,
+the algorithm table and the conversion curves.
 
 ```rust
-use audiobox::synth::FmPatch;
+use audiobox::synth::Score;
 
-fn bell() -> audiobox::Result<FmPatch> {
-    let bell: FmPatch = "
-        fm bell algorithm=2 feedback=3
-          op 1 ratio=1 rates=95,30,30,40 levels=99,0,0,0
-          op 2 ratio=3,50 level=78 rates=95,45,45,50 levels=99,0,0,0 velocity=5
-        end"
-    .parse()?;
-    assert_eq!(bell.voice.operators[1].unwrap().frequency.ratio(), Some(4.5));
-    Ok(bell)
+fn bell() -> audiobox::Result<audiobox::Audio> {
+    let score: Score = "
+        tempo 110
+        fm bell algorithm=2 feedback=3 voices=4
+          op 1 ratio=1    rates=95,28,25,40 levels=99,0,0,0
+          op 2 ratio=3,50 level=80 rates=95,38,30,45 levels=99,0,0,0
+        end
+        channel melody = @bell o5 l4 c e g {c e g}2
+    ".parse()?;
+    score.render_stereo(48_000)
 }
 ```
+
+`synth::FmPatch` reads and writes one block on its own. Run
+`cargo run --example fm_voices --features synth` for four patches in a short piece.
 
 ### Score format
 
