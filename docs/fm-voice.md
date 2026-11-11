@@ -577,6 +577,7 @@ The types and the text form are final, and every key is rendered.
 | #144 | `oversample` |
 | #145 | Reading and writing DX7 voice data |
 | #143 | Held-note controls for operator level, feedback and LFO depths |
+| #146 | `sfx::FmEffect`: one note of a patch as a sound effect, with seeded presets |
 
 The four rendering issues landed together because the operator loop is the same for
 two, four and six operators: a two-operator voice is algorithm 1 or 2 with two `op`

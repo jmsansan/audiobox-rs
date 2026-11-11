@@ -3,7 +3,7 @@
 //! ```sh
 //! cargo run --example sfx --features sfx -- out_dir
 //! ```
-use audiobox::sfx::{Effect, Preset};
+use audiobox::sfx::{Effect, FmEffect, FmPreset, Preset};
 use audiobox::{EncodeOptions, write_audio_file};
 use std::path::PathBuf;
 
@@ -37,6 +37,20 @@ fn main() -> audiobox::Result<()> {
         let path = dir.join(format!("{name}.wav"));
         write_audio_file(&path, &effect.render(44_100)?, &EncodeOptions::default())?;
         println!("{}: {:.2} s\n{effect}", path.display(), effect.duration());
+    }
+    // FM effects: one note of an FM patch, drawn from a seed or written by hand.
+    for (kind, seed) in [
+        (FmPreset::Laser, 2),
+        (FmPreset::MetalHit, 5),
+        (FmPreset::Chime, 1),
+        (FmPreset::Alarm, 3),
+    ] {
+        let effect = FmEffect::preset(kind, seed);
+        let path = dir.join(format!("fm-{}-{seed}.wav", effect.patch.name));
+        let audio = effect.render(44_100)?;
+        write_audio_file(&path, &audio, &EncodeOptions::default())?;
+        let seconds = audio.frames() as f64 / 44_100.0;
+        println!("{}: {seconds:.2} s\n{effect}", path.display());
     }
     Ok(())
 }

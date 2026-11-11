@@ -4,6 +4,13 @@
 
 ### Added
 
+- FM sound effects (#146): `sfx::FmEffect` renders one note of any FM patch as an
+  effect, with a note, velocity, gate time, pitch slide and volume, in mono or
+  stereo, cut with a fade at `sfx::MAX_DURATION`. It reads and writes text (a line
+  of `key=value` pairs and an `fm` block) with positioned errors, and
+  `FmEffect::preset` draws `FmPreset::Laser`, `MetalHit`, `Chime` or `Alarm` from a
+  seed. Existing `Effect`s and presets are unchanged.
+
 - FM held-note controls (#143): `ControlParameter::FmOperator1Level` to
   `FmOperator6Level` (`op1-level` … `op6-level`), `FmFeedback` (`feedback`),
   `FmLfoPitchDepth` (`lfo-pitch`) and `FmLfoAmplitudeDepth` (`lfo-amp`) ramp an

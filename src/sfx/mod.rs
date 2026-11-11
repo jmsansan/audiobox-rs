@@ -85,10 +85,20 @@
 //! Like the synthesizer, rendering uses only basic IEEE arithmetic and the crate's own
 //! series for `2^x`, sine and tangent, so an effect gives the same samples on every
 //! platform.
+//!
+//! # FM effects
+//!
+//! [`FmEffect`] plays one note of an FM patch as an effect: metallic hits, lasers
+//! with a moving spectrum, chimes and alarms that the waveforms above cannot make.
+//! It has a pitch, a velocity, a gate time, an optional pitch slide and a volume,
+//! reads and writes text, and [`FmEffect::preset`] draws a [`FmPreset`] from a seed.
+//! The patch is the `fm` block of the synthesizer; see `docs/fm-voice.md`.
+mod fm;
 mod preset;
 mod text;
 
 pub use crate::synth::ParseError;
+pub use fm::{FmEffect, FmPreset};
 pub use preset::Preset;
 
 use crate::math::{cos_turns, exp2, sin_turns};

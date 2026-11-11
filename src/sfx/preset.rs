@@ -32,8 +32,11 @@ impl Preset {
 }
 
 /// SplitMix64: a fixed, portable generator, so a seed gives the same effect everywhere.
-struct Rng(u64);
+pub(super) struct Rng(u64);
 impl Rng {
+    pub(super) fn new(seed: u64) -> Self {
+        Self(seed)
+    }
     fn next(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
         let mut z = self.0;
@@ -45,7 +48,7 @@ impl Rng {
         (self.next() >> 11) as f64 / (1u64 << 53) as f64
     }
     /// A value in `low..=high`, rounded to three decimals.
-    fn range(&mut self, low: f64, high: f64) -> f64 {
+    pub(super) fn range(&mut self, low: f64, high: f64) -> f64 {
         ((low + (high - low) * self.unit()) * 1000.0).round() / 1000.0
     }
     fn chance(&mut self, probability: f64) -> bool {

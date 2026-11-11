@@ -980,6 +980,11 @@ in text, the `ParseError` also gives the line and column of the value.
 The same preset and seed always give the same parameters and samples. The full
 reference is in the `audiobox::sfx` module documentation.
 
+`sfx::FmEffect` plays one note of an [FM patch](docs/fm-voice.md) as an effect, for
+metallic hits, lasers, chimes and alarms. It takes a note, a velocity, a gate time, an
+optional pitch slide and a volume, has the same kind of text form, and
+`FmEffect::preset(FmPreset::Laser, seed)` draws one from a seed.
+
 Write a few effects to WAV files:
 
 ```sh
