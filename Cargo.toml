@@ -123,5 +123,9 @@ name = "dx7_import"
 required-features = ["synth"]
 
 [[example]]
+name = "fm_presets"
+required-features = ["synth"]
+
+[[example]]
 name = "keyboard_voices"
 required-features = ["synth"]
