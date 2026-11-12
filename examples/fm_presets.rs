@@ -2,13 +2,17 @@
 //! Run with `--features synth -- OUT_DIR`. `docs/fm-presets.md` describes the patches.
 //!
 //! Each preset plays a short phrase in its own register, soft and then loud, into
-//! `OUT_DIR/NAME.wav`. The table gives, for one note at two velocities, the peak
+//! `OUT_DIR/NAME.wav`. The files are brought to the same loudness, so they compare
+//! tone; the table gives each preset's own level. The table gives, for one note at two velocities, the peak
 //! level, the A-weighted loudness and the spectral centroid (a rough measure of
 //! brightness), taken 20 ms into
 //! struck sounds, 0.6 s into the brass and organ and 2 s into the strings.
 use audiobox::synth::{FM_PRESETS, RenderOptions, Score};
 use audiobox::{EncodeOptions, write_audio_file};
 use std::path::PathBuf;
+
+/// Integrated loudness every listening file is brought to.
+const LISTENING_LUFS: f64 = -18.0;
 
 /// The phrase each preset plays (`$` marks where a velocity goes), and the note it
 /// is measured on.
@@ -73,6 +77,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "| Preset | Peak at 60 | Peak at 127 | Loudness at 60 | Loudness at 127 | Centroid at 60 | Centroid at 127 |"
     );
     println!("| --- | --- | --- | --- | --- | --- | --- |");
+    let mut levels = Vec::new();
     for name in FM_PRESETS {
         let (notes, single) = phrase(name);
         let mut row = format!("| `{name}` |");
@@ -106,6 +111,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ..RenderOptions::default()
             },
         )?;
+        // Bring every file to the same loudness, so the listener compares tone and
+        // not level; a file whose peaks would clip is left a little quieter.
+        let wanted = 10f64.powf((LISTENING_LUFS - audio.loudness().integrated) / 20.0);
+        let audio = audio.gain(wanted.min(0.97 / audio.peak().max(1e-9)))?;
+        levels.push(format!("{name} {:.1}", audio.loudness().integrated));
         write_audio_file(
             dir.join(format!("{name}.wav")),
             &audio,
@@ -113,5 +123,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )?;
     }
     println!("\nWrote {} files to {}", FM_PRESETS.len(), dir.display());
+    println!("Loudness of each file in LUFS: {}", levels.join(", "));
     Ok(())
 }

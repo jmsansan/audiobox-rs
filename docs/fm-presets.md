@@ -183,7 +183,10 @@ the loudness column was added so the next case shows up in the numbers.
 cargo run --release --features synth --example fm_presets -- out_dir
 ```
 
-writes this table and one WAV per preset: a phrase played soft, then loud.
+writes this table and one WAV per preset: a phrase played soft, then loud. The files
+are brought to the same integrated loudness (-18 LUFS, less where peaks would clip),
+so listening compares tone. A preset's own level is in the table; in a song, set it
+with the part's volume and the mix.
 
 ## What is not here
 
