@@ -133,13 +133,14 @@ fn scalefactors(
         let n2 = SLEN2[g.compress] as usize;
         if short {
             if g.mixed {
-                for b in 0..8 {
-                    sf.long[b] = br.read(n1)?;
+                for value in &mut sf.long[..8] {
+                    *value = br.read(n1)?;
                 }
             }
             for b in if g.mixed { 3 } else { 0 }..12 {
-                for w in 0..3 {
-                    sf.short[w][b] = br.read(if b < 6 { n1 } else { n2 })?;
+                let bits = if b < 6 { n1 } else { n2 };
+                for window in &mut sf.short {
+                    window[b] = br.read(bits)?;
                 }
             }
         } else {
