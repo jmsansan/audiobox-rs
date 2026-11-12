@@ -60,19 +60,24 @@ end",
   op 1 ratio=1 rates=62,40,30,55 levels=99,92,88,0 velocity=2
   op 2 ratio=1 level=86 rates=48,45,30,55 levels=99,93,90,0 velocity=5 scaling=39,0,22
 end",
-    // A sub an octave down under a soft pair; mono with a short glide.
-    "fm bass-round algorithm=5 voices=1 glide=30 legato=on volume=11
-  op 1 ratio=0.5 rates=99,45,35,65 levels=99,90,80,0 velocity=2
-  op 2 ratio=0.5 level=70 rates=99,55,40,65 levels=99,60,40,0 velocity=4
-  op 3 ratio=1 level=92 rates=99,48,35,65 levels=99,80,60,0 velocity=3
-  op 4 ratio=1 level=76 rates=99,58,40,65 levels=99,60,30,0 velocity=6 scaling=39,0,20
+    // Three bright pairs, one an octave up, so the note is heard on small speakers
+    // through its harmonics; mono with a short glide.
+    "fm bass-round algorithm=5 feedback=5 voices=1 glide=30 legato=on volume=11
+  op 1 ratio=1 rates=99,45,35,65 levels=99,90,80,0 velocity=2
+  op 2 ratio=1 level=90 rates=99,50,38,65 levels=99,88,80,0 velocity=2 scaling=39,0,20
+  op 3 ratio=2 level=95 rates=99,48,35,65 levels=99,86,72,0 velocity=2
+  op 4 ratio=1 level=86 rates=99,52,40,65 levels=99,82,70,0 velocity=3 scaling=39,0,20
+  op 5 ratio=1 detune=2 level=92 rates=99,45,35,65 levels=99,88,76,0 velocity=2
+  op 6 ratio=1 level=88 rates=99,50,38,65 levels=99,86,76,0 velocity=3 scaling=39,0,20
 end",
-    // A hard pair with feedback, and a second stack that adds a bite on the attack.
-    "fm bass-hard algorithm=2 feedback=6 voices=1 glide=20 legato=on volume=12
+    // Harder modulators, a pair on the third harmonic and strong feedback.
+    "fm bass-hard algorithm=5 feedback=6 voices=1 glide=20 legato=on volume=10
   op 1 ratio=1 rates=99,45,35,65 levels=99,85,70,0 velocity=2
-  op 2 ratio=1 level=85 rates=99,52,38,65 levels=99,70,50,0 velocity=6 scaling=39,0,25
-  op 3 ratio=0.5 level=92 rates=99,45,35,65 levels=99,88,75,0 velocity=2
-  op 4 ratio=3 level=70 rates=99,66,50,65 levels=99,0,0,0 velocity=7 scaling=39,0,30
+  op 2 ratio=1 level=93 rates=99,48,38,65 levels=99,92,86,0 velocity=3 scaling=39,0,25
+  op 3 ratio=3 level=92 rates=99,48,35,65 levels=99,84,68,0 velocity=3
+  op 4 ratio=1 level=90 rates=99,50,42,65 levels=99,86,74,0 velocity=4 scaling=39,0,25
+  op 5 ratio=2 level=95 rates=99,45,35,65 levels=99,88,74,0 velocity=2
+  op 6 ratio=1 level=92 rates=99,48,40,65 levels=99,90,82,0 velocity=3 scaling=39,0,25
 end",
     // Six carriers as drawbars; a little feedback on the highest one.
     "fm organ algorithm=32 feedback=3 volume=9

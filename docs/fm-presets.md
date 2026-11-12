@@ -98,18 +98,21 @@ Response: soft notes stay mellow, hard ones blare. Not a quick-note sound: the s
 needs time.
 
 ### `bass-round`
-Algorithm 5 with two pairs. Operators 1 and 2 are a sub an octave below the note;
-operators 3 and 4 the note itself with a soft modulator. Mono with a short glide.
-First edits: operator 4 `level` for presence; operator 1 `level` for the weight of
-the sub; `glide`.
-Response: velocity adds a little edge. Meant for the two octaves below middle C.
+Algorithm 5 with three pairs: two on the note, a few steps apart, and one an octave
+up. Every modulator is at ratio 1 and stays fairly open, so each pair is close to a
+saw. A bass note's fundamental is too low for small speakers; these harmonics are
+what makes it heard. Mono with a short glide.
+First edits: operators 2, 4 and 6 `level` together for more or less edge; operator 3
+`level` for the octave; `glide`.
+Response: velocity is mostly level, with a little more edge. Meant for E1 to C3.
 
 ### `bass-hard`
-Algorithm 2. Operators 1 and 2 are a hard pair with feedback. Operators 3 and 4 add a
-second voice an octave down whose modulator at ratio 3 gives a bite on the attack.
-First edits: `feedback` and operator 2 `level` for aggression; operator 4 `level`
-and second `rates` value for the length of the bite.
-Response: velocity changes the tone strongly. Mono with a short glide.
+The same layout pushed harder: stronger modulators that stay up, a pair on the third
+harmonic instead of the octave doubling, and more feedback.
+First edits: `feedback` and operator 6 `level` for aggression; operator 3 `ratio` (2
+is fuller, 4 thinner); operator 2 `level` for the growl of the main pair.
+Response: soft notes are close to `bass-round`; hard ones are much brighter. Mono with
+a short glide.
 
 ### `organ`
 Algorithm 32: six carriers and no modulation, used as drawbars at 0.5, 1, 2, 3, 4 and
@@ -145,23 +148,36 @@ the carriers to `ratio`.
 ## Measurements
 
 One note per preset (C2 for the basses, C5 for the bell and marimba, C4 otherwise)
-at velocities 60 and 127, at 48 kHz with a gain of 1. The centroid is the
-power-weighted mean frequency, a rough measure of brightness, taken 20 ms into
-struck sounds, 0.6 s into the brass and organ and 2 s into the strings.
+at velocities 60 and 127, at 48 kHz with a gain of 1.
 
-| Preset | Peak at 60 | Peak at 127 | Centroid at 60 | Centroid at 127 | Seconds |
-| --- | --- | --- | --- | --- | --- |
-| `epiano` | 0.58 | 0.92 | 271 Hz | 765 Hz | 5.1 |
-| `epiano-soft` | 0.59 | 0.97 | 264 Hz | 311 Hz | 6.3 |
-| `bell` | 0.36 | 0.70 | 558 Hz | 1033 Hz | 4.0 |
-| `marimba` | 0.36 | 0.61 | 527 Hz | 627 Hz | 4.0 |
-| `brass` | 0.27 | 0.46 | 273 Hz | 556 Hz | 4.7 |
-| `bass-round` | 0.32 | 0.50 | 40 Hz | 49 Hz | 4.2 |
-| `bass-hard` | 0.35 | 0.68 | 62 Hz | 114 Hz | 4.2 |
-| `organ` | 0.45 | 0.45 | 313 Hz | 313 Hz | 4.0 |
-| `clav` | 0.36 | 0.62 | 277 Hz | 661 Hz | 4.0 |
-| `strings` | 0.24 | 0.46 | 648 Hz | 630 Hz | 7.8 |
-| `metal` | 0.35 | 0.83 | 520 Hz | 806 Hz | 4.0 |
+- **Peak** is the highest sample.
+- **Loudness** is the A-weighted level of 170 ms of the note, in dB relative to a
+  full-scale sine. It follows how loud a sound seems better than the peak does: a
+  low note with few harmonics can peak high and still be hard to hear. Struck sounds
+  read low here because they are already decaying inside the window.
+- **Centroid** is the power-weighted mean frequency, a rough measure of brightness.
+
+Loudness and centroid are taken 20 ms into struck sounds, 0.6 s into the brass and
+organ and 2 s into the strings.
+
+| Preset | Peak at 60 | Peak at 127 | Loudness at 60 | Loudness at 127 | Centroid at 60 | Centroid at 127 |
+| --- | --- | --- | --- | --- | --- | --- |
+| `epiano` | 0.58 | 0.92 | -14 dB | -8 dB | 270 Hz | 719 Hz |
+| `epiano-soft` | 0.59 | 0.97 | -14 dB | -9 dB | 263 Hz | 304 Hz |
+| `bell` | 0.36 | 0.70 | -15 dB | -10 dB | 544 Hz | 875 Hz |
+| `marimba` | 0.36 | 0.61 | -39 dB | -34 dB | 526 Hz | 592 Hz |
+| `brass` | 0.27 | 0.46 | -31 dB | -22 dB | 271 Hz | 639 Hz |
+| `bass-round` | 0.56 | 0.85 | -26 dB | -18 dB | 140 Hz | 140 Hz |
+| `bass-hard` | 0.41 | 0.89 | -24 dB | -17 dB | 158 Hz | 279 Hz |
+| `organ` | 0.45 | 0.45 | -15 dB | -15 dB | 314 Hz | 314 Hz |
+| `clav` | 0.36 | 0.62 | -32 dB | -24 dB | 268 Hz | 439 Hz |
+| `strings` | 0.24 | 0.46 | -37 dB | -23 dB | 484 Hz | 375 Hz |
+| `metal` | 0.35 | 0.83 | -24 dB | -15 dB | 453 Hz | 592 Hz |
+
+The first version of the two basses peaked at 0.5 to 0.7 and was close to inaudible:
+most of their energy was a sub-octave and a fundamental below 100 Hz. The owner heard
+it at once; the peak column had hidden it. They were rebuilt around harmonics and
+the loudness column was added so the next case shows up in the numbers.
 
 ```sh
 cargo run --release --features synth --example fm_presets -- out_dir

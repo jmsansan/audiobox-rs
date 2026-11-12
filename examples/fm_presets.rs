@@ -3,7 +3,8 @@
 //!
 //! Each preset plays a short phrase in its own register, soft and then loud, into
 //! `OUT_DIR/NAME.wav`. The table gives, for one note at two velocities, the peak
-//! level and the spectral centroid (a rough measure of brightness), taken 20 ms into
+//! level, the A-weighted loudness and the spectral centroid (a rough measure of
+//! brightness), taken 20 ms into
 //! struck sounds, 0.6 s into the brass and organ and 2 s into the strings.
 use audiobox::synth::{FM_PRESETS, RenderOptions, Score};
 use audiobox::{EncodeOptions, write_audio_file};
@@ -22,12 +23,14 @@ fn phrase(name: &str) -> (&'static str, &'static str) {
     }
 }
 
-/// Power-weighted mean frequency of 4096 Hann-windowed samples from `from` seconds in.
-fn centroid(samples: &[f32], rate: f64, from: f64) -> f64 {
+/// From 8192 Hann-windowed samples starting `from` seconds in: the power-weighted
+/// mean frequency, and the A-weighted level in dB relative to a full-scale sine, which
+/// follows how loud the sound seems better than its peak does.
+fn measure(samples: &[f32], rate: f64, from: f64) -> (f64, f64) {
     let start = (rate * from) as usize;
-    let body = &samples[start..(start + 4096).min(samples.len())];
+    let body = &samples[start..(start + 8192).min(samples.len())];
     let n = body.len();
-    let (mut weighted, mut total) = (0.0, 0.0);
+    let (mut weighted, mut total, mut heard) = (0.0, 0.0, 0.0);
     for bin in 1..n / 2 {
         let (mut re, mut im) = (0.0, 0.0);
         for (i, &x) in body.iter().enumerate() {
@@ -36,11 +39,23 @@ fn centroid(samples: &[f32], rate: f64, from: f64) -> f64 {
             re += x as f64 * window * angle.cos();
             im += x as f64 * window * angle.sin();
         }
-        let power = re * re + im * im;
-        weighted += power * bin as f64 * rate / n as f64;
+        let (power, hz) = (re * re + im * im, bin as f64 * rate / n as f64);
+        weighted += power * hz;
         total += power;
+        let f2 = hz * hz;
+        let a = 12194f64.powi(2) * f2 * f2
+            / ((f2 + 20.6f64.powi(2))
+                * ((f2 + 107.7f64.powi(2)) * (f2 + 737.9f64.powi(2))).sqrt()
+                * (f2 + 12194f64.powi(2)))
+            * 1.2589;
+        heard += power * a * a;
     }
-    weighted / total.max(1e-30)
+    // Mean square of the windowed signal from its spectrum; a full-scale sine is 0.5.
+    let mean_square = 2.0 * heard / (n as f64 * 0.375 * n as f64);
+    (
+        weighted / total.max(1e-30),
+        10.0 * (mean_square / 0.5).max(1e-12).log10(),
+    )
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -54,13 +69,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         gain: 1.0,
         ..RenderOptions::default()
     };
-    println!("| Preset | Peak at 60 | Peak at 127 | Centroid at 60 | Centroid at 127 | Seconds |");
-    println!("| --- | --- | --- | --- | --- | --- |");
+    println!(
+        "| Preset | Peak at 60 | Peak at 127 | Loudness at 60 | Loudness at 127 | Centroid at 60 | Centroid at 127 |"
+    );
+    println!("| --- | --- | --- | --- | --- | --- | --- |");
     for name in FM_PRESETS {
         let (notes, single) = phrase(name);
         let mut row = format!("| `{name}` |");
         let mut cells = Vec::new();
-        let mut seconds = 0.0;
         for velocity in [60, 127] {
             let text =
                 format!("tempo 60\nfm p preset={name}\nend\nchannel a=@p q8 {single}!{velocity}");
@@ -73,12 +89,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "brass" | "organ" => 0.6,
                 _ => 0.02,
             };
-            cells.push((peak, centroid(samples, 48000.0, from)));
-            seconds = audio.frames() as f64 / 48000.0;
+            cells.push((peak, measure(samples, 48000.0, from)));
         }
         row += &format!(
-            " {:.2} | {:.2} | {:.0} Hz | {:.0} Hz | {seconds:.1} |",
-            cells[0].0, cells[1].0, cells[0].1, cells[1].1
+            " {:.2} | {:.2} | {:.0} dB | {:.0} dB | {:.0} Hz | {:.0} Hz |",
+            cells[0].0, cells[1].0, cells[0].1.1, cells[1].1.1, cells[0].1.0, cells[1].1.0
         );
         println!("{row}");
         // The phrase, soft then loud.

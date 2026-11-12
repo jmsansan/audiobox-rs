@@ -181,6 +181,12 @@ fn presets_stay_bounded_end_in_silence_and_respond_to_velocity() {
             "{name} at C7"
         );
     }
+    // A bass is heard through its harmonics: at C2 (65 Hz) the centre of its energy
+    // must sit well above the fundamental, or small speakers reproduce none of it.
+    for (name, least) in [("bass-round", 120.0), ("bass-hard", 220.0)] {
+        let brightness = centroid(&note(name, "o2 c1!127"), 0.05);
+        assert!(brightness > least, "{name}: {brightness:.0} Hz");
+    }
     // Where the guide says a harder note is brighter, the centroid shows it.
     for (name, from) in [
         ("epiano", 0.02),
@@ -205,8 +211,8 @@ fn preset_samples_are_pinned() {
         0x5bd04b534bb6402c,
         0xa1affdfca416b995,
         0x44b7c1899293c469,
-        0x77f27247b9821005,
-        0xa38743c4e8257b62,
+        0xf0f5e42cb088ac0b,
+        0xd8ad24743cd1dd93,
         0x03c53f4c19ac66e2,
         0xfdb0bd441125274d,
         0x20625eaf61d8c9f3,
