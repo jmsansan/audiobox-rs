@@ -35,6 +35,7 @@ is switched off: it is silent and modulates nothing.
 
 | Field | Text key (`fm` line) | Range | Default |
 | --- | --- | --- | --- |
+| — | `preset` | One of the [preset](fm-presets.md) names; the rest of the block overrides it | none |
 | `algorithm` | `algorithm` | 1..=32 | 1 |
 | `feedback` | `feedback` | 0..=7 | 0 |
 | `key_sync` | `key-sync` | `on`, `off` | `on` |
@@ -120,6 +121,8 @@ Grammar:
   any order.
 - An operator without an `op` line is switched off. An `op N` line with no pairs is
   an operator at its defaults.
+- With `preset=NAME` on the `fm` line the block starts from that patch instead: its
+  operators are on, and each key written changes only that value.
 - The algorithm needs an `op` line for at least one of its carriers.
 - A key set twice on a line, an unknown key, `ratio` together with `fixed`, text
   after `end` and a block without `end` are errors.
@@ -578,6 +581,7 @@ The types and the text form are final, and every key is rendered.
 | #145 | Reading and writing DX7 voice data |
 | #143 | Held-note controls for operator level, feedback and LFO depths |
 | #146 | `sfx::FmEffect`: one note of a patch as a sound effect, with seeded presets |
+| #147 | `preset=NAME` and eleven starting patches |
 
 The four rendering issues landed together because the operator loop is the same for
 two, four and six operators: a two-operator voice is algorithm 1 or 2 with two `op`

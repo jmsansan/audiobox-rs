@@ -2,7 +2,7 @@
 use super::{Cursor, Parsed, Pos};
 use crate::ErrorCode;
 use crate::synth::fm::{
-    Fm, FmCurve, FmFrequency, FmLfo, FmLfoWave, FmOperator, FmPatch, FmRouting, MAX_FM_TEXT_BYTES,
+    Fm, FmCurve, FmFrequency, FmLfo, FmLfoWave, FmPatch, FmRouting, MAX_FM_TEXT_BYTES,
     MAX_FM_UNISON_VOICES,
 };
 
@@ -180,8 +180,21 @@ impl Block {
             ..Fm::default()
         };
         let (mut volume, mut voices, mut unison, mut mono) = (15, None, None, None);
-        for pair in pairs(cursor)? {
+        let pairs = pairs(cursor)?;
+        // A preset is the starting point whatever its place on the line.
+        if let Some(pair) = pairs.iter().find(|p| p.key == "preset") {
+            let preset = FmPatch::preset(pair.value).ok_or_else(|| {
+                pair.value_pos.invalid(format!(
+                    "Unknown FM preset {}; the presets are {}",
+                    pair.value,
+                    crate::synth::fm::FM_PRESETS.join(", ")
+                ))
+            })?;
+            (voice, volume) = (preset.voice, preset.volume);
+        }
+        for pair in pairs {
             match pair.key {
+                "preset" => {}
                 "algorithm" => voice.algorithm = pair.int(1, 32)? as u8,
                 "feedback" => voice.feedback = pair.int(0, 7)? as u8,
                 "key-sync" => voice.key_sync = pair.switch()?,
@@ -255,7 +268,7 @@ impl Block {
                 if std::mem::replace(&mut self.lfo, true) {
                     return Err(pos.syntax("lfo is set twice"));
                 }
-                self.patch.voice.lfo = lfo(cursor)?;
+                self.patch.voice.lfo = lfo(cursor, self.patch.voice.lfo)?;
             }
             "end" => {
                 cursor.skip_space();
@@ -280,7 +293,8 @@ impl Block {
             return Err(number_pos.syntax(format!("op {number} is set twice")));
         }
         self.operators[number - 1] = Some(number_pos);
-        let mut o = FmOperator::default();
+        // Over a preset, a line changes only the keys it names.
+        let mut o = self.patch.voice.operators[number - 1].unwrap_or_default();
         let mut source: Option<&str> = None;
         for pair in pairs(cursor)? {
             match pair.key {
@@ -355,8 +369,7 @@ impl Block {
     }
 }
 
-fn lfo(cursor: &mut Cursor) -> Parsed<FmLfo> {
-    let mut l = FmLfo::default();
+fn lfo(cursor: &mut Cursor, mut l: FmLfo) -> Parsed<FmLfo> {
     for pair in pairs(cursor)? {
         match pair.key {
             "wave" => l.wave = named(&FmLfoWave::NAMES, "wave", pair.value, pair.value_pos)?,

@@ -4,6 +4,14 @@
 
 ### Added
 
+- FM presets (#147): eleven original starting patches (`epiano`, `epiano-soft`,
+  `bell`, `marimba`, `brass`, `bass-round`, `bass-hard`, `organ`, `clav`,
+  `strings`, `metal`). `preset=NAME` on an `fm` line starts from one and every
+  other key in the block overrides only what it names; `FmPatch::preset` and
+  `FM_PRESETS` give them in code. `docs/fm-presets.md` explains how each is built,
+  what to change first and how to read an FM patch, with measured level and
+  brightness. `examples/fm_presets.rs` renders each one.
+
 - FM sound effects (#146): `sfx::FmEffect` renders one note of any FM patch as an
   effect, with a note, velocity, gate time, pitch slide and volume, in mono or
   stereo, cut with a fade at `sfx::MAX_DURATION`. It reads and writes text (a line

@@ -704,7 +704,8 @@ fn bell() -> audiobox::Result<audiobox::Audio> {
 }
 ```
 
-`synth::FmPatch` reads and writes one block on its own, and `synth::read_dx7`
+Start from one of eleven [presets](docs/fm-presets.md) with `fm keys preset=epiano`
+and override any value on the lines that follow. `synth::FmPatch` reads and writes one block on its own, and `synth::read_dx7`
 converts DX7 single-voice and 32-voice files into patches (no patch data ships with
 the crate). Run
 `cargo run --example fm_voices --features synth` for four patches in a short piece.
