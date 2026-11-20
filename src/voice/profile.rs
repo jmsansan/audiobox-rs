@@ -54,7 +54,7 @@ impl Default for VoiceMode {
 /// | `breath` | `breath` | ratio | 0..=1: aspiration noise mixed into voiced sound |
 /// | `fricative` | `fricative` | Hz | 1000..=12000: centre of fricative noise |
 /// | `attack` | `attack` | ms | 1..=200: rise time, and fall time between gestures |
-/// | `release` | `release` | ms | 1..=1000: fall time at rests and at the end |
+/// | `release` | `release` | ms | 1..=1000: fall time in the rests of a note list and at the end |
 /// | `transition` | `transition` | ms | 1..=300: glide between vowel targets |
 /// | `glide` | `glide` | ms | 0..=500: legato pitch glide between notes |
 /// | `vibrato` | `vibrato` | cents | 0..=100: vibrato depth |

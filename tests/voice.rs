@@ -216,10 +216,10 @@ fn pinned_fingerprints() {
         .collect();
     let expected = [
         (VoicePreset::Robot, 15103278241328193975),
-        (VoicePreset::SmallCreature, 7432562417897243475),
-        (VoicePreset::LargeCreature, 15801126200802294746),
-        (VoicePreset::SoftRounded, 13667161877272381674),
-        (VoicePreset::AiryBreathy, 6811615140581585016),
+        (VoicePreset::SmallCreature, 2065746347327804162),
+        (VoicePreset::LargeCreature, 4989273476132127109),
+        (VoicePreset::SoftRounded, 8809825956677270688),
+        (VoicePreset::AiryBreathy, 12114976182535528593),
     ];
     assert_eq!(got, expected);
     let notes = [
@@ -233,7 +233,7 @@ fn pinned_fingerprints() {
         .unwrap();
     assert_eq!(
         (fnv(&whole(&a)), fnv(&whole(&b))),
-        (3752286465004129888, 1120722267650861161)
+        (3752286465004129888, 4773796793428897562)
     );
 }
 

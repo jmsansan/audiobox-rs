@@ -41,11 +41,20 @@ struct Resonator {
     ic2: f64,
 }
 impl Resonator {
-    /// `hz` must be below half the rate; the voice keeps it at most 0.42 of it.
+    /// Places the digital poles exactly where Klatt's resonator puts them: radius
+    /// `exp(−π·bw/rate)` at angle `2π·hz/rate`. The trapezoidal filter's
+    /// denominator is `(1+gk+g²) + (2g²−2)z⁻¹ + (1−gk+g²)z⁻²`; matching it to
+    /// `1 − 2r·cos θ·z⁻¹ + r²·z⁻²` gives `g² = (1−β)/(1+β)` with
+    /// `β = 2r·cos θ/(1+r²)`, and `k = (1−r²)(1+g²)/(g(1+r²))`. Because `r < 1`,
+    /// `|β| < 1`, so `g` and `k` are positive and finite for every `hz` below
+    /// Nyquist. Unlike a prewarped analog mapping, this keeps the resonance's
+    /// frequency and bandwidth at every rate, wide bandwidths included.
     fn tune(&mut self, hz: f64, bw: f64, rate: f64) {
-        let turns = hz / (2.0 * rate);
-        self.g = sin_turns(turns) / cos_turns(turns);
-        self.k = bw / hz;
+        let r = exp(-std::f64::consts::PI * bw / rate);
+        let r2 = r * r;
+        let beta = 2.0 * r * cos_turns(hz / rate) / (1.0 + r2);
+        self.g = ((1.0 - beta) / (1.0 + beta)).sqrt();
+        self.k = (1.0 - r2) * (1.0 + self.g * self.g) / (self.g * (1.0 + r2));
         self.a1 = 1.0 / (1.0 + self.g * (self.g + self.k));
         self.a2 = self.g * self.a1;
         self.a3 = self.g * self.a2;
@@ -167,9 +176,10 @@ impl Wander {
 /// A renderer shares the prepared plan, markers and text through `Arc`s. Dropping
 /// it is free while another owner (the [`PreparedUtterance`] or another renderer)
 /// is alive; dropping the *last* owner frees those buffers. Keep the prepared
-/// utterance on the control thread, or drop the renderer there. The mixer already
-/// hands finished voices back to the control thread, so playing through it is safe
-/// even when the prepared utterance is dropped first.
+/// utterance on the control thread, or drop the renderer there. The mixer hands
+/// finished voices back to `MixerHandle::poll_event`
+/// for freeing while events are polled; if its return queue fills because they are
+/// not, it frees retired voices on the audio thread.
 #[derive(Clone, Debug)]
 pub struct VoiceSynth {
     voice: PreparedUtterance,
@@ -636,6 +646,40 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod pole_tests {
+    use super::*;
+
+    /// The trapezoidal resonator's digital poles sit exactly at Klatt's radius
+    /// and angle, at extreme accepted frequencies, bandwidths and rates.
+    #[test]
+    fn resonator_poles_match_frequency_and_bandwidth() {
+        // (hz, bandwidth, rate): wide F1, the 0.42·rate ceiling at 8 kHz, narrow
+        // formants at 192 kHz and the widest accepted bandwidth.
+        for (hz, bw, rate) in [
+            (300.0, 280.0, 48_000.0),
+            (3360.0, 46.667, 8_000.0),
+            (80_640.0, 50.0, 192_000.0),
+            (150.0, 17.5, 192_000.0),
+            (1600.0, 2400.0, 8_000.0),
+        ] {
+            let mut res = Resonator::default();
+            res.tune(hz, bw, rate);
+            let (g, k) = (res.g, res.k);
+            assert!(g > 0.0 && k > 0.0 && g.is_finite() && k.is_finite());
+            let d = 1.0 + g * k + g * g;
+            let r = (-std::f64::consts::PI * bw / rate).exp();
+            let theta = std::f64::consts::TAU * hz / rate;
+            let close = |a: f64, b: f64| (a - b).abs() < 1e-9 * b.abs().max(1.0);
+            assert!(close((1.0 - g * k + g * g) / d, r * r), "{hz} {bw} {rate}");
+            assert!(
+                close((2.0 * g * g - 2.0) / d, -2.0 * r * theta.cos()),
+                "{hz} {bw} {rate}"
+            );
         }
     }
 }

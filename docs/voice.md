@@ -72,11 +72,19 @@ vowels. Text only ever reaches the planner.
 - **Prepared changes**: a `PreparedUtterance` is immutable and cheap to clone (its
   segments, markers and text are `Arc`s). Gain, pan, rate, pitch and fades during
   playback belong to the mixer. A different profile or plan means preparing again.
-- **Seeking**: `seek(0)` and `reset` are cheap. Any other position resets and
-  renders silently up to it: exact and allocation-free, but proportional to the
-  position, so not a constant-time or callback-budget operation. A mixer `Play::start`
-  seeks on the game's thread. `Loop::Whole` restarts cheaply; a `Loop::Region` with a
-  non-zero start replays on the audio thread, so render to `Audio` for region loops.
+- **Seeking**: `seek(0)` and `reset` are cheap. A backward seek resets and renders
+  silently up to the target; a forward seek renders silently from the current
+  position. Both are exact and allocation-free, but proportional to the distance,
+  so not constant-time or callback-budget operations. A target past the end moves to
+  the end. A mixer `Play::start` seeks on the game's thread. `Loop::Whole` restarts
+  cheaply; a `Loop::Region` with a non-zero start replays on the audio thread, so
+  render to `Audio` for region loops.
+- **Dropping**: a renderer shares the plan through `Arc`s, so dropping it frees
+  nothing while the `PreparedUtterance` or another renderer is alive; dropping the
+  last owner frees the buffers. Keep the prepared utterance on the control thread.
+  The mixer returns finished voices to `MixerHandle::poll_event` to be freed there,
+  as long as events are polled; if its return queue fills because they are not, it
+  frees retired voices on the audio thread (see the mixer documentation).
 
 ### Errors
 
@@ -147,11 +155,22 @@ alone, so there are no per-vowel gains to tune or expose. Coefficients are
 updated every 16 frames. The state-variable form matters: a direct-form resonator
 can grow without bound when its coefficients switch quickly even though each set
 is stable on its own (found in review: rapid A/I switching at 192 kHz), while the
-state-variable filter keeps integrator states and stays bounded; a regression test
-alternates vowels every 1.9 ms with the narrowest bandwidths. The cost is that the fricative needs its own parallel
-branch, which it gets. The earlier October prototype used parallel three-band banks
-with spectral crossfades; that code was never merged, and this implementation
-replaces it.
+state-variable filter keeps integrator states whose energy cannot grow without
+input, so it stays bounded; a regression test alternates vowels every 1.9 ms with
+the narrowest bandwidths.
+
+**Frequency and bandwidth.** Each resonance's `g` and `k` are solved so its digital
+poles sit exactly at Klatt's radius `exp(−π·BW/rate)` and angle `2π·F/rate`, at
+every rate up to the 0.42 ceiling (a prewarped analog mapping would shift wide
+resonances low and narrow those near Nyquist). As with any two-pole resonance, the
+frequency is the *pole* frequency: with narrow bandwidths the response peaks there
+(within 6% for the default bandwidths, tested at 16–96 kHz), while very wide
+bandwidths (high `bandwidth` on a low F1) move the peak lower and flatten it, which
+is part of what `bandwidth` does to the timbre.
+
+The cost of a cascade is that the fricative needs its own parallel branch, which it
+gets. The earlier October prototype used parallel three-band banks with spectral
+crossfades; that code was never merged, and this implementation replaces it.
 
 ### Robot voices
 
@@ -303,7 +322,9 @@ the frame. Bars, tempo, lyrics and arrangement belong to the caller (Studio).
   pitch glides from 30 to 1500 Hz at 8, 48 and 192 kHz;
 - no adjacent-sample step above half the peak across vowel, gesture and pitch
   changes;
-- resonator peaks within 6% of every vowel's F1/F2 at 16, 44.1, 48 and 96 kHz;
+- resonator poles exactly at the requested frequency and bandwidth for extreme
+  accepted values (wide F1, the 0.42 ceiling at 8 kHz, 192 kHz), and response peaks
+  within 6% of every vowel's F1/F2 at default bandwidths at 16, 44.1, 48 and 96 kHz;
   breath noise putting energy where each vowel's formants are;
 - pitch accuracy of steps and geometric glides (0.5%) and of sustained notes (1%),
   velocity gain, legato joins without a dip and re-articulated joins with one;
@@ -313,7 +334,9 @@ the frame. Bars, tempo, lyrics and arrangement belong to the caller (Studio).
   punctuation-only text), marker integrity, contour and pause rules, expressive
   bounds and limits;
 - zero allocations and frees during `fill`, marker queries, end of stream, `reset`,
-  `seek`, dropping a renderer and mixer playback (including a whole loop);
+  `seek` (also past the end), dropping a renderer while the prepared voice lives, and
+  mixer playback, a whole loop and stopping, after the prepared voice was dropped,
+  with events polled;
 - mixer playback equal to the offline render within 1e-6, scheduled starts, start
   positions, whole loops, pause, 44.1 kHz output, rate 2, stop fades and sound events.
 
