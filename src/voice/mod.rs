@@ -82,12 +82,12 @@ use crate::{Error, Result};
 
 /// Version of the rendering algorithm. Changes whenever a prepared utterance would
 /// render different samples.
-pub const RENDER_VERSION: u32 = 1;
+pub const RENDER_VERSION: u32 = 2;
 /// Version of the profile text format and of the preset recipes.
 pub const PROFILE_FORMAT_VERSION: u32 = 1;
 /// Version of the text-to-gibberish planner: inventory, prosody rules and its
 /// random number streams.
-pub const PLANNER_VERSION: u32 = 1;
+pub const PLANNER_VERSION: u32 = 2;
 
 /// Lowest supported output rate in Hz.
 pub const MIN_SAMPLE_RATE: u32 = 8_000;

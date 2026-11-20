@@ -10,8 +10,8 @@ The feature enables `synth` (it reuses the synthesizer's oscillators) and does n
 need `mixer`. With `mixer`, a prepared voice is a mixer `Stream`; with `events`, a
 designer can name a prepared line as a sound-event source.
 
-Versions: render algorithm `RENDER_VERSION = 1`, profile text and presets
-`PROFILE_FORMAT_VERSION = 1`, text planner `PLANNER_VERSION = 1`. A change that
+Versions: render algorithm `RENDER_VERSION = 2`, profile text and presets
+`PROFILE_FORMAT_VERSION = 1`, text planner `PLANNER_VERSION = 2`. A change that
 alters their output bumps the version.
 
 ## Three stages
@@ -191,9 +191,14 @@ and in the final tail.
 | Articulation | Voiced | Aspiration | Frication |
 | --- | --- | --- | --- |
 | `Voiced` | level | level × `breath` | 0 |
-| `Breath` | 0 | level | 0 |
-| `Fricative` | 0 | 0 | level |
+| `Breath` | 0 | level × 0.22 (robot: level) | 0 |
+| `Fricative` | 0 | 0 | level × 0.3 (robot: level) |
 | `Closure` | 0 | 0 | 0 |
+
+In formant voices these factors put breath and fricative gestures 10–15 dB below a
+vowel of the same level, as in speech (render version 2). Version 1 played them at
+the vowel's level, which the owner heard as hissing "ts" sounds and puffs of air
+(2026-11-20).
 
 The source phase never restarts within an utterance, so pitch steps do not click.
 Pitch glides geometrically (evenly in cents) across a voiced gesture; other gestures
@@ -259,7 +264,7 @@ are `synth::ParseError` with a 1-based line and column.
 ## Text to gibberish
 
 `plan_gibberish(text, profile, options)` compiles a line into events and markers.
-The rules of planner version 1 are in its API documentation; in short:
+The rules of planner version 2 are in its API documentation; in short:
 
 - **Letters**: ASCII letters and digits, Latin-1 and Latin Extended-A/B, Greek and
   Cyrillic group up to three to a syllable; kana, hangul and CJK ideographs are one
