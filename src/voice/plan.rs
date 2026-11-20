@@ -5,8 +5,9 @@ use std::sync::Arc;
 use super::{VoiceMode, VoiceOptions, VoiceProfile};
 use crate::{Audio, Error, Result};
 
-/// One of five vowel-like resonance targets. They are synthetic colours, not the
-/// vowels of a particular language.
+/// One of five vowel-like resonance targets, given as formant pole frequencies at
+/// `resonance = 1` (see [`VoiceProfile`] for how bandwidth moves the peaks). They
+/// are synthetic colours, not the vowels of a particular language.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum Vowel {
     /// Open: F1 800, F2 1200 Hz.

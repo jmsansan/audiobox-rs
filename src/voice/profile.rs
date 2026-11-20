@@ -49,6 +49,12 @@ impl Default for VoiceMode {
 /// | `range` | `range` | semitones | 0..=24: the planner's intonation range |
 /// | `resonance` | `resonance` | ratio | 0.5..=2: scales every formant frequency |
 /// | `bandwidth` | `bandwidth` | ratio | 0.25..=4: scales every formant bandwidth |
+///
+/// Formant frequencies and bandwidths are *pole* values, as in Klatt's cascade
+/// synthesizer: each resonance's digital poles sit exactly at radius
+/// `exp(−π·bandwidth/rate)` and angle `2π·frequency/rate`. With narrow bandwidths
+/// the response peaks at the frequency; wide ones move the peak lower and flatten
+/// it (300 Hz with 280 Hz of bandwidth peaks near 265 Hz).
 /// | `open` | `open` | fraction | 0.3..=0.9: open phase of the smooth source |
 /// | `tilt` | `tilt` | | 0..=1: softening low-pass on the source, 0 off |
 /// | `breath` | `breath` | ratio | 0..=1: aspiration noise mixed into voiced sound |

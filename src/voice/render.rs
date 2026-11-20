@@ -332,12 +332,13 @@ impl VoiceSynth {
         *self = Self::new(&self.voice);
     }
 
-    /// Moves to source frame `frame` by resetting and rendering silently up to it,
-    /// so it costs time proportional to `frame`. Seeking to 0 is a cheap reset.
-    /// Exact and allocation-free, including its outcome for any frame, but not
-    /// constant-time: seek from the control thread when possible. A frame at or
-    /// past the end moves to the end, where `fill` returns 0. Always `Ok`; the
-    /// `Result` matches the mixer's `Stream::seek`.
+    /// Moves to source frame `frame` by rendering silently: forward from the
+    /// current position, or, for a target before it, from a reset at frame 0. A
+    /// forward seek costs the distance; a backward seek costs the target position,
+    /// even when it moves back one frame. Seeking to 0 is a cheap reset. Exact and
+    /// allocation-free for any frame, but not constant-time: seek from the control
+    /// thread when possible. A frame at or past the end moves to the end, where
+    /// `fill` returns 0. Always `Ok`; the `Result` matches the mixer's `Stream::seek`.
     pub fn seek(&mut self, frame: u64) -> Result<()> {
         let frame = frame.min(self.voice.total);
         if frame < self.pos {

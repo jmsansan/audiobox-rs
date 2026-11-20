@@ -74,7 +74,8 @@ vowels. Text only ever reaches the planner.
   playback belong to the mixer. A different profile or plan means preparing again.
 - **Seeking**: `seek(0)` and `reset` are cheap. A backward seek resets and renders
   silently up to the target; a forward seek renders silently from the current
-  position. Both are exact and allocation-free, but proportional to the distance,
+  position. Both are exact and allocation-free; a forward seek costs the distance and
+  a backward seek the target position (from frame 0, even one frame back),
   so not constant-time or callback-budget operations. A target past the end moves to
   the end. A mixer `Play::start` seeks on the game's thread. `Loop::Whole` restarts
   cheaply; a `Loop::Region` with a non-zero start replays on the audio thread, so
