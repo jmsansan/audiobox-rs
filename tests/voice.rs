@@ -207,7 +207,7 @@ fn renders_are_independent_of_other_voices_and_render_order() {
 }
 
 /// Pinned fingerprints: native, Rust 1.85 and WebAssembly must agree. Render
-/// version 1, profile format 1, planner 1, 48 kHz mono, seed 7.
+/// version 2, profile format 1, planner 2, 48 kHz mono, seed 7.
 #[test]
 fn pinned_fingerprints() {
     let got: Vec<(VoicePreset, u64)> = VoicePreset::ALL
@@ -215,11 +215,11 @@ fn pinned_fingerprints() {
         .map(|p| (p, fnv(&whole(&speak(p, 48_000, 1, 7)))))
         .collect();
     let expected = [
-        (VoicePreset::Robot, 15103278241328193975),
-        (VoicePreset::SmallCreature, 2065746347327804162),
-        (VoicePreset::LargeCreature, 4989273476132127109),
-        (VoicePreset::SoftRounded, 8809825956677270688),
-        (VoicePreset::AiryBreathy, 12114976182535528593),
+        (VoicePreset::Robot, 3795614141955781501),
+        (VoicePreset::SmallCreature, 7473604977430801831),
+        (VoicePreset::LargeCreature, 14205567150740041940),
+        (VoicePreset::SoftRounded, 12860138957233910668),
+        (VoicePreset::AiryBreathy, 5188558298597125522),
     ];
     assert_eq!(got, expected);
     let notes = [
@@ -233,7 +233,7 @@ fn pinned_fingerprints() {
         .unwrap();
     assert_eq!(
         (fnv(&whole(&a)), fnv(&whole(&b))),
-        (3752286465004129888, 4773796793428897562)
+        (3752286465004129888, 3958220704798408935)
     );
 }
 
