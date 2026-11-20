@@ -22,12 +22,12 @@ adds no DSP path.
 | Breath | `breath` (aspiration in voiced sound) | 0..=1 |
 | Resonance and bandwidth | `resonance`, `bandwidth` | 0.5..=2, 0.25..=4 |
 | Micro-variation | `jitter`, `shimmer`, `vibrato` | ≤ 50 cents, ≤ 0.5, ≤ 100 cents |
-| Delivery (separate from timbre) | `Delivery::Rigid` / `Expressive` | planner v1 bounds |
+| Delivery (separate from timbre) | `Delivery::Rigid` / `Expressive` | planner bounds |
 
 ## Fixtures that isolate timbre from delivery
 
 `cargo run --release --example voices --features voice` (48 kHz mono, seed 7,
-render v1, profile format v1, planner v1). Each has a raw and an RMS-0.05 copy, the
+render v2, profile format v1, planner v2). Each has a raw and an RMS-0.05 copy, the
 exact `.voice` profile and a `report.csv` row with the applied gain.
 
 | Comparison | Files | Held constant |

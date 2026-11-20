@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.2 — Unreleased
+
+### Changed
+
+- Procedural voices are less hissy (owner listening, 2026-11-20: a "ts" and puffs
+  of air). Breath and fricative gestures of formant voices now sound 10–15 dB below
+  their vowels instead of at the same level (`RENDER_VERSION` 2), and the text
+  planner opens fewer syllables with plosives and fricatives: plosive 1/4,
+  fricative 1/8, breath 1/8, none 1/2 (`PLANNER_VERSION` 2). Robot rendering and all
+  APIs are unchanged; formant renders and every text plan give new samples.
+
 ## 0.6.1 — 2026-11-27
 
 ### Changed
@@ -9,8 +20,8 @@
   banks saved together give 64 voices with unique names. A voice or bank whose byte
   count disagrees with its data bytes (as the `10 00` many old editors wrote for a
   bank), bytes outside any message and messages of other data, such as TX802
-  performances, now read with a warning instead of failing. Files it already accepted read exactly as
-  before. A message cut short is still a `DecodeError`.
+  performances, now read with a warning instead of failing. Files it already
+  accepted read exactly as before. A message cut short is still a `DecodeError`.
 
 ### Added
 

@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "audiobox"
-version = "0.6.1"
+version = "0.6.2"
 
 [[package]]
 name = "audiobox-sandbox"
