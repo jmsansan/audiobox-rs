@@ -179,10 +179,8 @@ fn stream_seeks_are_exact_and_bounded() {
         synth.read(&mut rest).unwrap();
         assert_eq!(&rest[..], &all[at as usize..]);
     }
-    assert_eq!(
-        Stream::seek(&mut synth, v.frames() + 1).unwrap_err().code,
-        ErrorCode::InvalidArgument
-    );
+    Stream::seek(&mut synth, v.frames() + 1).unwrap();
+    assert_eq!(synth.read(&mut all).unwrap(), 0);
 }
 
 #[cfg(feature = "events")]

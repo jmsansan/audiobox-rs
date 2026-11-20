@@ -111,7 +111,8 @@ sawtooth, kept as the buzzier, more robotic baseline. An optional one-pole low-p
 (`tilt`: cutoff `12000 · 2^(−5·tilt)` Hz) softens either source.
 
 The source plus aspiration noise goes through a **cascade** of four two-pole
-resonators (F1–F4) with unity gain at DC, Klatt-style; the result is divided by F1's
+resonances (F1–F4) with unity gain at DC, as in Klatt's cascade synthesizer, each
+the low-pass output of a trapezoidal state-variable filter; the result is divided by F1's
 approximate resonance gain (bandwidth/frequency) to even out loudness across
 vowels. Fricative noise goes through a separate band-pass at the profile's
 `fricative` frequency (bandwidth 0.6 of the centre).
@@ -142,9 +143,12 @@ fricative before a vowel is already coloured by it.
 parallel bank needs a gain per formant and per vowel and leaves deep valleys or
 phase cancellations between peaks unless those gains are tuned; a cascade gives the
 natural relative formant levels of a vowel from the frequencies and bandwidths
-alone, so there are no per-vowel gains to tune or expose. Direct-form coefficients
-are updated every 16 frames with small steps, which stays stable (every pole radius
-is `exp(−π·BW/rate) < 1`). The cost is that the fricative needs its own parallel
+alone, so there are no per-vowel gains to tune or expose. Coefficients are
+updated every 16 frames. The state-variable form matters: a direct-form resonator
+can grow without bound when its coefficients switch quickly even though each set
+is stable on its own (found in review: rapid A/I switching at 192 kHz), while the
+state-variable filter keeps integrator states and stays bounded; a regression test
+alternates vowels every 1.9 ms with the narrowest bandwidths. The cost is that the fricative needs its own parallel
 branch, which it gets. The earlier October prototype used parallel three-band banks
 with spectral crossfades; that code was never merged, and this implementation
 replaces it.
@@ -159,8 +163,10 @@ noise; fricatives use the fricative band-pass.
 ### Envelopes and gestures
 
 Three envelopes (voiced, aspiration, frication) move linearly toward each gesture's
-targets: up at `1/attack` per second, down at `1/attack` between gestures and at
-`1/release` at rests and in the tail.
+targets: up at `1/attack` per second; down at `1/attack` between gestures,
+including the `Closure` events of explicit and text plans (`VocalEvent::rest`,
+word gaps and pauses), and at `1/release` in the rests between notes of a note list
+and in the final tail.
 
 | Articulation | Voiced | Aspiration | Frication |
 | --- | --- | --- | --- |
@@ -323,14 +329,14 @@ per voice in callback-sized blocks. On an AMD Ryzen 7 1700X (Windows 10, rustc
 | Profile | 44.1 kHz | 48 kHz |
 | --- | --- | --- |
 | `robot` | 0.4% | 0.4% |
-| `soft-rounded` | 0.55% | 0.6% |
-| `airy-breathy` | 0.55% | 0.6% |
+| `soft-rounded` | 0.6% | 0.6% |
+| `airy-breathy` | 0.6–0.7% | 0.65% |
 
-Cost scales linearly with voices (8 formant voices ≈ 4.6%, 32 ≈ 19% at 48 kHz) and
+Cost scales linearly with voices (8 formant voices ≈ 5%, 32 ≈ 20% at 48 kHz) and
 barely depends on the callback size (64, 256 or 1024 frames). The worst single
 callback was several times the mean because of OS scheduling on a desktop. The
 supported workload we state is **up to 8 simultaneous voices per callback** on
-hardware like this, which keeps the mean under 5% of a core; more is possible but
+hardware like this, which keeps the mean near 5% of one core; more is possible but
 should be measured on the target. Planning and preparing a 90-character line takes
 about 30 µs.
 

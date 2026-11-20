@@ -30,8 +30,8 @@
 //! let audio = voice.render()?;
 //! assert_eq!(audio.frames() as u64, voice.frames());
 //! // Word, syllable and phrase markers point back into the text.
-//! let first = voice.markers()[0];
-//! assert_eq!(&plan.text().unwrap()[first.bytes.clone()], "Qué tal, viajero?");
+//! let first = &voice.markers()[0];
+//! assert_eq!(&plan.text().unwrap()[first.bytes.clone()], "¿Qué tal, viajero?");
 //! # Ok::<(), audiobox::Error>(())
 //! ```
 //!

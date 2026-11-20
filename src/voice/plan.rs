@@ -73,7 +73,9 @@ impl VocalEvent {
             level: 1.0,
         }
     }
-    /// Silence.
+    /// Silence: a closure. Within an explicit plan or a text plan, closures fade
+    /// at the profile's `attack` rate (articulation); only the gaps of a note list
+    /// and the final tail fade at the `release` rate.
     pub fn rest(duration_us: u32) -> Self {
         Self {
             duration_us,
@@ -454,6 +456,10 @@ impl PreparedUtterance {
             }
             check_hz(note.hz, top, "Note")?;
             check_hz(note.end_hz, top, "Note")?;
+            if note.frames == 0 {
+                // Skipped: it neither orders nor lengthens the voice.
+                continue;
+            }
             if note.start < cursor {
                 return Err(Error::invalid(
                     "Vocal notes must be in order and must not overlap",
@@ -710,7 +716,12 @@ pub(crate) fn tail_frames(profile: &VoiceProfile, rate: u32) -> u64 {
 }
 
 fn check_length(profile: &VoiceProfile, rate: u32, body: u64, max_seconds: f64) -> Result<()> {
+    // An empty utterance has no tail.
+    if body == 0 {
+        return Ok(());
+    }
     let total = body as f64 + tail_frames(profile, rate) as f64;
+
     if total > max_seconds * rate as f64 {
         return Err(Error::limit(format!(
             "A voice utterance lasts at most {max_seconds} s with its tail"

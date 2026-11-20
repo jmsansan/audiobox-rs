@@ -4,9 +4,9 @@
 //! state, so any chunking of the output gives the same samples.
 use super::plan::{FORMANT_BW, FORMANT_HZ, FORMANT_LIMIT, PreparedUtterance, RINGOUT, Segment};
 use super::{Articulation, PreparedMarker, Rng, VoiceMode, VoiceSource, splitmix};
+use crate::Result;
 use crate::math::{cos_turns, exp, exp2, log2, sin_turns};
 use crate::synth::{Aliasing, Oscillator, Waveform};
-use crate::{Error, Result};
 
 /// Frames between control updates (pitch, formant coefficients, modulation).
 /// Updates also happen at every segment boundary.
@@ -25,28 +25,38 @@ const FRICATION: u64 = 0x6672_6963;
 const JITTER: u64 = 0x6a69_7474;
 const SHIMMER: u64 = 0x7368_696d;
 
-/// A two-pole resonator, `y = a·x + b·y1 + c·y2`.
+/// A two-pole resonance with unity gain at DC: the low-pass output of a
+/// trapezoidal (topology-preserving) state-variable filter. Its states are
+/// integrator memories, so it stays stable while frequency and bandwidth move,
+/// unlike a direct-form resonator whose retained outputs can grow when its
+/// coefficients switch quickly.
 #[derive(Clone, Copy, Debug, Default)]
 struct Resonator {
-    a: f64,
-    b: f64,
-    c: f64,
-    y1: f64,
-    y2: f64,
+    g: f64,
+    k: f64,
+    a1: f64,
+    a2: f64,
+    a3: f64,
+    ic1: f64,
+    ic2: f64,
 }
 impl Resonator {
-    /// Unity gain at DC (Klatt's cascade resonator).
+    /// `hz` must be below half the rate; the voice keeps it at most 0.42 of it.
     fn tune(&mut self, hz: f64, bw: f64, rate: f64) {
-        let r = exp(-std::f64::consts::PI * bw / rate);
-        self.b = 2.0 * r * cos_turns(hz / rate);
-        self.c = -r * r;
-        self.a = 1.0 - self.b - self.c;
+        let turns = hz / (2.0 * rate);
+        self.g = sin_turns(turns) / cos_turns(turns);
+        self.k = bw / hz;
+        self.a1 = 1.0 / (1.0 + self.g * (self.g + self.k));
+        self.a2 = self.g * self.a1;
+        self.a3 = self.g * self.a2;
     }
     fn process(&mut self, x: f64) -> f64 {
-        let y = self.a * x + self.b * self.y1 + self.c * self.y2;
-        self.y2 = self.y1;
-        self.y1 = y;
-        y
+        let v3 = x - self.ic2;
+        let v1 = self.a1 * self.ic1 + self.a2 * v3;
+        let v2 = self.ic2 + self.a2 * self.ic1 + self.a3 * v3;
+        self.ic1 = 2.0 * v1 - self.ic1;
+        self.ic2 = 2.0 * v2 - self.ic2;
+        v2
     }
 }
 
@@ -153,6 +163,13 @@ impl Wander {
 /// and the end of the utterance allocate nothing, take no locks and do no I/O, so
 /// they are safe on an audio thread. Construction clones shared `Arc`s only.
 /// Whole renders and any sequence of chunk sizes give identical samples.
+///
+/// A renderer shares the prepared plan, markers and text through `Arc`s. Dropping
+/// it is free while another owner (the [`PreparedUtterance`] or another renderer)
+/// is alive; dropping the *last* owner frees those buffers. Keep the prepared
+/// utterance on the control thread, or drop the renderer there. The mixer already
+/// hands finished voices back to the control thread, so playing through it is safe
+/// even when the prepared utterance is dropped first.
 #[derive(Clone, Debug)]
 pub struct VoiceSynth {
     voice: PreparedUtterance,
@@ -307,14 +324,15 @@ impl VoiceSynth {
 
     /// Moves to source frame `frame` by resetting and rendering silently up to it,
     /// so it costs time proportional to `frame`. Seeking to 0 is a cheap reset.
-    /// Exact, allocation-free, but not constant-time: seek from the control thread
-    /// when possible. A frame past the end is
-    /// [`ErrorCode::InvalidArgument`](crate::ErrorCode::InvalidArgument).
+    /// Exact and allocation-free, including its outcome for any frame, but not
+    /// constant-time: seek from the control thread when possible. A frame at or
+    /// past the end moves to the end, where `fill` returns 0. Always `Ok`; the
+    /// `Result` matches the mixer's `Stream::seek`.
     pub fn seek(&mut self, frame: u64) -> Result<()> {
-        if frame > self.voice.total {
-            return Err(Error::invalid("Seek beyond the end of the utterance"));
+        let frame = frame.min(self.voice.total);
+        if frame < self.pos {
+            self.reset();
         }
-        self.reset();
         while self.pos < frame {
             self.step();
         }
@@ -576,17 +594,15 @@ mod tests {
 
     /// Magnitude of the cascade's response at `hz`.
     fn response(res: &[Resonator], hz: f64, rate: f64) -> f64 {
-        let w = std::f64::consts::TAU * hz / rate;
-        let (mut re, mut im) = (1.0, 0.0);
-        for r in res {
-            // a / (1 - b z^-1 - c z^-2) at z = e^{jw}.
-            let dr = 1.0 - r.b * w.cos() - r.c * (2.0 * w).cos();
-            let di = r.b * w.sin() + r.c * (2.0 * w).sin();
-            let den = dr * dr + di * di;
-            let (nr, ni) = (r.a * dr / den, -r.a * di / den);
-            (re, im) = (re * nr - im * ni, re * ni + im * nr);
-        }
-        (re * re + im * im).sqrt()
+        // Each stage is a bilinear-transformed 1 / (s² + k·s + 1), prewarped so
+        // that analog frequency 1 maps to its centre: |H| = 1 / |1 − Ω² + j·k·Ω|.
+        let t = (std::f64::consts::PI * hz / rate).tan();
+        res.iter()
+            .map(|r| {
+                let o = t / r.g;
+                1.0 / ((1.0 - o * o).powi(2) + (r.k * o).powi(2)).sqrt()
+            })
+            .product()
     }
 
     #[test]

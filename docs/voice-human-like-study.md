@@ -44,9 +44,9 @@ Equal RMS is a comparison control, not equal perceived loudness.
 ## Measurements
 
 - **Levels** (raw, from `report.csv`): smooth vowels peak 0.40 / RMS 0.134, saw vowels
-  0.48 / 0.136; characters peak 0.35 (soft-rounded) to 0.69 (airy-breathy); DC below
+  0.48 / 0.136; characters peak 0.35 (soft-rounded) to 0.68 (airy-breathy); DC below
   1e-5 everywhere.
-- **Cost**: 0.55–0.6% of a Ryzen 7 1700X core per formant voice at 44.1/48 kHz, 0.4%
+- **Cost**: 0.6–0.7% of a Ryzen 7 1700X core per formant voice at 44.1/48 kHz, 0.4%
   for robot voices ([voice.md](voice.md#cost)). The softer variants cost the same as
   the saw baseline: the excitation is a few multiplies per sample.
 - **Memory**: one renderer is a fixed-size struct plus shared `Arc`s; nothing grows

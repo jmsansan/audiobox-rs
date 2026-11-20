@@ -156,10 +156,15 @@ fn reset_and_seek_replay_exactly() {
         synth.fill(&mut rest);
         assert_eq!(&rest[..], &reference[at as usize..]);
     }
-    assert_eq!(
-        synth.seek(reference.len() as u64 + 1).unwrap_err().code,
-        ErrorCode::InvalidArgument
-    );
+    // Past the end moves to the end; forward seeks continue without a reset.
+    synth.seek(u64::MAX).unwrap();
+    assert!(synth.is_finished());
+    assert_eq!(synth.fill(&mut buf), 0);
+    synth.seek(10).unwrap();
+    synth.seek(4000).unwrap();
+    let mut rest = vec![0.0; reference.len() - 4000];
+    synth.fill(&mut rest);
+    assert_eq!(&rest[..], &reference[4000..]);
 }
 
 #[test]
@@ -211,10 +216,10 @@ fn pinned_fingerprints() {
         .collect();
     let expected = [
         (VoicePreset::Robot, 15103278241328193975),
-        (VoicePreset::SmallCreature, 11348962446350483454),
-        (VoicePreset::LargeCreature, 1048409584216211613),
-        (VoicePreset::SoftRounded, 423164240611025843),
-        (VoicePreset::AiryBreathy, 7665878911213285415),
+        (VoicePreset::SmallCreature, 7432562417897243475),
+        (VoicePreset::LargeCreature, 15801126200802294746),
+        (VoicePreset::SoftRounded, 13667161877272381674),
+        (VoicePreset::AiryBreathy, 6811615140581585016),
     ];
     assert_eq!(got, expected);
     let notes = [
@@ -228,7 +233,7 @@ fn pinned_fingerprints() {
         .unwrap();
     assert_eq!(
         (fnv(&whole(&a)), fnv(&whole(&b))),
-        (3752286465004129888, 11705043737606487109)
+        (3752286465004129888, 1120722267650861161)
     );
 }
 
@@ -1087,4 +1092,82 @@ fn marker_lookup_finds_the_innermost_span() {
         .frames
         .end;
     assert!(voice.marker_at(MarkerKind::Phrase, pause).is_none());
+}
+
+#[test]
+fn rapid_vowel_switching_stays_bounded() {
+    // Review finding: direct-form resonators grew without bound here. Alternate A
+    // and I every 1.875 ms at 192 kHz with the narrowest, fastest-moving formants.
+    let profile = VoiceProfile {
+        mode: VoiceMode::Formant(VoiceSource::Saw),
+        resonance: 0.5,
+        bandwidth: 0.25,
+        transition: 1.0,
+        attack: 1.0,
+        release: 1.0,
+        gain: 2.0,
+        tilt: 0.0,
+        breath: 0.0,
+        vibrato: 0.0,
+        jitter: 0.0,
+        shimmer: 0.0,
+        ..VoiceProfile::default()
+    };
+    let events: Vec<VocalEvent> = (0..MAX_EVENTS)
+        .map(|i| VocalEvent::vowel(if i % 2 == 0 { Vowel::A } else { Vowel::I }, 1875, 220.0))
+        .collect();
+    for rate in [48_000, 192_000] {
+        let voice = PreparedUtterance::new(
+            &profile,
+            &UtterancePlan::new(events.clone()),
+            &options(rate, 1, 0),
+        )
+        .unwrap();
+        let mut synth = voice.synth();
+        let mut out = vec![0.0; voice.frames() as usize];
+        synth.fill(&mut out);
+        assert!(out.iter().all(|s| s.is_finite() && s.abs() < 1.0), "{rate}");
+        assert!(
+            synth.peak_before_guard() < 4.0,
+            "{rate}: {}",
+            synth.peak_before_guard()
+        );
+    }
+}
+
+#[test]
+fn zero_length_notes_and_empty_utterances_cost_nothing() {
+    let profile = VoiceProfile::default();
+    let o = options(48_000, 1, 0);
+    // A skipped note neither orders nor lengthens the voice.
+    let notes = [
+        VocalNote::new(0, 4800, 220.0, Vowel::A),
+        VocalNote::new(2000, 0, 220.0, Vowel::A),
+        VocalNote::new(5_760_000_000, 0, 220.0, Vowel::A),
+    ];
+    let voice = PreparedUtterance::from_notes(&profile, &notes, &o).unwrap();
+    assert_eq!(voice.body_frames(), 4800);
+    // An empty utterance has no tail, even with a zero time limit.
+    let zero = VoiceOptions {
+        limits: VoiceLimits {
+            max_seconds: 0.0,
+            ..VoiceLimits::default()
+        },
+        ..o
+    };
+    let empty = PreparedUtterance::new(&profile, &UtterancePlan::default(), &zero).unwrap();
+    assert_eq!(empty.frames(), 0);
+    assert_eq!(
+        PreparedUtterance::from_notes(&profile, &[], &zero)
+            .unwrap()
+            .frames(),
+        0
+    );
+    let silent = [VocalNote::new(100, 0, 220.0, Vowel::A)];
+    assert_eq!(
+        PreparedUtterance::from_notes(&profile, &silent, &zero)
+            .unwrap()
+            .frames(),
+        0
+    );
 }

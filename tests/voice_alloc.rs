@@ -107,6 +107,8 @@ fn prepared_rendering_allocates_and_frees_nothing() {
             synth.fill(&mut buf[..64]);
             synth.seek(0).unwrap();
             synth.seek(1234).unwrap();
+            synth.seek(u64::MAX).unwrap();
+            synth.seek(0).unwrap();
             synth.fill(&mut buf);
             assert!(synth.peak_before_guard() > 0.0);
             assert!(found > 0 || voice.markers().is_empty());
@@ -132,6 +134,8 @@ fn mixer_streaming_allocates_and_frees_nothing() {
     handle.play(voice.synth(), &looping).unwrap();
     let mut out = vec![0.0f32; 512 * 2];
     let frames = voice.frames() as usize;
+    // The mixer holds the last owners; finished voices go back to the handle.
+    drop(voice);
     let (allocs, frees) = guarded(|| {
         // The first voice ends; the looping one seeks back to its start.
         for _ in 0..(frames * 3 / 512 + 2) {
@@ -144,5 +148,13 @@ fn mixer_streaming_allocates_and_frees_nothing() {
             .voice_status(first)
             .is_none_or(|s| s.state == audiobox::mixer::VoiceState::Finished)
     );
+    // Stopping the looping voice retires it without freeing on the audio side.
     handle.stop_all(Fade::NONE).unwrap();
+    let stopped = guarded(|| {
+        for _ in 0..8 {
+            mixer.render(&mut out);
+        }
+    });
+    assert_eq!(stopped, (0, 0));
+    while handle.poll_event().is_some() {}
 }
