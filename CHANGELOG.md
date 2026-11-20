@@ -1,8 +1,31 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 — 2026-11-20
+
+Procedural voices, and the six-operator FM synthesizer developed since 0.5.1.
 
 ### Added
+
+- Procedural voices (#43–#51): the optional `voice` feature (enables `synth`, not
+  `mixer`) adds `audiobox::voice`. Robot dialogue blips from any synthesizer
+  waveform; formant voices from a smooth glottal-like or sawtooth source through a
+  four-formant cascade with aspiration, frication and five vowel targets; seeded
+  jitter, shimmer and vibrato. `VoiceProfile` has units and ranges for every field,
+  a versioned `key=value` text form that round-trips bit for bit with positioned
+  errors, and five presets (`robot`, `small-creature`, `large-creature`,
+  `soft-rounded`, `airy-breathy`) that differ in excitation, resonance, breath and
+  envelope, with pitch separate from resonance. `plan_gibberish` turns dialogue text
+  into invented syllables with rigid or seeded expressive delivery, punctuation
+  contours and pauses, and phrase/word/syllable markers with UTF-8 byte spans and
+  source frames; Spanish `¿ ¡`, accents, combining marks, emoji and CJK follow fixed
+  tables. `PreparedUtterance::from_notes` renders explicitly timed `VocalNote`s
+  with legato, onsets and velocity for melodies and harmony. Preparation validates
+  against stable error codes and `VoiceLimits`; `VoiceSynth` renders into caller
+  buffers without allocating, identically in any chunking and on every platform,
+  and is a mixer `Stream` with `mixer`. With `events`, `Sources::insert_voice`
+  names a prepared line. `docs/voice.md` holds the contract, DSP design and
+  measurements; `docs/voice-human-like-study.md` the human-like timbre study (#118).
+  Examples: `voices`, `voice_music`, `voice_dialogue`, `voice_bench`.
 
 - FM presets (#147): eleven original starting patches (`epiano`, `epiano-soft`,
   `bell`, `marimba`, `brass`, `bass-round`, `bass-hard`, `organ`, `clav`,

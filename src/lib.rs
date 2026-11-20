@@ -37,12 +37,13 @@
 //! | Sound assets | [`assets`]: background loading and a budgeted decoded-audio cache | `assets` |
 //! | Adaptive music | [`music`]: beat/bar transitions, crossfades, cues and intensity layers | `music` |
 //! | Sound events | [`events`]: named text events with seeded choices, variation and limits | `events` |
+//! | Procedural voices | [`voice`]: robot blips, vowel-like gibberish from dialogue text with markers, pitched vocal notes | `voice` |
 //!
 //! Enable the optional modules you use:
 //!
 //! ```toml
 //! [dependencies]
-//! audiobox = { version = "0.5", features = ["mixer", "synth", "sfx"] }
+//! audiobox = { version = "0.6", features = ["mixer", "synth", "sfx"] }
 //! ```
 //!
 //! # Determinism
@@ -112,6 +113,9 @@ pub mod synth;
 mod timing;
 mod true_peak;
 mod types;
+#[cfg(feature = "voice")]
+#[cfg_attr(docsrs, doc(cfg(feature = "voice")))]
+pub mod voice;
 pub use audio::Audio;
 pub use codec::{
     ReadAudioOptions, decode, decode_with_options, encode, encode_with_options, read_audio_file,
