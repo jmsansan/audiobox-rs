@@ -122,7 +122,9 @@
 //! contended. A full queue is reported to the handle; neither side ever waits. Voices
 //! and their buffers are built by the handle, on the game's thread. Finished voices go
 //! back to the handle through a second such queue and are freed by
-//! [`MixerHandle::poll_event`], so the audio thread frees no memory either. Poll events
+//! [`MixerHandle::poll_event`], so the audio thread frees no memory either, as long as
+//! events are polled: if the return queue fills because they are not, the mixer frees
+//! retired voices on the audio thread rather than wait. Poll events
 //! regularly, such as once per game frame.
 //!
 //! # Timing and determinism

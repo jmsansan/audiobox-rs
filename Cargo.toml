@@ -1,6 +1,6 @@
 [package]
 name = "audiobox"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2024"
 rust-version = "1.85"
 authors = ["Jose Sanchez <jose.sansan@proton.me>"]
@@ -20,6 +20,8 @@ default = []
 synth = []
 # Parametric sound-effect generator (`audiobox::sfx`). Enables `synth`.
 sfx = ["synth"]
+# Procedural robot blips, vowel-like gibberish and vocal notes (`audiobox::voice`). Enables `synth`.
+voice = ["synth"]
 # Real-time mixer for games (`audiobox::mixer`).
 mixer = []
 # Beat/bar-aligned music transitions, cues and intensity layers.
@@ -129,3 +131,19 @@ required-features = ["synth"]
 [[example]]
 name = "keyboard_voices"
 required-features = ["synth"]
+
+[[example]]
+name = "voices"
+required-features = ["voice"]
+
+[[example]]
+name = "voice_music"
+required-features = ["voice"]
+
+[[example]]
+name = "voice_dialogue"
+required-features = ["voice", "mixer", "events"]
+
+[[example]]
+name = "voice_bench"
+required-features = ["voice"]

@@ -80,6 +80,26 @@ impl Sources {
     ) -> Result<()> {
         self.insert(name, score.render_with(rate, options)?)
     }
+    /// Renders a prepared voice utterance once and registers it; requires `voice`.
+    /// Text planning and preparation stay with the caller, so a bank never parses
+    /// dialogue or builds plans during playback. Repeated starts of the event play
+    /// the same samples.
+    #[cfg(feature = "voice")]
+    pub fn insert_voice(
+        &mut self,
+        name: &str,
+        utterance: &crate::voice::PreparedUtterance,
+    ) -> Result<()> {
+        if !parse::name_ok(name) || self.sounds.contains_key(name) {
+            return Err(Error::invalid("Invalid or duplicate source name"));
+        }
+        if utterance.frames() == 0 {
+            return Err(Error::invalid(
+                "An event source cannot be an empty utterance",
+            ));
+        }
+        self.insert(name, utterance.render()?)
+    }
 }
 
 #[derive(Clone, Copy)]

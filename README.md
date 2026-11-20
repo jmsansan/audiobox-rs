@@ -33,7 +33,7 @@ your own audio files the same way.
 
 ```toml
 [dependencies]
-audiobox = "0.5"
+audiobox = "0.6"
 ```
 
 Rust 1.85 or newer. Optional features add modules, never dependencies, so you compile
@@ -51,7 +51,7 @@ only what you use:
 
 ```toml
 [dependencies]
-audiobox = { version = "0.5", features = ["mixer", "synth", "sfx"] }
+audiobox = { version = "0.6", features = ["mixer", "synth", "sfx"] }
 ```
 
 ## Examples
@@ -992,6 +992,53 @@ Write a few effects to WAV files:
 cargo run --example sfx --features sfx -- out_dir
 ```
 
+## Procedural voices (`voice` feature)
+
+`audiobox::voice` gives characters a voice without recordings: robot dialogue blips,
+vowel-like gibberish that follows the rhythm, pauses and punctuation of a line of
+dialogue, and explicitly pitched vocal notes for melodies and harmony. It is not
+text-to-speech: nothing is pronounced and the output is deliberately unintelligible.
+
+```rust
+use audiobox::voice::{GibberishOptions, MarkerKind, PreparedUtterance, VoiceOptions,
+    VoicePreset, VoiceProfile, plan_gibberish};
+
+fn greeting() -> audiobox::Result<audiobox::Audio> {
+    let profile = VoiceProfile::preset(VoicePreset::SmallCreature);
+    let plan = plan_gibberish("¿Traes el mapa, viajera?", &profile, &GibberishOptions::default())?;
+    let voice = PreparedUtterance::new(&profile, &plan, &VoiceOptions::default())?;
+    // Syllable, word and phrase markers map source frames back to the text,
+    // for subtitles or mouth animation.
+    let first = voice.marker_at(MarkerKind::Syllable, 0);
+    println!("{:?}", first.map(|m| &plan.text().unwrap()[m.bytes.clone()]));
+    voice.render()
+}
+```
+
+- **Characters.** Five presets: `robot`, `small-creature`, `large-creature`,
+  `soft-rounded` and `airy-breathy`. A `VoiceProfile` keeps pitch separate from vocal
+  resonance, and has a `key=value` text form with positioned errors that round-trips
+  exactly.
+- **Dialogue.** `plan_gibberish` turns text into invented syllables, rigid or with
+  seeded expressive timing and intonation; questions rise, statements fall, and the
+  same word always gets the same syllables. Spanish `¿ ¡`, accents, combining marks,
+  emoji and other scripts are handled with documented rules.
+- **Music.** `PreparedUtterance::from_notes` takes `VocalNote`s at exact frames, with
+  legato glides, consonant-like onsets and velocity. Harmony is several voices.
+- **Games.** Preparation may allocate; `VoiceSynth::fill`, `reset`, `seek` and
+  marker lookups do not, and render identical samples in any chunking and on every
+  platform. With `mixer` a prepared voice is a mixer stream; with `events`,
+  `Sources::insert_voice` names a line for an `EventBank`.
+
+One formant voice costs about 0.6% of a desktop core at 48 kHz. The full contract,
+DSP design and measurements are in [docs/voice.md](docs/voice.md).
+
+```sh
+cargo run --release --example voices --features voice        # listening fixtures
+cargo run --release --example voice_music --features voice   # melody and harmony
+cargo run --example voice_dialogue --features voice,mixer,events
+```
+
 ## Mixer (`mixer` feature)
 
 `audiobox::mixer` mixes a game's sounds in its audio callback. The crate does not open
@@ -1434,6 +1481,7 @@ To run them locally:
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo clippy --all-targets --features synth -- -D warnings
+cargo clippy --all-targets --features voice -- -D warnings
 cargo clippy --all-targets --features mixer -- -D warnings
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-features
