@@ -548,10 +548,10 @@ impl VoiceSynth {
 #[cfg(feature = "mixer")]
 #[cfg_attr(docsrs, doc(cfg(feature = "mixer")))]
 /// A prepared voice plays as a mixer stream of known length. Seeking to 0 (a
-/// whole loop, a restart) is a cheap reset. Other positions replay silently up to
-/// the frame: exact and allocation-free but proportional to the position, so
-/// prefer a start position (sought on the game's thread) or render the utterance
-/// to [`Audio`](crate::Audio) for region loops.
+/// whole loop, a restart) is a cheap reset. Other positions behave as
+/// [`VoiceSynth::seek`]: exact and allocation-free, costing the distance forward
+/// or the target position backward, so prefer a start position (sought on the
+/// game's thread) or render the utterance to [`Audio`](crate::Audio) for region loops.
 impl crate::mixer::Stream for VoiceSynth {
     fn sample_rate(&self) -> u32 {
         self.voice.rate
