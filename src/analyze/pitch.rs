@@ -26,12 +26,15 @@ const MAX_REFINEMENTS: u64 = 3;
 /// How far above the threshold a short period's parabola may put its dip and
 /// still be refined before the threshold decides.
 const REFINE_MARGIN: f64 = 0.3;
+/// Short-period dips below this are refined whatever the threshold.
+const REFINE_BELOW: f64 = 0.6;
 /// The widest median smoothing, in frames.
 pub const MAX_PITCH_MEDIAN: usize = 15;
 /// The most work one [`Audio::pitch_track`] is allowed, as an estimate: analysis
-/// frames × (L × (log₂ L + 1) + 3 × 2^16), with L the transform size, the power
-/// of two at or above [`PitchTrack::span_frames`], and 2^16 for each of up to
-/// three refinements between samples. Every frame counts, silent or not.
+/// frames × (L × (log₂ L + 1) + 3 × (2^16 + 64 × W)), with L the transform size, the power
+/// of two at or above [`PitchTrack::span_frames`], W the integration window, and
+/// for each of up to three refinements between samples, a search (2^16) and two
+/// evaluations over the window. Every frame counts, silent or not.
 pub const MAX_PITCH_WORK: u64 = 1 << 35;
 
 /// How [`Audio::pitch_track`] looks for a pitch.
@@ -319,15 +322,16 @@ impl Yin {
         const HALF: usize = 16;
         let last = (lag + 1.0).ceil() as usize + HALF;
         // The terms whose interpolation stays within the frame, from sample HALF
-        // on, and of those at most 4 periods (64 samples or more) in the middle:
-        // any run of whole samples serves for a periodic sound.
+        // on: nearly the whole window. The search reads at most 4 periods (64
+        // samples or more) in their middle, as any run of whole samples serves
+        // for a periodic sound; the depth reads them all.
         let available = self.window.min(x.len().saturating_sub(last + 1 + HALF));
         let terms = available.min(((4.0 * lag) as usize).max(64));
-        let first = HALF + (available - terms) / 2;
         if terms < 4 {
             return bottom;
         }
-        let difference = |tau: f64| {
+        let first = HALF + (available - terms) / 2;
+        let difference = |tau: f64, samples: std::ops::Range<usize>| {
             let whole = tau.floor();
             let frac = tau - whole;
             let whole = whole as usize;
@@ -343,7 +347,7 @@ impl Yin {
                 let r = t / HALF as f64;
                 *w = sinc * kaiser(1.0 - r * r);
             }
-            (first..first + terms)
+            samples
                 .map(|j| {
                     let base = j + whole + 1 - HALF;
                     let value: f64 = weights
@@ -356,13 +360,14 @@ impl Yin {
                 })
                 .sum::<f64>()
         };
+        let search = first..first + terms;
         let mut tau = lag;
         let mut step = 0.5;
         for _ in 0..3 {
             let (a, b, c) = (
-                difference(tau - step),
-                difference(tau),
-                difference(tau + step),
+                difference(tau - step, search.clone()),
+                difference(tau, search.clone()),
+                difference(tau + step, search.clone()),
             );
             let curve = a - 2.0 * b + c;
             if curve <= 0.0 {
@@ -371,14 +376,14 @@ impl Yin {
             tau += step * ((a - c) / (2.0 * curve)).clamp(-1.0, 1.0);
             step *= 0.25;
         }
-        let tau = tau.clamp(lag - 1.0, lag + 1.0);
-        // The depth: the whole lag's normalized difference, over the whole window,
-        // lowered by as much as the refinement lowers the difference over the same
-        // samples. A ratio over the same samples, so that a sound that fades within
-        // the window is not judged by its quiet middle alone.
-        let at = difference(bottom.at as f64);
+        let tau = tau.clamp((lag - 1.0).max(1.5), lag + 1.0);
+        // The depth: the whole lag's normalized difference, lowered by as much as
+        // the refinement lowers the difference over nearly the whole window, so
+        // that a sound that changes within the window is judged by all of it.
+        let all = HALF..HALF + available;
+        let at = difference(bottom.at as f64, all.clone());
         let whole = bottom.depth + bottom.lowered;
-        let ratio = difference(tau) / at;
+        let ratio = difference(tau, all) / at;
         if !(at > 0.0 && ratio.is_finite()) {
             return bottom;
         }
@@ -489,7 +494,6 @@ impl Audio {
         // estimated just past an end is set to it.
         let margin = 2f64.powf(5.0 / 1200.0);
         let max_lag = (rate / o.min_hz).ceil() as usize;
-        let min_lag = ((rate / o.max_hz).floor() as usize).max(2);
         // One period of `min_hz`, and at least 32 samples, so that a range of
         // short periods alone still integrates over several.
         let window = (max_lag - 1).max(MIN_PITCH_WINDOW);
@@ -497,7 +501,8 @@ impl Audio {
         // each side, so that a dip at either end is a local minimum with both
         // neighbours.
         let hi = ((rate * margin / o.min_hz).ceil() as usize).max(max_lag);
-        let lo = min_lag - 1;
+        // The low end reaches the margin above `max_hz` likewise.
+        let lo = (((rate / (o.max_hz * margin)).floor() as usize).saturating_sub(1)).max(2);
         let top = hi + 1;
         let span = window + top;
         // Whole frames only, so that no frame is padded with silence; an input
@@ -513,8 +518,9 @@ impl Audio {
         let size = span.next_power_of_two();
         // In u64, so that the limit is exact on 32-bit targets too. Each frame
         // reads its span, runs three transforms of `size` and may refine up to
-        // `MAX_REFINEMENTS` short periods between samples.
-        let refine = MAX_REFINEMENTS * EXACT_WORK;
+        // `MAX_REFINEMENTS` short periods between samples, each a search and two
+        // evaluations over the window of 32 taps.
+        let refine = MAX_REFINEMENTS * (EXACT_WORK + 64 * window as u64);
         if (count as u64)
             .checked_mul(size as u64 * (u64::from(size.trailing_zeros()) + 1) + refine)
             .is_none_or(|n| n > MAX_PITCH_WORK)
@@ -584,9 +590,9 @@ impl Audio {
                 // limit counts: the parabola misjudges short periods.
                 let mut refinements = 0;
                 let mut first = None;
-                for b in dips(1) {
+                for b in dips(2) {
                     let b = if b.lag < EXACT_LAG
-                        && b.depth < o.threshold + REFINE_MARGIN
+                        && b.depth < (o.threshold + REFINE_MARGIN).max(REFINE_BELOW)
                         && refinements < MAX_REFINEMENTS
                     {
                         refinements += 1;

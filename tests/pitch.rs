@@ -329,11 +329,11 @@ fn bad_arguments_are_refused() {
         .unwrap_err();
     assert_eq!(error.code, ErrorCode::LimitExceeded);
     assert_eq!(error.message, "Too many pitch analysis frames");
-    // The work limit, 2^35, at its edge: at 20 Hz a frame spans 4807 frames and
-    // transforms 8192, so 110,376 frames × (8192 × (13 + 1) + 3 × 2^16) fit and
-    // 110,377 do not. The
-    // input is silent, so nothing is transformed.
-    for (frames, fits) in [(110_376, true), (110_377, false)] {
+    // The work limit, 2^35, at its edge: at 20 Hz a frame spans 4807 frames,
+    // integrates over 2399 and transforms 8192, so 44,512 frames ×
+    // (8192 × (13 + 1) + 3 × (2^16 + 64 × 2399)) fit and 44,513 do not. The input
+    // is silent, so nothing is transformed.
+    for (frames, fits) in [(44_512, true), (44_513, false)] {
         let long = Audio::new(vec![vec![0.0; frames + 4806]], RATE).unwrap();
         let result = long.pitch_track(&PitchOptions::new(20.0, 1000.0, 1));
         match fits {
@@ -341,10 +341,10 @@ fn bad_arguments_are_refused() {
             false => assert_eq!(result.unwrap_err().code, ErrorCode::LimitExceeded),
         }
     }
-    // A shorter frame: 100 Hz to 2 kHz
-    // spans 962 frames and transforms 1024, so 165,292 frames ×
-    // (1024 × (10 + 1) + 3 × 2^16) fit and 165,293 do not.
-    for (frames, fits) in [(165_292, true), (165_293, false)] {
+    // A shorter frame: 100 Hz to 2 kHz spans 962 frames, integrates over 479 and
+    // transforms 1024, so 114,593 frames × (1024 × (10 + 1) + 3 × (2^16 + 64 ×
+    // 479)) fit and 114,594 do not.
+    for (frames, fits) in [(114_593, true), (114_594, false)] {
         let long = Audio::new(vec![vec![0.0; frames + 961]], RATE).unwrap();
         let result = long.pitch_track(&PitchOptions::new(100.0, 2000.0, 1));
         match fits {
@@ -789,4 +789,78 @@ fn above_the_range_transients_and_octave_alternatives() {
             );
         }
     }
+}
+
+#[test]
+fn strict_and_loose_thresholds_attacks_and_the_upper_margin() {
+    let at = |parts: &[(f64, f64)], rate: u32| -> Audio {
+        let samples = (0..(0.3 * rate as f64) as usize)
+            .map(|i| {
+                parts
+                    .iter()
+                    .map(|&(f, a)| a * (2.0 * PI * f * i as f64 / rate as f64).sin())
+                    .sum::<f64>() as f32
+            })
+            .collect();
+        Audio::new(vec![samples], rate).unwrap()
+    };
+    // F6 with a strong fifth harmonic at 16 kHz and a strict threshold: its own
+    // pitch under a 2 kHz ceiling, none under 1 kHz, never the octave below.
+    let f = 1396.913;
+    let note = at(&[(f, 0.4), (5.0 * f, 0.5)], 16_000);
+    for (max_hz, voiced) in [(2000.0, true), (1000.0, false)] {
+        let strict = PitchOptions {
+            threshold: 0.02,
+            ..PitchOptions::new(60.0, max_hz, 160)
+        };
+        for frame in &note.pitch_track(&strict).unwrap().frames {
+            assert_eq!(frame.state == PitchState::Voiced, voiced, "{frame:?}");
+            if let Some(p) = frame.frequency_hz {
+                assert!(cents(p, f).abs() < 5.0, "{frame:?}");
+            }
+        }
+    }
+    // A loose threshold: lag 1 is no dip, so a clean tone keeps its pitch.
+    let loose = PitchOptions {
+        threshold: 0.65,
+        ..PitchOptions::new(60.0, 2000.0, 480)
+    };
+    for frame in &track(tone(0.3, &[(1, 0.5)], |_| 440.0), loose).frames {
+        assert!(
+            cents(frame.frequency_hz.unwrap(), 440.0).abs() < 5.0,
+            "{frame:?}"
+        );
+    }
+    // An attack whose pitch and level fall within the first frame is judged by
+    // the whole window, not its settled part.
+    let attack: Vec<f32> = {
+        let mut phase = 0.0;
+        (0..9600)
+            .map(|i| {
+                let t = i as f64 / RATE as f64;
+                let decay = (-t / 0.0015).exp();
+                let f = 1760.0 * (1.0 + decay);
+                let a = 0.10 + 0.15 * decay;
+                phase += 2.0 * PI * f / RATE as f64;
+                (a * phase.sin()) as f32
+            })
+            .collect()
+    };
+    let first = track(attack, PitchOptions::new(60.0, 2000.0, 480)).frames[0];
+    assert!(
+        first.state != PitchState::Voiced || first.confidence < 0.95,
+        "{first:?}"
+    );
+    // The octave at the top of a 26–55 Hz range, within its margin, is offered.
+    let t = track(
+        tone(0.5, &[(1, 0.11), (2, 0.35)], |_| 27.5),
+        PitchOptions::new(26.0, 55.0, 480),
+    );
+    let frame = t.frames[0];
+    assert!(
+        cents(frame.frequency_hz.unwrap(), 27.5).abs() < 5.0,
+        "{frame:?}"
+    );
+    let other = frame.alternative.unwrap().frequency_hz;
+    assert!(cents(other, 55.0).abs() < 10.0, "{frame:?}");
 }

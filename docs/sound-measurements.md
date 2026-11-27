@@ -168,14 +168,16 @@ fn melody(voice: &Audio) -> Result<()> {
   difference function, which is symmetric about a whole period, unlike the
   normalized one: within 0.1 cents for sines and about 1 cent for rich tones
   there, 2 cents just above 48 samples at the most. A parabola misjudges shorter
-  periods, in place and in depth, so a dip of one whose parabola puts it below
-  the threshold plus 0.3, in the range or above it, is refined first, before the
-  threshold decides, up to three a frame. The difference is evaluated between
-  samples, with the signal interpolated by a 32-tap Kaiser-windowed sinc over
-  four periods, or 64 samples if longer, in the middle of the window as far as it
+  periods, in place and in depth, so a dip of one (from 2 samples) whose
+  parabola puts it below 0.6, or the threshold plus 0.3 if higher, in the range
+  or above it, is refined first, before the threshold decides, up to three a
+  frame. The difference is evaluated between samples, with the signal
+  interpolated by a 32-tap Kaiser-windowed sinc: the period is found over four
+  periods, or 64 samples if longer, in the middle of the window as far as it
   allows. The dip's depth is its whole lag's normalized difference, lowered by as
-  much as the refinement lowers the difference over those samples, so a sound
-  that dies away within the window is not judged by its quiet part. That is
+  much as the refinement lowers the difference over nearly the whole window, so
+  a sound that changes within the window, as an attack, is judged by all of it.
+  That is
   within 0.03 cents for sines and harmonic tones in the tests, as long as the
   sound has no strong content within a tenth of the Nyquist frequency, which no
   interpolation follows. An estimate within 5 cents past an end of the range is
@@ -210,11 +212,12 @@ Bad options, a missing channel, a range outside the input and non-finite samples
 return `InvalidArgument`. `min_hz` is at least `sample_rate / MAX_PITCH_LAG`
 (8192) and `max_hz` at most `sample_rate / MIN_PITCH_LAG` (8). The default
 `Limits` apply, plus at most `MAX_PITCH_FRAMES` (1,048,576) frames and
-`MAX_PITCH_WORK` (2³⁵, a work estimate of frames × (L × (log₂ L + 1) + 3 × 2¹⁶),
-with L the power of two at or above the frame's span and 2¹⁶ for each of up to
-three refinements between samples),
+`MAX_PITCH_WORK` (2³⁵, a work estimate of frames × (L × (log₂ L + 1) + 3 × (2¹⁶ +
+64 × W)), with L the power of two at or above the frame's span, W the integration
+window, and for each of up to three refinements a search and two evaluations
+over the window),
 counted before any frame is measured, or `LimitExceeded`. Ten minutes at
-48 kHz from 60 Hz to 2 kHz every 10 ms is about 13 billion. Several channels
+48 kHz from 60 Hz to 2 kHz every 10 ms is about 22 billion. Several channels
 are mixed once, into one buffer of the input's length. Silent frames skip the
 transforms. The FFT uses the platform's math, so pitches are for reports and
 not bit-identical across hosts; the tests' tolerances (5 cents for steady
