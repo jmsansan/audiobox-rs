@@ -1,6 +1,7 @@
 //! Monophonic pitch tracks, by the YIN method.
 use super::measurements::reserve;
 use crate::{Audio, Error, Limits, Result};
+use std::f64::consts::PI;
 use std::ops::Range;
 
 /// The most analysis frames one [`Audio::pitch_track`] measures.
@@ -12,12 +13,25 @@ pub const MAX_PITCH_LAG: usize = 8192;
 /// `sample_rate / MIN_PITCH_LAG`. Shorter periods are too few samples to refine
 /// a pitch within cents.
 pub const MIN_PITCH_LAG: usize = 8;
+/// The shortest integration window, in frames.
+const MIN_PITCH_WINDOW: usize = 96;
+/// How deep a dip of a period shorter than [`MIN_PITCH_LAG`] must be for its
+/// repeats in the range not to count as a pitch.
+const SHORT_PERIOD_DEPTH: f64 = 0.3;
+/// Periods shorter than this, in frames, are refined by evaluating the
+/// difference between samples; longer ones by a parabola, within 0.5 cents.
+const EXACT_LAG: f64 = 48.0;
+/// The work of that refinement, per frame, in the units of [`MAX_PITCH_WORK`]:
+/// 10 evaluations of at most 192 terms of 32 taps.
+const EXACT_WORK: u64 = 1 << 16;
 /// The widest median smoothing, in frames.
 pub const MAX_PITCH_MEDIAN: usize = 15;
 /// The most work one [`Audio::pitch_track`] is allowed, as an estimate: analysis
-/// frames × L × (log₂ L + 1), with L the transform size, the power of two at or above two
-/// periods of `min_hz` in frames. Every frame counts, silent or not.
-pub const MAX_PITCH_WORK: u64 = 1 << 32;
+/// frames × (L × (log₂ L + 1) + R), with L the transform size, the power of two at
+/// or above [`PitchTrack::span_frames`], and R 2^16 for the refinement between
+/// samples when the range reaches periods under 48 frames, 0 otherwise. Every
+/// frame counts, silent or not.
+pub const MAX_PITCH_WORK: u64 = 1 << 33;
 
 /// How [`Audio::pitch_track`] looks for a pitch.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -196,6 +210,8 @@ struct Yin {
     normalized: Vec<f64>,
     /// The raw difference, before normalization, for refining periods.
     difference: Vec<f64>,
+    /// The running sum of the raw difference from lag 1, for normalizing.
+    cumulative: Vec<f64>,
 }
 
 impl Yin {
@@ -212,6 +228,7 @@ impl Yin {
             squares: vec![0.0; window + max_lag + 1],
             normalized: vec![1.0; max_lag + 1],
             difference: vec![0.0; max_lag + 1],
+            cumulative: vec![0.0; max_lag + 1],
         }
     }
 
@@ -233,6 +250,9 @@ impl Yin {
             self.b_real[k] = ar * br - ai * bi;
             self.b_imag[k] = ar * bi + ai * br;
         }
+        // The cross-power spectrum, kept for refining periods between samples.
+        self.a_real.copy_from_slice(&self.b_real);
+        self.a_imag.copy_from_slice(&self.b_imag);
         transform(&mut self.b_real, &mut self.b_imag, true);
         // squares[j] = sum of x[i]^2 for i < j.
         self.squares[0] = 0.0;
@@ -248,6 +268,7 @@ impl Yin {
             let d = (e0 + energy(tau) - 2.0 * r).max(0.0);
             running += d;
             self.difference[tau] = d;
+            self.cumulative[tau] = running;
             self.normalized[tau] = if running > 0.0 {
                 d * tau as f64 / running
             } else {
@@ -288,6 +309,85 @@ impl Yin {
         }
     }
 
+    /// The minimum of the difference near `lag`, between samples. The difference
+    /// is summed at fractional lags directly, with `x` interpolated by a
+    /// Kaiser-windowed sinc, and its minimum found by parabolas over shrinking
+    /// steps. A parabola through the whole lags alone misses the sharp minimum
+    /// of a tone rich in harmonics by several cents at short periods.
+    fn exact(&self, x: &[f64], bottom: Bottom) -> Bottom {
+        let lag = bottom.lag;
+        const HALF: usize = 16;
+        let last = (lag + 1.0).ceil() as usize + HALF;
+        // The terms whose interpolation stays within the frame, from sample HALF
+        // on, and of those at most 4 periods (64 samples or more) in the middle:
+        // any run of whole samples serves for a periodic sound.
+        let available = self.window.min(x.len().saturating_sub(last + 1 + HALF));
+        let terms = available.min(((4.0 * lag) as usize).max(64));
+        let first = HALF + (available - terms) / 2;
+        if terms < 4 {
+            return bottom;
+        }
+        let difference = |tau: f64| {
+            let whole = tau.floor();
+            let frac = tau - whole;
+            let whole = whole as usize;
+            let mut weights = [0.0; 2 * HALF];
+            for (i, w) in weights.iter_mut().enumerate() {
+                // Tap i reads sample whole + i + 1 - HALF, at distance t from tau.
+                let t = (i as f64 + 1.0 - HALF as f64) - frac;
+                let sinc = if t == 0.0 {
+                    1.0
+                } else {
+                    (PI * t).sin() / (PI * t)
+                };
+                let r = t / HALF as f64;
+                *w = sinc * kaiser(1.0 - r * r);
+            }
+            (first..first + terms)
+                .map(|j| {
+                    let base = j + whole + 1 - HALF;
+                    let value: f64 = weights
+                        .iter()
+                        .zip(&x[base..base + 2 * HALF])
+                        .map(|(w, v)| w * v)
+                        .sum();
+                    let e = x[j] - value;
+                    e * e
+                })
+                .sum::<f64>()
+        };
+        let mut tau = lag;
+        let mut step = 0.5;
+        for _ in 0..3 {
+            let (a, b, c) = (
+                difference(tau - step),
+                difference(tau),
+                difference(tau + step),
+            );
+            let curve = a - 2.0 * b + c;
+            if curve <= 0.0 {
+                break;
+            }
+            tau += step * ((a - c) / (2.0 * curve)).clamp(-1.0, 1.0);
+            step *= 0.25;
+        }
+        let tau = tau.clamp(lag - 1.0, lag + 1.0);
+        // The normalized difference there: the difference over its mean from lag
+        // 1, both over the whole window.
+        let whole = (tau.floor() as usize).min(self.max_lag - 1);
+        let frac = tau - whole as f64;
+        let mean = (self.cumulative[whole] + frac * self.difference[whole + 1]) / tau;
+        let depth = difference(tau) * self.window as f64 / terms as f64 / mean;
+        if !(mean > 0.0 && depth.is_finite()) {
+            return bottom;
+        }
+        Bottom {
+            lag: tau,
+            depth: depth.clamp(0.0, 1.0),
+            lowered: 0.0,
+        }
+    }
+
     /// Whether `tau` is a local minimum with both neighbours computed.
     fn is_dip(&self, tau: usize) -> bool {
         let d = &self.normalized;
@@ -305,7 +405,8 @@ impl Audio {
     /// to one period
     /// later. Only whole frames are measured, so the last frames of input may fall
     /// in none; an input shorter than one frame is a single frame, zero-padded.
-    /// A frame is silent when the RMS of its first period, over the samples it
+    /// A frame is silent when the RMS of its integration window (one period of
+    /// `min_hz`, at least 96 samples), over the samples it
     /// holds and with their mean removed, is at or below `silence_db`: a DC offset
     /// or a level stuck at one value is silence. Otherwise YIN takes the first dip
     /// of its normalized difference, from the shortest period, whose bottom,
@@ -313,7 +414,10 @@ impl Audio {
     /// that dip's period lies in the range (within 5 cents of an end, and then set
     /// to it): a tone outside the range has no pitch rather than one of its
     /// period's multiples, and so has a weak fundamental under a strong harmonic
-    /// above `max_hz`. Other frames have no pitch. With
+    /// above `max_hz`; nor is a dip that repeats a period under [`MIN_PITCH_LAG`]
+    /// frames whose dip is below 0.3. Periods under 48 frames are refined by
+    /// evaluating the difference between samples, longer ones by a parabola.
+    /// Other frames have no pitch. With
     /// all channels, the mean of the channels is tracked.
     ///
     /// It is a tool for one voice: in a chord or a mix it finds the period the
@@ -323,9 +427,9 @@ impl Audio {
     ///
     /// Bad options, a missing channel and non-finite samples return
     /// `InvalidArgument`. Default [`Limits`] apply, plus at most
-    /// [`MAX_PITCH_FRAMES`] frames and [`MAX_PITCH_WORK`] for frames × L × (log₂ L + 1), or
+    /// [`MAX_PITCH_FRAMES`] frames and [`MAX_PITCH_WORK`] (see there), or
     /// `LimitExceeded`, with L the power of two at or above the span of
-    /// a frame. The work is O(samples × channels) to mix the channels once, plus O(frames × L log L); silent
+    /// a frame. The work is O(samples × channels) to mix the channels once, plus O(frames × L log L) and the refinement; silent
     /// frames skip the transforms. The storage is O(L) plus one entry per frame, and with several channels one f64 per input frame. The FFT uses the platform's math, so results are
     /// for reports, not bit-identical across hosts.
     ///
@@ -385,11 +489,13 @@ impl Audio {
         let margin = 2f64.powf(5.0 / 1200.0);
         let max_lag = (rate / o.min_hz).ceil() as usize;
         let min_lag = ((rate / o.max_hz).floor() as usize).max(2);
-        let window = max_lag - 1;
+        // One period of `min_hz`, and at least 32 samples, so that a range of
+        // short periods alone still integrates over several.
+        let window = max_lag.max(MIN_PITCH_WINDOW) - 1;
         // The lags searched reach the margin below `min_hz`, and one lag more on
         // each side, so that a dip at either end is a local minimum with both
         // neighbours.
-        let hi = ((rate * margin / o.min_hz).floor() as usize).max(max_lag);
+        let hi = ((rate * margin / o.min_hz).ceil() as usize).max(max_lag);
         let lo = min_lag - 1;
         let top = hi + 1;
         let span = window + top;
@@ -405,10 +511,15 @@ impl Audio {
         }
         let size = span.next_power_of_two();
         // In u64, so that the limit is exact on 32-bit targets too. Each frame
-        // reads its span and runs three transforms of `size`.
+        // reads its span and runs three transforms of `size`, and when the range
+        // reaches periods under `EXACT_LAG`, one refinement between samples.
+        let refine = if (min_lag as f64) < EXACT_LAG {
+            EXACT_WORK
+        } else {
+            0
+        };
         if (count as u64)
-            .checked_mul(size as u64)
-            .and_then(|n| n.checked_mul(u64::from(size.trailing_zeros()) + 1))
+            .checked_mul(size as u64 * (u64::from(size.trailing_zeros()) + 1) + refine)
             .is_none_or(|n| n > MAX_PITCH_WORK)
         {
             return Err(Error::limit("Pitch analysis exceeds its work limit"));
@@ -477,17 +588,29 @@ impl Audio {
                 // YIN's choice: the first dip below the threshold, from the shortest
                 // lag. When its period lies outside the range, the frame has no
                 // pitch, rather than one of the period's multiples.
-                // Nor when it repeats a shorter period above the range that is
-                // nearly as periodic: a period of a few samples refines to a
-                // shallower dip than it is, and may miss the threshold.
+                // Nor when it repeats a period shorter than `MIN_PITCH_LAG` that is
+                // nearly as periodic (depth below 0.3): a period of a few samples
+                // refines to a shallower dip than it is, and may miss the threshold.
                 let repeats_above = |c: &Bottom| {
                     dips(1).take_while(|b| b.lag < c.lag).any(|b| {
-                        rate / b.lag > o.max_hz * margin
-                            && b.depth < 2.0 * o.threshold
-                            && near_multiple(c.lag, b.lag)
+                        b.lag < MIN_PITCH_LAG as f64 && b.depth < SHORT_PERIOD_DEPTH && {
+                            // Its refined lag may be off by half a sample, so
+                            // each repeat may be off by as much.
+                            let k = (c.lag / b.lag).round();
+                            k >= 2.0
+                                && (c.lag - k * b.lag).abs()
+                                    <= (0.5 * k).max(c.lag * (semitone - 1.0))
+                        }
                     })
                 };
-                let first = dips(1).find(|b| b.depth < o.threshold);
+                let first = dips(1).find(|b| b.depth < o.threshold).map(|b| {
+                    // Short periods in the range only, as the work limit counts.
+                    if b.lag < EXACT_LAG && b.lag + 1.0 >= lo as f64 {
+                        yin.exact(&x, b)
+                    } else {
+                        b
+                    }
+                });
                 if let Some(chosen) = first.filter(|b| in_range(b.lag) && !repeats_above(b)) {
                     frame.state = PitchState::Voiced;
                     frame.frequency_hz = Some(pitch(chosen.lag));
@@ -559,6 +682,25 @@ impl Audio {
             frames,
         })
     }
+}
+
+/// A Kaiser window (β = 8) at `u` = 1 − r², with r the distance from its middle
+/// over its half-width, from 0 to 1.
+fn kaiser(u: f64) -> f64 {
+    const BETA: f64 = 8.0;
+    // I0 by its series, which converges fast for arguments up to β.
+    let i0 = |x: f64| {
+        let (mut sum, mut term) = (1.0, 1.0);
+        for k in 1..32 {
+            term *= (x / (2.0 * k as f64)).powi(2);
+            sum += term;
+            if term < 1e-17 * sum {
+                break;
+            }
+        }
+        sum
+    };
+    i0(BETA * u.max(0.0).sqrt()) / i0(BETA)
 }
 
 #[cfg(test)]

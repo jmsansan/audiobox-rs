@@ -249,15 +249,15 @@ fn short_empty_and_repeated_inputs() {
     let t = empty.pitch_track(&options).unwrap();
     assert!(t.frames.is_empty());
     assert_eq!(t.median_frequency(0..0).unwrap(), None);
-    // Shorter than a frame (two periods of 100 Hz and the margin, 961 frames):
+    // Shorter than a frame (two periods of 100 Hz and the margin, 962 frames):
     // one padded frame.
     let t = track(tone(0.005, &[(1, 0.5)], |_| 440.0), options);
     assert_eq!(t.frames.len(), 1);
-    assert_eq!(t.span_frames, 961);
+    assert_eq!(t.span_frames, 962);
     // Whole frames only: none starts past the last whole one.
     let t = track(tone(0.1, &[(1, 0.5)], |_| 440.0), options);
-    assert_eq!(t.frames.len(), (4800 - 961) / 100 + 1);
-    assert!(t.frames.iter().all(|f| f.start_frame + 961 <= 4800));
+    assert_eq!(t.frames.len(), (4800 - 962) / 100 + 1);
+    assert!(t.frames.iter().all(|f| f.start_frame + 962 <= 4800));
     // The same input, the same track.
     let samples = tone(0.2, &[(1, 0.5), (3, 0.1)], |_| 300.0);
     assert_eq!(track(samples.clone(), options), track(samples, options));
@@ -322,20 +322,30 @@ fn bad_arguments_are_refused() {
         t.median_frequency(0..2001).unwrap_err().code,
         ErrorCode::InvalidArgument
     );
-    // More analysis frames than the limit.
-    let long = Audio::new(vec![vec![0.0; (1 << 20) + 960]], RATE).unwrap();
-    assert_eq!(
-        long.pitch_track(&PitchOptions::new(100.0, 1000.0, 1))
-            .unwrap_err()
-            .code,
-        ErrorCode::LimitExceeded
-    );
-    // The work limit, 2^32, at its edge: at 20 Hz a frame spans 4806 frames and
-    // transforms 8192, so 37,449 frames × 8192 × (13 + 1) fit and 37,450 do not. The
+    // One analysis frame more than the cap, which is checked before the work.
+    let long = Audio::new(vec![vec![0.0; (1 << 20) + 962]], RATE).unwrap();
+    let error = long
+        .pitch_track(&PitchOptions::new(100.0, 1000.0, 1))
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::LimitExceeded);
+    assert_eq!(error.message, "Too many pitch analysis frames");
+    // The work limit, 2^33, at its edge: at 20 Hz a frame spans 4807 frames and
+    // transforms 8192, so 74,898 frames × 8192 × (13 + 1) fit and 74,899 do not. The
     // input is silent, so nothing is transformed.
-    for (frames, fits) in [(37_449, true), (37_450, false)] {
-        let long = Audio::new(vec![vec![0.0; frames + 4805]], RATE).unwrap();
+    for (frames, fits) in [(74_898, true), (74_899, false)] {
+        let long = Audio::new(vec![vec![0.0; frames + 4806]], RATE).unwrap();
         let result = long.pitch_track(&PitchOptions::new(20.0, 1000.0, 1));
+        match fits {
+            true => assert_eq!(result.unwrap().frames.len(), frames),
+            false => assert_eq!(result.unwrap_err().code, ErrorCode::LimitExceeded),
+        }
+    }
+    // A range reaching periods under 48 frames counts a refinement per frame:
+    // 100 Hz to 2 kHz spans 962 frames and transforms 1024, so 111,848 frames ×
+    // (1024 × (10 + 1) + 2^16) fit and 111,849 do not.
+    for (frames, fits) in [(111_848, true), (111_849, false)] {
+        let long = Audio::new(vec![vec![0.0; frames + 961]], RATE).unwrap();
+        let result = long.pitch_track(&PitchOptions::new(100.0, 2000.0, 1));
         match fits {
             true => assert_eq!(result.unwrap().frames.len(), frames),
             false => assert_eq!(result.unwrap_err().code, ErrorCode::LimitExceeded),
@@ -629,5 +639,55 @@ fn short_periods_and_the_margins_of_the_range() {
     for frame in &t.frames {
         assert_eq!(frame.state, PitchState::Voiced, "{frame:?}");
         assert_eq!(frame.frequency_hz, Some(60.0), "{frame:?}");
+    }
+}
+
+#[test]
+fn strong_second_harmonics_short_ranges_and_strict_thresholds() {
+    let sine = |f: f64, rate: u32| -> Audio {
+        let samples = (0..(0.3 * rate as f64) as usize)
+            .map(|i| (0.5 * (2.0 * PI * f * i as f64 / rate as f64).sin()) as f32)
+            .collect();
+        Audio::new(vec![samples], rate).unwrap()
+    };
+    // A strong second harmonic above the range does not hide the fundamental
+    // when its own dip misses the threshold.
+    let t = track(
+        tone(0.5, &[(1, 0.17), (2, 0.5)], |_| 220.0),
+        PitchOptions::new(60.0, 430.0, 480),
+    );
+    for frame in &t.frames {
+        assert_eq!(frame.state, PitchState::Voiced, "{frame:?}");
+        assert!(
+            cents(frame.frequency_hz.unwrap(), 220.0).abs() < 5.0,
+            "{frame:?}"
+        );
+    }
+    // Within the margin below a 50 Hz floor, a dip past the floor's lag.
+    let t = track(
+        tone(0.5, &[(1, 0.5)], |_| 49.86),
+        PitchOptions::new(50.0, 2000.0, 480),
+    );
+    for frame in &t.frames {
+        assert_eq!(frame.frequency_hz, Some(50.0), "{frame:?}");
+    }
+    // A strict threshold and a tone above the range: no octave error.
+    let strict = PitchOptions {
+        threshold: 0.02,
+        ..PitchOptions::new(60.0, 2000.0, 160)
+    };
+    for frame in &sine(3520.0, 16_000).pitch_track(&strict).unwrap().frames {
+        assert_ne!(frame.state, PitchState::Voiced, "{frame:?}");
+    }
+    // A range of short periods alone: 1998 Hz at 16 kHz, 1.5 to 2 kHz.
+    let t = sine(1998.0, 16_000)
+        .pitch_track(&PitchOptions::new(1500.0, 2000.0, 160))
+        .unwrap();
+    for frame in &t.frames {
+        assert_eq!(frame.state, PitchState::Voiced, "{frame:?}");
+        assert!(
+            cents(frame.frequency_hz.unwrap(), 1998.0).abs() < 5.0,
+            "{frame:?}"
+        );
     }
 }
