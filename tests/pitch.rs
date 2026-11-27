@@ -444,3 +444,74 @@ fn alternatives_appear_only_for_voiced_frames_with_a_real_rival() {
         }
     }
 }
+
+#[test]
+fn pitches_at_the_ends_of_the_range_are_found() {
+    // The range's own ends: the dips sit on its first and last lags.
+    let options = PitchOptions::new(60.0, 2000.0, 480);
+    for f in [60.0, 60.05, 1990.0, 1999.0] {
+        let t = track(tone(0.5, &[(1, 0.5)], |_| f), options);
+        for frame in &t.frames {
+            assert_eq!(frame.state, PitchState::Voiced, "{f} Hz: {frame:?}");
+            assert!(
+                cents(frame.frequency_hz.unwrap(), f).abs() < 5.0,
+                "{f} Hz: {frame:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_weak_fundamental_under_a_harmonic_above_the_range() {
+    // 440 Hz is above the range and 220 Hz in it: the fundamental, whose dip is
+    // clearly deeper than the harmonic's.
+    let options = PitchOptions::new(60.0, 430.0, 480);
+    let t = track(tone(0.5, &[(1, 0.1), (2, 0.5)], |_| 220.0), options);
+    for frame in &t.frames {
+        assert_eq!(frame.state, PitchState::Voiced, "{frame:?}");
+        assert!(
+            cents(frame.frequency_hz.unwrap(), 220.0).abs() < 5.0,
+            "{frame:?}"
+        );
+    }
+    // A sine above the range repeats at twice its period too: still no pitch.
+    let t = track(tone(0.5, &[(1, 0.5)], |_| 500.0), options);
+    for frame in &t.frames {
+        assert_ne!(frame.state, PitchState::Voiced, "{frame:?}");
+    }
+}
+
+#[test]
+fn alternatives_stay_within_the_range() {
+    // A strong octave above the range: it is not offered as the alternative.
+    let options = PitchOptions::new(60.0, 300.0, 480);
+    let t = track(tone(0.5, &[(1, 0.1), (2, 0.5)], |_| 220.0), options);
+    for frame in &t.frames {
+        if let Some(alternative) = frame.alternative {
+            let f = alternative.frequency_hz;
+            assert!((60.0..=300.0).contains(&f), "{frame:?}");
+        }
+    }
+}
+
+#[test]
+fn high_clean_tones_have_no_rival() {
+    // Short periods, a few samples long: the depths between samples decide.
+    let options = PitchOptions::new(100.0, 8000.0, 480);
+    for f in [3000.0, 3840.0] {
+        let t = track(tone(0.3, &[(1, 0.5)], |_| f), options);
+        for frame in &t.frames {
+            assert_eq!(frame.state, PitchState::Voiced, "{f} Hz: {frame:?}");
+            assert!(
+                cents(frame.frequency_hz.unwrap(), f).abs() < 5.0,
+                "{f} Hz: {frame:?}"
+            );
+            if let Some(alternative) = frame.alternative {
+                assert!(
+                    alternative.confidence < frame.confidence - 0.01,
+                    "{f} Hz: {frame:?}"
+                );
+            }
+        }
+    }
+}

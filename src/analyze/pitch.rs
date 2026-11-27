@@ -85,10 +85,11 @@ pub struct PitchFrame {
     pub frequency_hz: Option<f64>,
     /// The confidence of the best period found, voiced or not; 0 when silent.
     pub confidence: f64,
-    /// The deepest other dip of a voiced frame, more than a semitone from the
-    /// pitch, as the octave above or below: when its confidence is close to the
-    /// pitch's, the octave is ambiguous. Multiples of the period, which any
-    /// periodic sound repeats at, count only when clearly deeper. `None` when the
+    /// The deepest other dip of a voiced frame in the range, more than a semitone
+    /// from the pitch, as the octave above or below: when its confidence is close
+    /// to the pitch's, the octave is ambiguous. Multiples of the period, which any
+    /// periodic sound repeats at, count only when clearly deeper, and of equally
+    /// deep dips the shortest period is given. `None` when the
     /// frame is not voiced or has no other dip. With smoothing, it and the
     /// confidence still describe the frame's own estimate.
     pub alternative: Option<PitchCandidate>,
@@ -233,19 +234,28 @@ impl Yin {
         }
     }
 
-    /// The lag of a local minimum at or near `tau`, refined between samples.
-    fn refine(&self, tau: usize) -> f64 {
+    /// The lag and depth of a local minimum at `tau`, refined between samples by
+    /// the parabola through it and its neighbours.
+    fn bottom(&self, tau: usize) -> (f64, f64) {
         let d = &self.normalized;
         if tau < 1 || tau + 1 > self.max_lag {
-            return tau as f64;
+            return (tau as f64, d[tau]);
         }
         let (a, b, c) = (d[tau - 1], d[tau], d[tau + 1]);
         let curve = a - 2.0 * b + c;
         if curve > 0.0 {
-            tau as f64 + ((a - c) / (2.0 * curve)).clamp(-0.5, 0.5)
+            let shift = ((a - c) / (2.0 * curve)).clamp(-0.5, 0.5);
+            let depth = b - 0.25 * (a - c) * shift;
+            (tau as f64 + shift, depth.clamp(0.0, b))
         } else {
-            tau as f64
+            (tau as f64, b)
         }
+    }
+
+    /// Whether `tau` is a local minimum with both neighbours computed.
+    fn is_dip(&self, tau: usize) -> bool {
+        let d = &self.normalized;
+        tau >= 1 && tau < self.max_lag && d[tau] <= d[tau - 1] && d[tau] < d[tau + 1]
     }
 }
 
@@ -261,9 +271,11 @@ impl Audio {
     /// A frame is silent when the RMS of its first period, over the samples it
     /// holds and with their mean removed, is at or below `silence_db`: a DC offset
     /// or a level stuck at one value is silence. A frame is voiced when YIN's
-    /// normalized difference has a dip below `threshold` inside the range of
-    /// periods, and the pitch, that first dip refined between samples, lies from
-    /// `min_hz` to `max_hz`. Other frames have no pitch. With
+    /// normalized difference has a dip below `threshold` whose period, refined
+    /// between samples, lies in the range (within 5 cents of an end, and then
+    /// set to it); the pitch is the first such dip. After a dip above the range,
+    /// its multiples count only when clearly deeper, so a tone above `max_hz`
+    /// has no pitch rather than a subharmonic. Other frames have no pitch. With
     /// all channels, the mean of the channels is tracked.
     ///
     /// It is a tool for one voice: in a chord or a mix it finds the period the
@@ -332,8 +344,11 @@ impl Audio {
         let input_frames = self.frames();
         let max_lag = (rate / o.min_hz).ceil() as usize;
         let min_lag = ((rate / o.max_hz).floor() as usize).max(2);
-        let window = max_lag;
-        let span = window + max_lag;
+        let window = max_lag - 1;
+        // One lag more on each side than the range needs, so that a dip at either
+        // end of it is a local minimum with both neighbours.
+        let top = max_lag + 1;
+        let span = window + top;
         // Whole frames only, so that no frame is padded with silence; an input
         // shorter than one frame is one padded frame.
         let count = match input_frames {
@@ -369,7 +384,13 @@ impl Audio {
                 Signal::Mixed(&mixed)
             }
         };
-        let mut yin = Yin::new(window, max_lag);
+        let mut yin = Yin::new(window, top);
+        let (lo, hi) = (min_lag - 1, max_lag);
+        // The range, with a margin of the estimate's accuracy (5 cents): a pitch
+        // estimated just past an end is set to it.
+        let margin = 2f64.powf(5.0 / 1200.0);
+        let in_range = |lag: f64| (o.min_hz / margin..=o.max_hz * margin).contains(&(rate / lag));
+        let pitch = |lag: f64| (rate / lag).clamp(o.min_hz, o.max_hz);
         let mut x = vec![0.0; span];
         let silence = super::from_db(o.silence_db);
         let semitone = 2f64.powf(1.0 / 12.0);
@@ -402,51 +423,87 @@ impl Audio {
             if variance > silence * silence {
                 yin.run(&x);
                 let d = &yin.normalized;
-                // A dip is a local minimum inside the range of lags, not a slope
-                // that runs into its end.
-                let dip =
-                    |t: usize| t > min_lag && t < max_lag && d[t] <= d[t - 1] && d[t] < d[t + 1];
-                let below = (min_lag..=max_lag)
-                    .find(|&t| d[t] < o.threshold)
-                    .map(|mut t| {
+                // Two periods related by a whole multiple, within a semitone.
+                let near_multiple = |long: f64, short: f64| {
+                    let ratio = long / short;
+                    let k = ratio.round();
+                    k >= 2.0 && (ratio / k).max(k / ratio) < semitone
+                };
+                // The first dip below the threshold whose period lies in the range.
+                // A sound that repeats every period also repeats every two or three,
+                // so after a dip outside the range (a tone above `max_hz`) its
+                // multiples count only when clearly deeper: a weak fundamental under
+                // a strong harmonic, not the same tone again.
+                let mut outside: Option<(f64, f64)> = None;
+                let mut chosen: Option<(f64, f64)> = None;
+                // From the shortest lag, so that a dip above the range is seen.
+                let mut t = 1;
+                while t <= hi {
+                    if d[t] < o.threshold {
                         // Down to the bottom of the dip.
-                        while t < max_lag && d[t + 1] < d[t] {
+                        while t <= hi && d[t + 1] < d[t] {
                             t += 1;
                         }
-                        t
-                    });
-                let best = (min_lag..=max_lag)
-                    .min_by(|&a, &b| d[a].total_cmp(&d[b]))
-                    .unwrap_or(min_lag);
-                let chosen = below.unwrap_or(best);
-                frame.confidence = (1.0 - d[chosen]).clamp(0.0, 1.0);
-                let lag = yin.refine(chosen);
-                let pitch = rate / lag;
-                if below.is_some_and(dip) && (o.min_hz..=o.max_hz).contains(&pitch) {
+                        if t > hi {
+                            break;
+                        }
+                        if yin.is_dip(t) {
+                            let (lag, depth) = yin.bottom(t);
+                            if in_range(lag) {
+                                if outside.is_none_or(|(l, dd)| {
+                                    !near_multiple(lag, l) || depth < dd - 0.01
+                                }) {
+                                    chosen = Some((lag, depth));
+                                    break;
+                                }
+                            } else if rate / lag < o.min_hz {
+                                break;
+                            } else {
+                                outside.get_or_insert((lag, depth));
+                            }
+                        }
+                    }
+                    t += 1;
+                }
+                let dips = || {
+                    (lo..=hi)
+                        .filter(|&t| yin.is_dip(t))
+                        .map(|t| yin.bottom(t))
+                        .filter(|&(l, _)| in_range(l))
+                };
+                if let Some((lag, depth)) = chosen {
                     frame.state = PitchState::Voiced;
-                    frame.frequency_hz = Some(pitch);
-                    // The deepest other dip more than a semitone away. A sound that
-                    // repeats every period also repeats every two or three: those
-                    // multiples count only when they are clearly deeper.
-                    let near_multiple = |t: usize| {
-                        let ratio = t as f64 / lag;
-                        let k = ratio.round();
-                        k >= 2.0 && (ratio / k).max(k / ratio) < semitone
-                    };
-                    frame.alternative = (min_lag..=max_lag)
-                        .filter(|&t| {
-                            let ratio = t as f64 / lag;
+                    frame.frequency_hz = Some(pitch(lag));
+                    frame.confidence = (1.0 - depth).clamp(0.0, 1.0);
+                    // The deepest other dip in the range more than a semitone away;
+                    // multiples of the period count only when clearly deeper, and
+                    // so do multiples of the alternative's own period.
+                    let others = || {
+                        dips().filter(|&(l, dd)| {
+                            let ratio = l / lag;
                             (ratio > semitone || ratio < 1.0 / semitone)
-                                && dip(t)
-                                && (!near_multiple(t) || d[t] < d[chosen] - 0.01)
+                                && (!near_multiple(l, lag) || dd < depth - 0.01)
                         })
-                        .min_by(|&a, &b| d[a].total_cmp(&d[b]))
-                        .map(|t| PitchCandidate {
-                            frequency_hz: rate / yin.refine(t),
-                            confidence: (1.0 - d[t]).clamp(0.0, 1.0),
+                    };
+                    frame.alternative = others()
+                        .min_by(|a, b| a.1.total_cmp(&b.1))
+                        .map(|(l, dd)| {
+                            others()
+                                .find(|&(s, sd)| (s == l || near_multiple(l, s)) && sd < dd + 0.01)
+                                .unwrap_or((l, dd))
+                        })
+                        .map(|(l, dd)| PitchCandidate {
+                            frequency_hz: pitch(l),
+                            confidence: (1.0 - dd).clamp(0.0, 1.0),
                         });
                 } else {
                     frame.state = PitchState::Unvoiced;
+                    // How periodic the frame is at its best period in the range.
+                    let best = dips().map(|(_, dd)| dd).fold(
+                        (min_lag..=max_lag).map(|t| d[t]).fold(1.0, f64::min),
+                        f64::min,
+                    );
+                    frame.confidence = (1.0 - best).clamp(0.0, 1.0);
                 }
             }
             frames.push(frame);

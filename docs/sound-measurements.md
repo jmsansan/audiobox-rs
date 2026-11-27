@@ -152,19 +152,26 @@ fn melody(voice: &Audio) -> Result<()> {
 - **States.** `Silent` when the RMS of the frame's first period, with its mean
   removed, is at or below `silence_db` (−60 dBFS by default): a DC offset or a
   level stuck at one value is silence. `Voiced` when YIN's normalized difference
-  has a dip below `threshold` (0.15 by default) inside the range of periods and the
-  pitch lies from `min_hz` to `max_hz`: a tone just outside the range has no pitch,
-  rather than the nearest one in it. `Unvoiced` otherwise, as noise, a chord or a
-  transition. Only voiced frames have a pitch; nothing is guessed for the others.
-- **Pitch.** The first dip below the threshold, at its bottom, refined between
-  samples. **Confidence** is 1 minus the normalized difference at the best period,
-  from 0 to 1, for voiced and unvoiced frames; 0 when silent.
-- **Alternative.** For a voiced frame, the deepest other dip more than a semitone
-  from the pitch. A sound with a weak fundamental and a strong octave has both
-  octaves as dips, so the pitch and the alternative are the two candidates: when
-  their confidences are close, the octave is ambiguous, and the caller decides.
-  Any periodic sound also repeats every two or three periods; those multiples
-  count only when clearly deeper than the pitch, so a clean tone has no rival.
+  has a dip below `threshold` (0.15 by default) whose period lies in the range:
+  the pitch from `min_hz` to `max_hz`, the ends included. A tone just outside the
+  range has no pitch, rather than the nearest one in it or a subharmonic: after a
+  dip above the range, its multiples count only when clearly deeper, as for a weak
+  fundamental under a strong harmonic above `max_hz`. `Unvoiced` otherwise, as
+  noise, a chord or a transition. Only voiced frames have a pitch; nothing is
+  guessed for the others.
+- **Pitch.** The first such dip, at its bottom, refined between samples by a
+  parabola. An estimate within 5 cents past an end of the range is set to that
+  end. Short periods limit the refinement: a tone of a few samples per period
+  (above about 4 kHz at 48 kHz) errs by more than 5 cents. **Confidence** is 1
+  minus the normalized difference at the refined bottom of the best dip in the
+  range, from 0 to 1, for voiced and unvoiced frames; 0 when silent.
+- **Alternative.** For a voiced frame, the deepest other dip in the range more
+  than a semitone from the pitch. A sound with a weak fundamental and a strong
+  octave has both octaves as dips, so the pitch and the alternative are the two
+  candidates: when their confidences are close, the octave is ambiguous, and the
+  caller decides. Any periodic sound also repeats every two or three periods;
+  those multiples count only when clearly deeper than the pitch, so a clean tone
+  has no rival, and of equally deep dips the shortest period is the alternative.
 - **Smoothing.** `median` (odd, 1 to 15) replaces each voiced pitch with the median
   of the voiced pitches within that many frames; silent and unvoiced frames stay
   without one. It reads up to `median / 2` frames ahead, which adds that many hops
