@@ -158,43 +158,41 @@ fn melody(voice: &Audio) -> Result<()> {
   `threshold` (0.15 by default). `Voiced` when that dip's period lies in the
   range: the pitch from `min_hz` to `max_hz`, the ends included. A tone outside
   the range has no pitch, rather than the nearest one in it or one of its
-  period's multiples. Nor does a dip in the range that repeats a period shorter
-  than `MIN_PITCH_LAG` (8 samples) whose dip is below 0.3: such a short period
-  refines to a shallower dip than it is and may miss the threshold, as a tone of
-  a few samples per period does. So a weak fundamental in the range under a
-  strong harmonic above `max_hz` has no pitch either (a ceiling above the
-  harmonic gives the harmonic as the pitch and the fundamental as the
-  alternative), save above about 5 kHz at 48 kHz, where an octave below the
-  fundamental can be given. `Unvoiced` otherwise, as noise, a chord or a
-  transition. Only voiced frames have a pitch; nothing is guessed for the
-  others.
+  period's multiples. So a weak fundamental in the range under a strong harmonic
+  above `max_hz` has no pitch either: a ceiling above the harmonic gives the
+  harmonic as the pitch and the fundamental as the alternative. `Unvoiced`
+  otherwise, as noise, a chord or a transition. Only voiced frames have a pitch;
+  nothing is guessed for the others.
 - **Pitch.** That dip's period, refined between samples. A period of 48 samples
   or more (up to 1 kHz at 48 kHz) is refined by the parabola through the raw
   difference function, which is symmetric about a whole period, unlike the
   normalized one: within 0.1 cents for sines and about 1 cent for rich tones
-  there, 2 cents just above 48 samples at the most. When the range reaches
-  shorter periods, a dip of one whose parabola puts it below the threshold plus
-  0.3 is refined before the threshold decides, up to three a frame: the
-  difference is evaluated between samples, with the signal interpolated by a
-  32-tap Kaiser-windowed sinc over four periods (at least 64 samples) in the
-  middle of the window, and normalized there. That is within 0.03 cents for
-  sines and harmonic tones in the tests, as long as the sound has no strong
-  content within a tenth of the Nyquist frequency, which no interpolation
-  follows. An estimate within 5 cents past an end of the range is set to that
-  end. `max_hz` is at most `sample_rate / MIN_PITCH_LAG`, so that a pitch spans
-  at least 8 samples (6 kHz at 48 kHz). **Confidence** is 1 minus the
-  normalized difference at the refined bottom, from 0 to 1: of the pitch's dip
-  for a voiced frame, of the deepest dip in the range for an unvoiced one (0
+  there, 2 cents just above 48 samples at the most. A parabola misjudges shorter
+  periods, in place and in depth, so a dip of one whose parabola puts it below
+  the threshold plus 0.3, in the range or above it, is refined first, before the
+  threshold decides, up to three a frame. The difference is evaluated between
+  samples, with the signal interpolated by a 32-tap Kaiser-windowed sinc over
+  four periods, or 64 samples if longer, in the middle of the window as far as it
+  allows. The dip's depth is its whole lag's normalized difference, lowered by as
+  much as the refinement lowers the difference over those samples, so a sound
+  that dies away within the window is not judged by its quiet part. That is
+  within 0.03 cents for sines and harmonic tones in the tests, as long as the
+  sound has no strong content within a tenth of the Nyquist frequency, which no
+  interpolation follows. An estimate within 5 cents past an end of the range is
+  set to that end. `max_hz` is at most `sample_rate / MIN_PITCH_LAG`, so that a
+  pitch spans at least 8 samples (6 kHz at 48 kHz). **Confidence** is 1 minus
+  the normalized difference at the refined bottom, from 0 to 1: of the pitch's
+  dip for a voiced frame, of the deepest dip in the range for an unvoiced one (0
   without one, as for a tone below the range); 0 when silent.
-- **Alternative.** For a voiced frame, the deepest other dip in the range more
-  than a semitone from the pitch, refined by its parabola. A sound with a weak
-  fundamental and a strong octave has both octaves as dips, so the pitch and the
-  alternative are the two candidates: when their confidences are close, the
-  octave is ambiguous, and the caller decides. Any periodic sound also repeats
-  every two or three periods; those multiples count only when deeper than the
-  pitch by more than 0.01 and the refinement's uncertainty (how much the
-  parabola lowered either depth), so a clean tone has no rival, and of equally
-  deep dips the shortest period is the alternative.
+- **Alternative.** For a voiced frame, the other octave: the deepest dip in the
+  range within a semitone of half or twice the pitch's period, refined by its
+  parabola. A sound with a weak fundamental and a strong octave has both
+  octaves as dips, so the pitch and the alternative are the two candidates:
+  when their confidences are close, the octave is ambiguous, and the caller
+  decides. Any periodic sound also repeats at twice its period, so that dip
+  counts only when deeper than the pitch by more than 0.01 and the parabola's
+  uncertainty (how much it lowered either depth): a clean tone has no rival.
+  Other periods, such as a fifth's, are not offered.
 - **Smoothing.** `median` (odd, 1 to 15) replaces each voiced pitch with the median
   of the voiced pitches within that many frames; silent and unvoiced frames stay
   without one. It reads up to `median / 2` frames ahead, which adds that many hops
@@ -212,9 +210,9 @@ Bad options, a missing channel, a range outside the input and non-finite samples
 return `InvalidArgument`. `min_hz` is at least `sample_rate / MAX_PITCH_LAG`
 (8192) and `max_hz` at most `sample_rate / MIN_PITCH_LAG` (8). The default
 `Limits` apply, plus at most `MAX_PITCH_FRAMES` (1,048,576) frames and
-`MAX_PITCH_WORK` (2³⁴, a work estimate of frames × (L × (log₂ L + 1) + R), with
-L the power of two at or above the frame's span and R 3 × 2¹⁶ for the refinements
-between samples when the range reaches periods under 48 samples, 0 otherwise),
+`MAX_PITCH_WORK` (2³⁵, a work estimate of frames × (L × (log₂ L + 1) + 3 × 2¹⁶),
+with L the power of two at or above the frame's span and 2¹⁶ for each of up to
+three refinements between samples),
 counted before any frame is measured, or `LimitExceeded`. Ten minutes at
 48 kHz from 60 Hz to 2 kHz every 10 ms is about 13 billion. Several channels
 are mixed once, into one buffer of the input's length. Silent frames skip the

@@ -15,14 +15,11 @@ pub const MAX_PITCH_LAG: usize = 8192;
 pub const MIN_PITCH_LAG: usize = 8;
 /// The shortest integration window, in frames.
 const MIN_PITCH_WINDOW: usize = 96;
-/// How deep a dip of a period shorter than [`MIN_PITCH_LAG`] must be for its
-/// repeats in the range not to count as a pitch.
-const SHORT_PERIOD_DEPTH: f64 = 0.3;
-/// Periods shorter than this, in frames, are refined by evaluating the
-/// difference between samples; longer ones by a parabola, within 0.5 cents.
+/// Periods shorter than this, in frames, may be refined by evaluating the
+/// difference between samples; longer ones are refined by a parabola.
 const EXACT_LAG: f64 = 48.0;
-/// The work of that refinement, per frame, in the units of [`MAX_PITCH_WORK`]:
-/// 10 evaluations of at most 192 terms of 32 taps.
+/// The work of that refinement, in the units of [`MAX_PITCH_WORK`]: 10
+/// evaluations of at most 192 terms of 32 taps.
 const EXACT_WORK: u64 = 1 << 16;
 /// The most refinements between samples in one frame.
 const MAX_REFINEMENTS: u64 = 3;
@@ -32,12 +29,10 @@ const REFINE_MARGIN: f64 = 0.3;
 /// The widest median smoothing, in frames.
 pub const MAX_PITCH_MEDIAN: usize = 15;
 /// The most work one [`Audio::pitch_track`] is allowed, as an estimate: analysis
-/// frames × (L × (log₂ L + 1) + R), with L the transform size, the power of two at
-/// or above [`PitchTrack::span_frames`], and R 3 × 2^16 for up to three refinements
-/// between samples when the range reaches periods under 48 frames, 0 otherwise.
-/// Every
-/// frame counts, silent or not.
-pub const MAX_PITCH_WORK: u64 = 1 << 34;
+/// frames × (L × (log₂ L + 1) + 3 × 2^16), with L the transform size, the power
+/// of two at or above [`PitchTrack::span_frames`], and 2^16 for each of up to
+/// three refinements between samples. Every frame counts, silent or not.
+pub const MAX_PITCH_WORK: u64 = 1 << 35;
 
 /// How [`Audio::pitch_track`] looks for a pitch.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -111,14 +106,13 @@ pub struct PitchFrame {
     /// The confidence of the pitch for a voiced frame, of the deepest dip in the
     /// range for an unvoiced one (0 without one); 0 when silent.
     pub confidence: f64,
-    /// The deepest other dip of a voiced frame in the range, more than a semitone
-    /// from the pitch, as the octave above or below: when its confidence is close
-    /// to the pitch's, the octave is ambiguous. Multiples of the period, which any
-    /// periodic sound repeats at, count only when deeper by more than 0.01 and the
-    /// refinement's uncertainty, and of equally
-    /// deep dips the shortest period is given. `None` when the
-    /// frame is not voiced or has no other dip. With smoothing, it and the
-    /// confidence still describe the frame's own estimate.
+    /// The other octave of a voiced frame: the deepest dip in the range within a
+    /// semitone of half or twice the pitch's period. When its confidence is close
+    /// to the pitch's, the octave is ambiguous. Twice the period, which any
+    /// periodic sound repeats at, counts only when deeper by more than 0.01 and the
+    /// refinement's uncertainty. `None` when the frame is not voiced or has no such
+    /// dip. With smoothing, it and the confidence still describe the frame's own
+    /// estimate.
     pub alternative: Option<PitchCandidate>,
 }
 
@@ -196,6 +190,8 @@ fn transform(real: &mut [f64], imag: &mut [f64], inverse: bool) {
 #[derive(Clone, Copy)]
 struct Bottom {
     lag: f64,
+    /// The whole lag of the dip's bottom.
+    at: usize,
     depth: f64,
     /// How much lower the refined depth is than the depth at the whole lag: a
     /// measure of the refinement's uncertainty, large for short periods.
@@ -216,8 +212,6 @@ struct Yin {
     normalized: Vec<f64>,
     /// The raw difference, before normalization, for refining periods.
     difference: Vec<f64>,
-    /// The running sum of the raw difference from lag 1, for normalizing.
-    cumulative: Vec<f64>,
 }
 
 impl Yin {
@@ -234,7 +228,6 @@ impl Yin {
             squares: vec![0.0; window + max_lag + 1],
             normalized: vec![1.0; max_lag + 1],
             difference: vec![0.0; max_lag + 1],
-            cumulative: vec![0.0; max_lag + 1],
         }
     }
 
@@ -274,7 +267,6 @@ impl Yin {
             let d = (e0 + energy(tau) - 2.0 * r).max(0.0);
             running += d;
             self.difference[tau] = d;
-            self.cumulative[tau] = running;
             self.normalized[tau] = if running > 0.0 {
                 d * tau as f64 / running
             } else {
@@ -292,6 +284,7 @@ impl Yin {
         let d = &self.normalized;
         let whole = Bottom {
             lag: tau as f64,
+            at: tau,
             depth: d[tau],
             lowered: 0.0,
         };
@@ -310,6 +303,7 @@ impl Yin {
             (b + shift * (c - a) / 2.0 + shift * shift * (a - 2.0 * b + c) / 2.0).clamp(0.0, b);
         Bottom {
             lag: tau as f64 + shift,
+            at: tau,
             depth,
             lowered: b - depth,
         }
@@ -378,18 +372,20 @@ impl Yin {
             step *= 0.25;
         }
         let tau = tau.clamp(lag - 1.0, lag + 1.0);
-        // The normalized difference there: the difference over its mean from lag
-        // 1, both over the whole window.
-        let whole = (tau.floor() as usize).min(self.max_lag - 1);
-        let frac = tau - whole as f64;
-        let mean = (self.cumulative[whole] + frac * self.difference[whole + 1]) / tau;
-        let depth = difference(tau) * self.window as f64 / terms as f64 / mean;
-        if !(mean > 0.0 && depth.is_finite()) {
+        // The depth: the whole lag's normalized difference, over the whole window,
+        // lowered by as much as the refinement lowers the difference over the same
+        // samples. A ratio over the same samples, so that a sound that fades within
+        // the window is not judged by its quiet middle alone.
+        let at = difference(bottom.at as f64);
+        let whole = bottom.depth + bottom.lowered;
+        let ratio = difference(tau) / at;
+        if !(at > 0.0 && ratio.is_finite()) {
             return bottom;
         }
         Bottom {
             lag: tau,
-            depth: depth.clamp(0.0, 1.0),
+            at: bottom.at,
+            depth: (whole * ratio).clamp(0.0, whole),
             lowered: 0.0,
         }
     }
@@ -420,10 +416,9 @@ impl Audio {
     /// that dip's period lies in the range (within 5 cents of an end, and then set
     /// to it): a tone outside the range has no pitch rather than one of its
     /// period's multiples, and so has a weak fundamental under a strong harmonic
-    /// above `max_hz`; nor is a dip that repeats a period under [`MIN_PITCH_LAG`]
-    /// frames whose dip is below 0.3. Periods under 48 frames are refined by
-    /// evaluating the difference between samples, longer ones by a parabola.
-    /// Other frames have no pitch. With
+    /// above `max_hz`. Periods under 48 frames whose dips are near the threshold
+    /// are refined by evaluating the difference between samples before the
+    /// threshold decides; others by a parabola. Other frames have no pitch. With
     /// all channels, the mean of the channels is tracked.
     ///
     /// It is a tool for one voice: in a chord or a mix it finds the period the
@@ -517,14 +512,9 @@ impl Audio {
         }
         let size = span.next_power_of_two();
         // In u64, so that the limit is exact on 32-bit targets too. Each frame
-        // reads its span and runs three transforms of `size`, and when the range
-        // reaches periods under `EXACT_LAG`, one refinement between samples.
-        let short_range = (min_lag as f64) < EXACT_LAG;
-        let refine = if short_range {
-            MAX_REFINEMENTS * EXACT_WORK
-        } else {
-            0
-        };
+        // reads its span, runs three transforms of `size` and may refine up to
+        // `MAX_REFINEMENTS` short periods between samples.
+        let refine = MAX_REFINEMENTS * EXACT_WORK;
         if (count as u64)
             .checked_mul(size as u64 * (u64::from(size.trailing_zeros()) + 1) + refine)
             .is_none_or(|n| n > MAX_PITCH_WORK)
@@ -580,13 +570,7 @@ impl Audio {
             };
             if variance > silence * silence {
                 yin.run(&x);
-                // Two periods related by a whole multiple, within a semitone.
-                let near_multiple = |long: f64, short: f64| {
-                    let ratio = long / short;
-                    let k = ratio.round();
-                    k >= 2.0 && (ratio / k).max(k / ratio) < semitone
-                };
-                // The dips from `from` on, refined between samples.
+                // The dips from `from` on, refined between samples by parabolas.
                 let dips = |from: usize| {
                     (from..=hi)
                         .filter(|&t| yin.is_dip(t))
@@ -594,32 +578,14 @@ impl Audio {
                 };
                 // YIN's choice: the first dip below the threshold, from the shortest
                 // lag. When its period lies outside the range, the frame has no
-                // pitch, rather than one of the period's multiples.
-                // Nor when it repeats a period shorter than `MIN_PITCH_LAG` that is
-                // nearly as periodic (depth below 0.3): a period of a few samples
-                // refines to a shallower dip than it is, and may miss the threshold.
-                let repeats_above = |c: &Bottom| {
-                    dips(1).take_while(|b| b.lag < c.lag).any(|b| {
-                        b.lag < MIN_PITCH_LAG as f64 && b.depth < SHORT_PERIOD_DEPTH && {
-                            // Its refined lag may be off by half a sample, so
-                            // each repeat may be off by as much.
-                            let k = (c.lag / b.lag).round();
-                            k >= 2.0
-                                && (c.lag - k * b.lag).abs()
-                                    <= (0.5 * k).max(c.lag * (semitone - 1.0))
-                        }
-                    })
-                };
-                // A short period's dip in the range, when the range reaches such
-                // periods, is refined between samples before the threshold decides,
-                // if its parabola puts it near the threshold: at most
-                // `MAX_REFINEMENTS` a frame, as the work limit counts.
+                // pitch, rather than one of the period's multiples. A short period's
+                // dip whose parabola puts it near the threshold is first refined
+                // between samples, at most `MAX_REFINEMENTS` a frame, as the work
+                // limit counts: the parabola misjudges short periods.
                 let mut refinements = 0;
                 let mut first = None;
                 for b in dips(1) {
-                    let b = if short_range
-                        && b.lag < EXACT_LAG
-                        && b.lag + 1.0 >= lo as f64
+                    let b = if b.lag < EXACT_LAG
                         && b.depth < o.threshold + REFINE_MARGIN
                         && refinements < MAX_REFINEMENTS
                     {
@@ -633,36 +599,27 @@ impl Audio {
                         break;
                     }
                 }
-                if let Some(chosen) = first.filter(|b| in_range(b.lag) && !repeats_above(b)) {
+                if let Some(chosen) = first.filter(|b| in_range(b.lag)) {
                     frame.state = PitchState::Voiced;
                     frame.frequency_hz = Some(pitch(chosen.lag));
                     frame.confidence = (1.0 - chosen.depth).clamp(0.0, 1.0);
-                    // The deepest other dip in the range more than a semitone away.
-                    // A multiple of the period counts only when deeper by more than
-                    // 0.01 and the refinement's uncertainty; of equally deep dips,
-                    // the shortest period is given.
-                    let clearly_deeper = |b: &Bottom, than: &Bottom| {
-                        b.depth < than.depth - 0.01 - b.lowered.max(than.lowered)
+                    // The other octave: the deepest dip in the range within a
+                    // semitone of half or twice the period. Twice the period, which
+                    // any periodic sound repeats at, counts only when deeper than the
+                    // pitch by more than 0.01 and the refinement's uncertainty.
+                    let octave = |b: &Bottom, k: f64| {
+                        let r = b.lag / (chosen.lag * k);
+                        r.max(1.0 / r) < semitone
                     };
-                    let others = || {
-                        dips(lo).filter(|b| {
-                            let ratio = b.lag / chosen.lag;
+                    frame.alternative = dips(lo)
+                        .filter(|b| {
                             in_range(b.lag)
-                                && (ratio > semitone || ratio < 1.0 / semitone)
-                                && (!near_multiple(b.lag, chosen.lag) || clearly_deeper(b, &chosen))
+                                && (octave(b, 0.5)
+                                    || (octave(b, 2.0)
+                                        && b.depth
+                                            < chosen.depth - 0.01 - b.lowered.max(chosen.lowered)))
                         })
-                    };
-                    frame.alternative = others()
                         .min_by(|a, b| a.depth.total_cmp(&b.depth))
-                        .map(|deepest| {
-                            others()
-                                .find(|s| {
-                                    s.lag == deepest.lag
-                                        || (near_multiple(deepest.lag, s.lag)
-                                            && !clearly_deeper(&deepest, s))
-                                })
-                                .unwrap_or(deepest)
-                        })
                         .map(|b| PitchCandidate {
                             frequency_hz: pitch(b.lag),
                             confidence: (1.0 - b.depth).clamp(0.0, 1.0),

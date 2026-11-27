@@ -329,10 +329,11 @@ fn bad_arguments_are_refused() {
         .unwrap_err();
     assert_eq!(error.code, ErrorCode::LimitExceeded);
     assert_eq!(error.message, "Too many pitch analysis frames");
-    // The work limit, 2^34, at its edge: at 20 Hz a frame spans 4807 frames and
-    // transforms 8192, so 149,796 frames × 8192 × (13 + 1) fit and 149,797 do not. The
+    // The work limit, 2^35, at its edge: at 20 Hz a frame spans 4807 frames and
+    // transforms 8192, so 110,376 frames × (8192 × (13 + 1) + 3 × 2^16) fit and
+    // 110,377 do not. The
     // input is silent, so nothing is transformed.
-    for (frames, fits) in [(149_796, true), (149_797, false)] {
+    for (frames, fits) in [(110_376, true), (110_377, false)] {
         let long = Audio::new(vec![vec![0.0; frames + 4806]], RATE).unwrap();
         let result = long.pitch_track(&PitchOptions::new(20.0, 1000.0, 1));
         match fits {
@@ -340,10 +341,10 @@ fn bad_arguments_are_refused() {
             false => assert_eq!(result.unwrap_err().code, ErrorCode::LimitExceeded),
         }
     }
-    // A range reaching periods under 48 frames counts three refinements a frame:
-    // 100 Hz to 2 kHz spans 962 frames and transforms 1024, so 82,646 frames ×
-    // (1024 × (10 + 1) + 3 × 2^16) fit and 82,647 do not.
-    for (frames, fits) in [(82_646, true), (82_647, false)] {
+    // A shorter frame: 100 Hz to 2 kHz
+    // spans 962 frames and transforms 1024, so 165,292 frames ×
+    // (1024 × (10 + 1) + 3 × 2^16) fit and 165,293 do not.
+    for (frames, fits) in [(165_292, true), (165_293, false)] {
         let long = Audio::new(vec![vec![0.0; frames + 961]], RATE).unwrap();
         let result = long.pitch_track(&PitchOptions::new(100.0, 2000.0, 1));
         match fits {
@@ -734,5 +735,58 @@ fn short_periods_are_refined_before_the_threshold() {
     );
     for frame in &t.frames {
         assert_eq!(frame.frequency_hz, Some(1000.0), "{frame:?}");
+    }
+}
+
+#[test]
+fn above_the_range_transients_and_octave_alternatives() {
+    let at = |parts: &[(f64, f64)], rate: u32| -> Audio {
+        let samples = (0..(0.3 * rate as f64) as usize)
+            .map(|i| {
+                parts
+                    .iter()
+                    .map(|&(f, a)| a * (2.0 * PI * f * i as f64 / rate as f64).sin())
+                    .sum::<f64>() as f32
+            })
+            .collect();
+        Audio::new(vec![samples], rate).unwrap()
+    };
+    // B♭6 above a 1 kHz ceiling at 16 kHz: no pitch, not the octave below.
+    let f = 1864.655;
+    let note = at(&[(f, 0.3), (2.0 * f, 0.5), (3.0 * f, 0.5)], 16_000);
+    let t = note
+        .pitch_track(&PitchOptions::new(60.0, 1000.0, 160))
+        .unwrap();
+    for frame in &t.frames {
+        assert_ne!(frame.state, PitchState::Voiced, "{frame:?}");
+    }
+    // A 3 kHz ping that dies away in half a millisecond, every 50 ms: no
+    // confident pitch from the quiet part of a frame.
+    let samples: Vec<f32> = (0..24_000)
+        .map(|i| {
+            let t = (i % 2400) as f64 / RATE as f64;
+            (0.5 * (-t / 0.0005).exp() * (2.0 * PI * 3000.0 * t).sin()) as f32
+        })
+        .collect();
+    let t = track(samples, PitchOptions::new(60.0, 2000.0, 480));
+    for frame in t.frames.iter().filter(|f| f.state == PitchState::Voiced) {
+        assert!(frame.confidence < 0.99, "{frame:?}");
+    }
+    // The alternative is the other octave only: a strong octave above the range
+    // leaves no rival at its odd repeats.
+    let t = track(
+        tone(0.5, &[(1, 0.15), (2, 0.5)], |_| 220.0),
+        PitchOptions::new(60.0, 430.0, 480),
+    );
+    for frame in &t.frames {
+        let p = frame.frequency_hz.unwrap();
+        assert!(cents(p, 220.0).abs() < 5.0, "{frame:?}");
+        if let Some(other) = frame.alternative {
+            let ratio = other.frequency_hz / p;
+            assert!(
+                (ratio / 2.0 - 1.0).abs() < 0.06 || (ratio * 2.0 - 1.0).abs() < 0.06,
+                "{frame:?}"
+            );
+        }
     }
 }
