@@ -8,9 +8,8 @@
   file into system-exclusive messages and reads every voice and bank message, so two
   banks saved together give 64 voices with unique names. A voice or bank whose byte
   count disagrees with its data bytes (as the `10 00` many old editors wrote for a
-  bank), bytes
-  outside any message and messages of other data, such as TX802 performances, now
-  read with a warning instead of failing. Files it already accepted read exactly as
+  bank), bytes outside any message and messages of other data, such as TX802
+  performances, now read with a warning instead of failing. Files it already accepted read exactly as
   before. A message cut short is still a `DecodeError`.
 
 ### Added
