@@ -285,29 +285,49 @@ fn inharmonicity(note: &Audio) -> Result<()> {
     // A fundamental from the pitch track, or one the caller knows.
     let track = note.pitch_track(&PitchOptions::new(60.0, 2000.0, 480))?;
     if let Some(f0) = track.median_frequency(all.clone())? {
-        let energy = note.harmonic_energy(&HarmonicOptions::new(f0, all))?;
+        // Frames long enough for the fundamental to span 8 bins, as a bass note
+        // at a high sample rate needs.
+        let rate = f64::from(note.sample_rate());
+        let fft_size = ((8.0 * rate / f0).ceil() as usize)
+            .next_power_of_two()
+            .max(8192);
+        let options = HarmonicOptions {
+            fft_size,
+            hop: fft_size / 2,
+            ..HarmonicOptions::new(f0, all)
+        };
+        let energy = note.harmonic_energy(&options)?;
         println!("inharmonic share {:?}", energy.inharmonic_share);
     }
     Ok(())
 }
 ```
 
-- **Energy.** The Hann-windowed power spectrum (each bin's magnitude squared, as
-  `analyze::spectrum` scales it) summed over whole analysis frames of the range and
-  over the channels measured (one, or all). Frame `i` starts at
-  `range.start + i × hop`; a range shorter than one frame is one frame,
-  zero-padded, and its cut-off edges spread its energy over other bins, so a
-  shorter `fft_size` suits short ranges. Bins below half the fundamental, DC and
-  rumble, are not counted.
-- **Bands.** Every harmonic up to half the sample rate has a band of
-  ±`tolerance_cents` (25 by default) of its frequency, at least 2 bins (the Hann
-  window's main lobe) and at most a quarter of the fundamental, so that bands
-  never meet. The fundamental is at least 8 bins (`MIN_HARMONIC_BINS`): 94 Hz with
-  4096-sample frames at 48 kHz, 23 Hz with 16384.
+- **Energy.** The Hann-windowed one-sided power spectrum, from the magnitudes of
+  `analyze::spectrum` (half an interior bin's magnitude squared, all of it at
+  Nyquist, so that a sine and a Nyquist component of the same RMS weigh the
+  same), summed over whole analysis frames of the range and over the channels
+  measured (one, or all). Frame `i` starts at `range.start + i × hop`; a range
+  shorter than one frame is one frame, zero-padded, and its cut-off edges spread
+  its energy over other bins, so a shorter `fft_size` suits short ranges. DC and
+  the bin beside it, where a DC offset's window lobe falls, are not counted;
+  everything else up to half the sample rate is, so rumble and aliases folded
+  below the fundamental count as inharmonic.
+- **Bands.** Every harmonic up to half the sample rate has a band from
+  `tolerance_cents` (25 by default) below its frequency to as many above it.
+  Each side is at least 2 bins (the Hann window's main lobe) and at most a
+  quarter of the fundamental, so that bands never meet. The fundamental is at
+  least 8 bins (`MIN_HARMONIC_BINS`): 46.875 Hz with the default 8192-sample
+  frames at 48 kHz, 23 Hz with 16384; a bass note at 96 kHz needs 16384 or
+  more, as the example chooses.
+- **Resolution.** A partial's window lobe spreads 2 bins to each side, and a band
+  reaches at least 2 bins, so a partial within about 4 bins of a harmonic
+  (23 Hz with 8192-sample frames at 48 kHz) is counted partly in that harmonic's
+  band. Longer frames resolve closer partials, at the cost of time detail.
 - **Shares.** `harmonic_shares` per harmonic, `harmonic_share` for all bands and
   `inharmonic_share` for the rest, each from 0 to 1; `None` when there is no
   energy to share, as for silence or an empty range. The result carries its
-  options, the sample rate, the frames measured and each band's width in Hz.
+  options, the sample rate, the frames measured and each band's edges in Hz.
 
 An inharmonic share is an indicator, not a verdict. Energy away from the
 harmonics can be aliasing folded back from above half the sample rate (the top
@@ -316,9 +336,11 @@ purpose, noise, a second note, or vibrato and a fundamental that drift out of
 their bands. The share says how much, not which, nor whether it sounds wrong. In
 the tests, ten harmonics of 110, 220 or 523.25 Hz are more than 99.9 % harmonic;
 a partial at 2.76 × the fundamental raises the inharmonic share by its power's
-share within 0.5 %; and a naively generated sawtooth at 1234.5 Hz shows its
-aliases as inharmonic energy, ten times and more that of the same sawtooth
-limited to the harmonics below half the sample rate.
+share within 0.5 %, at 200 Hz and at 110 Hz, 26 Hz from the third harmonic; a
+naively generated sawtooth at 1234.5 Hz shows its aliases as inharmonic energy,
+ten times and more that of the same sawtooth limited to the harmonics below half
+the sample rate; and one at 23 kHz, whose aliases all fold below it, is
+inharmonic by 1 − 6/π² (39 %) within 2 %.
 
 Bad options, a fundamental out of range, a range outside the input, a missing
 channel and non-finite samples return `InvalidArgument`. The default `Limits`

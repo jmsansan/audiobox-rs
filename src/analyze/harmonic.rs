@@ -24,10 +24,10 @@ pub struct HarmonicOptions {
     pub fft_size: usize,
     /// Frames between the starts of analysis frames, at least 1.
     pub hop: usize,
-    /// How far from each harmonic its band reaches, in cents of that harmonic's
-    /// frequency (finite, at least 0). The band is at least 2 bins wide on each
-    /// side, the Hann window's main lobe, and at most a quarter of the
-    /// fundamental, so that bands never meet.
+    /// How far from each harmonic its band reaches, in cents below and above it
+    /// (finite, at least 0). Each side of the band is at least 2 bins wide, the
+    /// Hann window's main lobe, and at most a quarter of the fundamental, so that
+    /// bands never meet.
     pub tolerance_cents: f64,
     /// The input frames measured, within the input.
     pub range: Range<usize>,
@@ -36,13 +36,14 @@ pub struct HarmonicOptions {
 }
 
 impl HarmonicOptions {
-    /// The harmonics of `fundamental_hz` over `range`, with 4096-sample frames every
-    /// 2048, bands of 25 cents and all channels.
+    /// The harmonics of `fundamental_hz` over `range`, with 8192-sample frames every
+    /// 4096, bands of 25 cents and all channels. At 48 kHz that takes fundamentals
+    /// from 46.875 Hz; a lower one, or a higher sample rate, needs a longer frame.
     pub fn new(fundamental_hz: f64, range: Range<usize>) -> Self {
         Self {
             fundamental_hz,
-            fft_size: 4096,
-            hop: 2048,
+            fft_size: 8192,
+            hop: 4096,
             tolerance_cents: 25.0,
             range,
             channel: None,
@@ -53,9 +54,10 @@ impl HarmonicOptions {
 /// The shares of spectral energy at the harmonics of a fundamental and elsewhere,
 /// with the settings they were measured with.
 ///
-/// The energy is the Hann-windowed power spectrum (each bin's magnitude squared, as
-/// [`super::spectrum`] scales it) averaged over the analysis frames and channels.
-/// Bins below half the fundamental, DC and rumble, are not counted.
+/// The energy is the Hann-windowed one-sided power spectrum (from the magnitudes of
+/// [`super::spectrum`]: half an interior bin's magnitude squared, all of it at
+/// Nyquist) summed over the analysis frames and channels. DC and the bin beside it
+/// are not counted; rumble and aliases below the fundamental are, as inharmonic.
 #[derive(Clone, Debug, PartialEq)]
 pub struct HarmonicEnergy {
     pub options: HarmonicOptions,
@@ -65,8 +67,9 @@ pub struct HarmonicEnergy {
     /// The harmonics counted: every multiple of the fundamental up to half the
     /// sample rate.
     pub harmonics: usize,
-    /// Each harmonic's band half-width, in Hz, from the first harmonic.
-    pub band_hz: Vec<f64>,
+    /// Each harmonic's band, its lowest and highest frequency in Hz, from the
+    /// first harmonic.
+    pub bands_hz: Vec<(f64, f64)>,
     /// The share of the energy in each harmonic's band, from the first harmonic.
     pub harmonic_shares: Vec<f64>,
     /// The share of the energy in all the harmonics' bands, from 0 to 1; `None`
@@ -174,28 +177,37 @@ impl Audio {
         {
             return Err(Error::limit("Harmonic analysis exceeds its work limit"));
         }
-        // The bands: each harmonic's frequency ± its half-width.
+        // The bands: from `tolerance_cents` below each harmonic to as far above it,
+        // each side at least 2 bins and at most a quarter of the fundamental.
         let nyquist = rate / 2.0;
         let harmonics = (nyquist / o.fundamental_hz).floor() as usize;
-        let mut band_hz = reserve(harmonics)?;
+        let ratio = 2f64.powf(o.tolerance_cents / 1200.0);
+        let side = |hz: f64| hz.max(2.0 * bin).min(o.fundamental_hz / 4.0);
+        let mut bands_hz = reserve(harmonics)?;
         for h in 1..=harmonics {
             let f = h as f64 * o.fundamental_hz;
-            let cents = f * (2f64.powf(o.tolerance_cents / 1200.0) - 1.0);
-            band_hz.push(cents.max(2.0 * bin).min(o.fundamental_hz / 4.0));
+            bands_hz.push((f - side(f - f / ratio), f + side(f * ratio - f)));
         }
         let bins = o.fft_size / 2 + 1;
-        // Which harmonic each bin belongs to, if any; bins below f0 / 2 are skipped.
+        // Which harmonic each bin belongs to, if any. The bands never meet, so a
+        // bin can only be in the band of its nearest harmonic.
         let owner: Vec<Option<usize>> = (0..bins)
             .map(|k| {
                 let f = k as f64 * bin;
                 let h = (f / o.fundamental_hz).round() as usize;
-                (h >= 1
-                    && h <= harmonics
-                    && (f - h as f64 * o.fundamental_hz).abs() <= band_hz[h - 1])
-                    .then(|| h - 1)
+                (h >= 1 && h <= harmonics && {
+                    let (low, high) = bands_hz[h - 1];
+                    (low..=high).contains(&f)
+                })
+                .then(|| h - 1)
             })
             .collect();
-        let counted = |k: usize| k as f64 * bin >= o.fundamental_hz / 2.0;
+        // DC and the bin beside it, where a DC offset's window lobe falls, are not
+        // counted; every other bin is, aliases below the fundamental included.
+        let counted = |k: usize| k >= 2;
+        // One-sided power: the spectrum's amplitudes are doubled except at DC and
+        // Nyquist, so an interior bin's power is half its amplitude squared.
+        let weight = |k: usize| if k == 0 || k == bins - 1 { 1.0 } else { 0.5 };
         let (window, sum) = super::hann(o.fft_size);
         let mut real = vec![0.0; o.fft_size];
         let mut imag = vec![0.0; o.fft_size];
@@ -209,8 +221,8 @@ impl Audio {
                 .filter(|c| c[start..end].iter().any(|&s| s != 0.0))
             {
                 let m = super::transform(&c[start..end], &window, sum, &mut real, &mut imag);
-                for (p, v) in power.iter_mut().zip(m) {
-                    *p += v * v;
+                for (k, (p, v)) in power.iter_mut().zip(m).enumerate() {
+                    *p += weight(k) * v * v;
                 }
             }
         }
@@ -234,7 +246,7 @@ impl Audio {
             sample_rate: self.rate,
             frames: count,
             harmonics,
-            band_hz,
+            bands_hz,
             harmonic_shares,
             harmonic_share,
             inharmonic_share: harmonic_share.map(|s| 1.0 - s),

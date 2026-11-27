@@ -119,16 +119,19 @@ fn a_fundamental_from_the_pitch_track_works_as_well() {
 
 #[test]
 fn settings_are_echoed_and_bands_are_bounded() {
-    let e = energy(partials(&[(300.0, 0.5)], 10_000), 300.0);
-    assert_eq!(e.options, HarmonicOptions::new(300.0, 0..10_000));
+    let e = energy(partials(&[(300.0, 0.5)], 20_000), 300.0);
+    assert_eq!(e.options, HarmonicOptions::new(300.0, 0..20_000));
     assert_eq!(e.sample_rate, RATE);
-    assert_eq!(e.frames, (10_000 - 4096) / 2048 + 1);
+    assert_eq!(e.frames, (20_000 - 8192) / 4096 + 1);
     assert_eq!(e.harmonics, 80);
-    assert_eq!(e.band_hz.len(), 80);
-    let bin = RATE as f64 / 4096.0;
-    for (h, &band) in e.band_hz.iter().enumerate() {
-        let cents = (h + 1) as f64 * 300.0 * (2f64.powf(25.0 / 1200.0) - 1.0);
-        assert_eq!(band, cents.max(2.0 * bin).min(75.0), "harmonic {}", h + 1);
+    assert_eq!(e.bands_hz.len(), 80);
+    let bin = RATE as f64 / 8192.0;
+    let ratio = 2f64.powf(25.0 / 1200.0);
+    for (h, &(low, high)) in e.bands_hz.iter().enumerate() {
+        let f = (h + 1) as f64 * 300.0;
+        let side = |hz: f64| hz.max(2.0 * bin).min(75.0);
+        assert_eq!(low, f - side(f - f / ratio), "harmonic {}", h + 1);
+        assert_eq!(high, f + side(f * ratio - f), "harmonic {}", h + 1);
     }
     // A range: the second half only, silent, has nothing to share.
     let mut samples = partials(&[(300.0, 0.5)], 8192);
@@ -178,11 +181,11 @@ fn bad_arguments_are_refused() {
     let audio = mono(vec![0.5; 10_000]);
     let options = HarmonicOptions::new(220.0, 0..10_000);
     let code = |o: HarmonicOptions| audio.harmonic_energy(&o).unwrap_err().code;
-    // 8 bins of a 4096-point FFT at 48 kHz: 93.75 Hz.
-    let fine = audio.harmonic_energy(&HarmonicOptions::new(93.75, 0..10_000));
+    // 8 bins of an 8192-point FFT at 48 kHz: 46.875 Hz.
+    let fine = audio.harmonic_energy(&HarmonicOptions::new(46.875, 0..10_000));
     assert!(fine.is_ok());
     for bad in [
-        HarmonicOptions::new(93.7, 0..10_000),
+        HarmonicOptions::new(46.8, 0..10_000),
         HarmonicOptions::new(24_000.0, 0..10_000),
         HarmonicOptions::new(f64::NAN, 0..10_000),
         HarmonicOptions::new(220.0, 0..10_001),
@@ -219,13 +222,13 @@ fn bad_arguments_are_refused() {
         code(HarmonicOptions::new(220.0, reversed)),
         ErrorCode::InvalidArgument
     );
-    // The work limit, 2^32, at its edge: 87,381 frames × 4096 × 12 fit and
-    // 87,382 do not.
-    for (frames, fits) in [(87_381, true), (87_382, false)] {
-        let long = Audio::new(vec![vec![0.0; frames + 4095]], RATE).unwrap();
+    // The work limit, 2^32, at its edge: 40,329 frames × 8192 × 13 fit and
+    // 40,330 do not.
+    for (frames, fits) in [(40_329, true), (40_330, false)] {
+        let long = Audio::new(vec![vec![0.0; frames + 8191]], RATE).unwrap();
         let options = HarmonicOptions {
             hop: 1,
-            ..HarmonicOptions::new(220.0, 0..frames + 4095)
+            ..HarmonicOptions::new(220.0, 0..frames + 8191)
         };
         let result = long.harmonic_energy(&options);
         match fits {
@@ -233,4 +236,73 @@ fn bad_arguments_are_refused() {
             false => assert_eq!(result.unwrap_err().code, ErrorCode::LimitExceeded),
         }
     }
+}
+
+#[test]
+fn a_bell_partial_at_a_low_fundamental() {
+    // 110 Hz: the partial at 2.76 × 110 Hz lies 26 Hz below the third harmonic.
+    let f0 = 110.0;
+    let list = [(f0, 0.3), (3.0 * f0, 0.2), (2.76 * f0, 0.3)];
+    let e = energy(partials(&list, 96_000), f0);
+    let expected = power_share(&[0.3], &[0.3, 0.2, 0.3]);
+    let share = e.inharmonic_share.unwrap();
+    assert!((share - expected).abs() < 0.005, "{share} vs {expected}");
+}
+
+#[test]
+fn aliases_below_the_fundamental_count() {
+    // A naive sawtooth at 23 kHz: its harmonics fold back below it, the second to
+    // 2 kHz. Only the fundamental is harmonic: 6 / π² of the power.
+    let f0 = 23_000.0;
+    let naive: Vec<f32> = (0..48_000)
+        .map(|i| {
+            let phase = (i as f64 * f0 / RATE as f64).fract();
+            (0.5 * (2.0 * phase - 1.0)) as f32
+        })
+        .collect();
+    let share = energy(naive, f0).inharmonic_share.unwrap();
+    let expected = 1.0 - 6.0 / (PI * PI);
+    assert!((share - expected).abs() < 0.02, "{share} vs {expected}");
+    // A DC offset is not counted.
+    let shifted: Vec<f32> = partials(&[(220.0, 0.3)], 48_000)
+        .iter()
+        .map(|s| s + 0.5)
+        .collect();
+    assert!(energy(shifted, 220.0).inharmonic_share.unwrap() < 0.001);
+}
+
+#[test]
+fn nyquist_counts_at_its_power() {
+    // A 1125 Hz tone and a Nyquist component of the same RMS: half and half.
+    let tone = partials(&[(1125.0, 0.5)], 48_000);
+    let rms = 0.5 / 2f64.sqrt();
+    let mixed: Vec<f32> = tone
+        .iter()
+        .enumerate()
+        .map(|(i, s)| s + (rms * if i % 2 == 0 { 1.0 } else { -1.0 }) as f32)
+        .collect();
+    let share = energy(mixed, 1125.0).inharmonic_share.unwrap();
+    assert!((share - 0.5).abs() < 0.005, "{share}");
+}
+
+#[test]
+fn bands_reach_as_many_cents_below_as_above() {
+    // 1 kHz with 300 cents: the band runs from 1000 / 2^(1/4) ≈ 841 Hz to
+    // 1000 × 2^(1/4) ≈ 1189 Hz, within the quarter-fundamental cap (250 Hz).
+    let options = HarmonicOptions {
+        tolerance_cents: 300.0,
+        ..HarmonicOptions::new(1000.0, 0..48_000)
+    };
+    let at = |f: f64| {
+        mono(partials(&[(1000.0, 0.3), (f, 0.3)], 48_000))
+            .harmonic_energy(&options)
+            .unwrap()
+    };
+    let e = at(820.0);
+    let (low, high) = e.bands_hz[0];
+    assert!((low - 1000.0 / 2f64.powf(0.25)).abs() < 1e-9, "{low}");
+    assert!((high - 1000.0 * 2f64.powf(0.25)).abs() < 1e-9, "{high}");
+    // An 820 Hz partial is outside the band; one at 870 Hz is inside it.
+    assert!((e.inharmonic_share.unwrap() - 0.5).abs() < 0.01, "{e:?}");
+    assert!(at(870.0).inharmonic_share.unwrap() < 0.01);
 }
