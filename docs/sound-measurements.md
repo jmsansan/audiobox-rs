@@ -38,8 +38,10 @@ fn note_times(note: &Audio, gate_off_frame: usize) -> Result<()> {
 - **Attack:** from the first window at or above `attack_from` × the peak to the
   first at or above `attack_to` × the peak (10 % to 90 % by default).
 - **Decay:** from the first window that reaches the peak to the first after it at or
-  below the peak lowered by `decay_db` (20 dB by default). A note that falls to a
-  sustain above that level has no decay time at that threshold.
+  below the peak lowered by `decay_db` (20 dB by default). The search runs to the
+  end of the input, so a note that holds a sustain above that level gets the time
+  until its release falls through it, sustain and release included. Measure a cut
+  that ends at the gate (`Audio::cut`) for the decay to the sustain alone.
 - **Tail:** from the gate-off frame the caller gives until the envelope stays at or
   below `tail_floor_db` relative to the peak (−60 dB by default) to the end of the
   input. It ends at the end of the last window above the floor, and it is empty
