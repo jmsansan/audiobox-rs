@@ -9,7 +9,8 @@ pub use envelope::{
     Envelope, EnvelopeMethod, EnvelopeOptions, EnvelopeSpan, EnvelopeThresholds, EnvelopeTimes,
 };
 pub use harmonic::{
-    HarmonicEnergy, HarmonicOptions, MAX_HARMONIC_FRAMES, MAX_HARMONIC_WORK, MIN_HARMONIC_BINS,
+    HARMONIC_BINS, HarmonicEnergy, HarmonicOptions, MAX_HARMONIC_FRAMES, MAX_HARMONIC_WORK,
+    MIN_HARMONIC_BINS,
 };
 pub use measurements::{
     BoundaryMeasurement, BoundarySamples, ChannelStep, MAX_MEASUREMENT_BOUNDARIES,

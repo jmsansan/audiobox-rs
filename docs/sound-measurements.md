@@ -282,20 +282,12 @@ use audiobox::{Audio, Result};
 
 fn inharmonicity(note: &Audio) -> Result<()> {
     let all = 0..note.frames();
-    // A fundamental from the pitch track, or one the caller knows.
-    let track = note.pitch_track(&PitchOptions::new(60.0, 2000.0, 480))?;
+    // A fundamental from the pitch track, from a bass guitar's low E (41 Hz)
+    // up, or one the caller knows.
+    let track = note.pitch_track(&PitchOptions::new(40.0, 2000.0, 480))?;
     if let Some(f0) = track.median_frequency(all.clone())? {
-        // Frames long enough for the fundamental to span 8 bins, as a bass note
-        // at a high sample rate needs.
-        let rate = f64::from(note.sample_rate());
-        let fft_size = ((8.0 * rate / f0).ceil() as usize)
-            .next_power_of_two()
-            .max(8192);
-        let options = HarmonicOptions {
-            fft_size,
-            hop: fft_size / 2,
-            ..HarmonicOptions::new(f0, all)
-        };
+        // Frames sized for the fundamental and the sample rate.
+        let options = HarmonicOptions::new(f0, note.sample_rate(), all);
         let energy = note.harmonic_energy(&options)?;
         println!("inharmonic share {:?}", energy.inharmonic_share);
     }
@@ -303,52 +295,56 @@ fn inharmonicity(note: &Audio) -> Result<()> {
 }
 ```
 
+- **Frames.** `HarmonicOptions::new` takes the shortest power of two of at least
+  4096 samples in which the fundamental spans `HARMONIC_BINS` (24) bins, at most
+  1,048,576, every half frame: 8192 samples at 220 Hz and 48 kHz, 32768 at 55
+  Hz, 65536 for a 41 Hz low E at 96 kHz. A low note thus needs a long range: a
+  range shorter than one frame is one frame, zero-padded, and its cut-off edges
+  spread its energy over other bins. The fields can be set by hand; the
+  fundamental must then be at least 8 bins (`MIN_HARMONIC_BINS`).
 - **Energy.** The Hann-windowed one-sided power spectrum, from the magnitudes of
   `analyze::spectrum` (half an interior bin's magnitude squared, all of it at
   Nyquist, so that a sine and a Nyquist component of the same RMS weigh the
   same), summed over whole analysis frames of the range and over the channels
-  measured (one, or all). Frame `i` starts at `range.start + i × hop`; a range
-  shorter than one frame is one frame, zero-padded, and its cut-off edges spread
-  its energy over other bins, so a shorter `fft_size` suits short ranges. Each
-  frame's mean is removed before the window, so a DC offset adds nothing, and DC
-  and the bin beside it are not counted; everything else up to half the sample
-  rate is, so rumble and aliases folded below the fundamental count as
-  inharmonic.
+  measured (one, or all). Frame `i` starts at `range.start + i × hop`. Each
+  frame's mean is removed before the window, so a DC offset adds nothing, and
+  every bin but DC counts: rumble and aliases folded below the fundamental are
+  inharmonic. Rumble of under two periods a frame is measured roughly (8 Hz at
+  the tone's level gives 52 % instead of 50 % in the tests).
 - **Bands.** Every harmonic up to half the sample rate has a band from
   `tolerance_cents` (25 by default) below its frequency to as many above it.
   Each side is at least 2 bins (the Hann window's main lobe) and at most a
-  quarter of the fundamental, so that bands never meet. The fundamental is at
-  least 8 bins (`MIN_HARMONIC_BINS`): 46.875 Hz with the default 8192-sample
-  frames at 48 kHz, 23.4375 Hz with 16384; a bass note at 96 kHz needs 16384 or
-  more, as the example chooses.
+  quarter of the fundamental, so that bands never meet.
 - **Resolution.** A partial's window lobe spreads 2 bins to each side, and a band
-  reaches at least 2 bins, so a partial within about 4 bins of a harmonic
-  (23 Hz with 8192-sample frames at 48 kHz) is counted partly in that harmonic's
-  band. Longer frames resolve closer partials, at the cost of time detail.
+  reaches at least 2 bins, so a partial within about 4 bins of a harmonic is
+  counted partly in that harmonic's band. With the frames `new` chooses, that is
+  a sixth of the fundamental: a bell's partial at 2.76 × the fundamental lies
+  5.8 bins from the third harmonic. Frames set shorter by hand resolve less.
 - **Shares.** `harmonic_shares` per harmonic, `harmonic_share` for all bands and
   `inharmonic_share` for the rest, each from 0 to 1; `None` when there is no
-  energy to share, as for silence, a DC offset alone or an empty range. The result carries its
-  options, the sample rate, the frames measured and each band's edges in Hz.
+  energy to share, as for silence, a DC offset alone or an empty range. The
+  result carries its options, the sample rate, the frames measured and each
+  band's edges in Hz.
 
 An inharmonic share is an indicator, not a verdict. Energy away from the
 harmonics can be aliasing folded back from above half the sample rate (the top
 octave of a bright FM patch), the partials of a bell or a metallic patch on
-purpose, noise, a second note, or vibrato and a fundamental that drift out of
-their bands. The share says how much, not which, nor whether it sounds wrong. In
-the tests, ten harmonics of 110, 220 or 523.25 Hz are more than 99.9 % harmonic;
-a partial at 2.76 × the fundamental raises the inharmonic share by its power's
-share within 0.5 %, at 200 Hz and at 110 Hz, 26 Hz from the third harmonic; a
-naively generated sawtooth at 1234.5 Hz shows its aliases as inharmonic energy,
-ten times and more that of the same sawtooth limited to the harmonics below half
-the sample rate; and one at 23 kHz, whose aliases all fold below it, is
-inharmonic by 1 − 6/π² (39 %) within 2 %.
+purpose, noise, rumble, a second note, or vibrato and a fundamental that drift
+out of their bands. The share says how much, not which, nor whether it sounds
+wrong. In the tests, ten harmonics of 110, 220 or 523.25 Hz are more than 99.9 %
+harmonic; a partial at 2.76 × the fundamental raises the inharmonic share by its
+power's share within 0.5 %, at 200, 110 and 55 Hz; a naively generated sawtooth
+at 1234.5 Hz shows its aliases as inharmonic energy, ten times and more that of
+the same sawtooth limited to the harmonics below half the sample rate; and one
+at 23 kHz, whose aliases all fold below it, is inharmonic by 1 − 6/π² (39 %)
+within 2 %.
 
 Bad options, a fundamental out of range, a range outside the input, a missing
 channel and non-finite samples return `InvalidArgument`. The default `Limits`
 apply, plus at most `MAX_HARMONIC_FRAMES` (1,048,576) frames and
 `MAX_HARMONIC_WORK` (2³², frames × channels × `fft_size` × log₂ `fft_size`),
-counted before any frame is measured, or `LimitExceeded`. A channel's frame of
-exact zeros adds no energy and is not transformed. The FFT uses the platform's math, so shares are for reports and
+counted before any frame is measured, or `LimitExceeded`. A channel's frame at
+one level adds no energy and is not transformed. The FFT uses the platform's math, so shares are for reports and
 not bit-identical across hosts.
 
 [`Envelope`]: https://docs.rs/audiobox/latest/audiobox/analyze/struct.Envelope.html

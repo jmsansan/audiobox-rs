@@ -11,6 +11,10 @@ pub const MAX_HARMONIC_WORK: u64 = 1 << 32;
 /// The fewest FFT bins between harmonics: the fundamental is at least this many
 /// bins, so that each harmonic's band leaves room between them.
 pub const MIN_HARMONIC_BINS: usize = 8;
+/// The bins per fundamental [`HarmonicOptions::new`] chooses frames for: enough
+/// to keep a partial between harmonics, such as a bell's at 2.76 times the
+/// fundamental, a few bins clear of their bands.
+pub const HARMONIC_BINS: usize = 24;
 
 /// How [`Audio::harmonic_energy`] measures.
 #[derive(Clone, Debug, PartialEq)]
@@ -36,14 +40,24 @@ pub struct HarmonicOptions {
 }
 
 impl HarmonicOptions {
-    /// The harmonics of `fundamental_hz` over `range`, with 8192-sample frames every
-    /// 4096, bands of 25 cents and all channels. At 48 kHz that takes fundamentals
-    /// from 46.875 Hz; a lower one, or a higher sample rate, needs a longer frame.
-    pub fn new(fundamental_hz: f64, range: Range<usize>) -> Self {
+    /// The harmonics of `fundamental_hz` over `range` of audio at `sample_rate`,
+    /// with bands of 25 cents and all channels. Frames are long enough for the
+    /// fundamental to span [`HARMONIC_BINS`] bins: the shortest power of two of at
+    /// least 4096 samples that does (8192 at 220 Hz and 48 kHz, 32768 at 55 Hz),
+    /// at most 1048576, with a hop of half a frame.
+    pub fn new(fundamental_hz: f64, sample_rate: u32, range: Range<usize>) -> Self {
+        let wanted = HARMONIC_BINS as f64 * f64::from(sample_rate) / fundamental_hz;
+        let fft_size = if wanted.is_finite() && wanted > 0.0 {
+            (wanted.ceil().min((1 << 20) as f64) as usize)
+                .next_power_of_two()
+                .clamp(4096, 1 << 20)
+        } else {
+            4096
+        };
         Self {
             fundamental_hz,
-            fft_size: 8192,
-            hop: 4096,
+            fft_size,
+            hop: fft_size / 2,
             tolerance_cents: 25.0,
             range,
             channel: None,
@@ -57,8 +71,8 @@ impl HarmonicOptions {
 /// The energy is the Hann-windowed one-sided power spectrum (from the magnitudes of
 /// [`super::spectrum`]: half an interior bin's magnitude squared, all of it at
 /// Nyquist) summed over the analysis frames and channels, each frame with its mean
-/// removed, so a DC offset adds nothing. DC and the bin beside it
-/// are not counted; rumble and aliases below the fundamental are, as inharmonic.
+/// removed, so a DC offset adds nothing. Every bin but DC counts, rumble and
+/// aliases below the fundamental as inharmonic.
 #[derive(Clone, Debug, PartialEq)]
 pub struct HarmonicEnergy {
     pub options: HarmonicOptions,
@@ -114,7 +128,7 @@ impl Audio {
     ///     })
     ///     .collect();
     /// let audio = audiobox::Audio::new(vec![samples], 48_000)?;
-    /// let energy = audio.harmonic_energy(&HarmonicOptions::new(220.0, 0..48_000))?;
+    /// let energy = audio.harmonic_energy(&HarmonicOptions::new(220.0, 48_000, 0..48_000))?;
     /// // The partial holds 0.04 of 0.25 of the power: 16 %.
     /// let inharmonic = energy.inharmonic_share.unwrap();
     /// assert!((inharmonic - 0.16).abs() < 0.01, "{inharmonic}");
@@ -212,9 +226,10 @@ impl Audio {
                 .then(|| h - 1)
             })
             .collect();
-        // DC and the bin beside it, where a DC offset's window lobe falls, are not
-        // counted; every other bin is, aliases below the fundamental included.
-        let counted = |k: usize| k >= 2;
+        // DC is not counted: the frame means are removed, so what is left there is
+        // the window's own lobe. Every other bin is, rumble and aliases below the
+        // fundamental included.
+        let counted = |k: usize| k >= 1;
         // One-sided power: the spectrum's amplitudes are doubled except at DC and
         // Nyquist, so an interior bin's power is half its amplitude squared.
         let weight = |k: usize| if k == 0 || k == bins - 1 { 1.0 } else { 0.5 };
@@ -280,7 +295,7 @@ mod tests {
         for value in [f32::NAN, f32::INFINITY] {
             let a = a.with_data(vec![vec![0.0, value, 0.0]]);
             assert_eq!(
-                a.harmonic_energy(&HarmonicOptions::new(220.0, 0..3))
+                a.harmonic_energy(&HarmonicOptions::new(220.0, 48_000, 0..3))
                     .unwrap_err()
                     .code,
                 crate::ErrorCode::InvalidArgument

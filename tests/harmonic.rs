@@ -24,7 +24,7 @@ fn partials(list: &[(f64, f64)], frames: usize) -> Vec<f32> {
 fn energy(samples: Vec<f32>, f0: f64) -> HarmonicEnergy {
     let frames = samples.len();
     mono(samples)
-        .harmonic_energy(&HarmonicOptions::new(f0, 0..frames))
+        .harmonic_energy(&HarmonicOptions::new(f0, RATE, 0..frames))
         .unwrap()
 }
 
@@ -112,7 +112,7 @@ fn a_fundamental_from_the_pitch_track_works_as_well() {
         .unwrap();
     let estimated = track.median_frequency(0..48_000).unwrap().unwrap();
     let e = audio
-        .harmonic_energy(&HarmonicOptions::new(estimated, 0..48_000))
+        .harmonic_energy(&HarmonicOptions::new(estimated, RATE, 0..48_000))
         .unwrap();
     assert!(e.harmonic_share.unwrap() > 0.999, "{e:?}");
 }
@@ -120,12 +120,14 @@ fn a_fundamental_from_the_pitch_track_works_as_well() {
 #[test]
 fn settings_are_echoed_and_bands_are_bounded() {
     let e = energy(partials(&[(300.0, 0.5)], 20_000), 300.0);
-    assert_eq!(e.options, HarmonicOptions::new(300.0, 0..20_000));
+    assert_eq!(e.options, HarmonicOptions::new(300.0, RATE, 0..20_000));
     assert_eq!(e.sample_rate, RATE);
-    assert_eq!(e.frames, (20_000 - 8192) / 4096 + 1);
+    // 300 Hz spans 24 bins with 4096-sample frames, every 2048.
+    assert_eq!((e.options.fft_size, e.options.hop), (4096, 2048));
+    assert_eq!(e.frames, (20_000 - 4096) / 2048 + 1);
     assert_eq!(e.harmonics, 80);
     assert_eq!(e.bands_hz.len(), 80);
-    let bin = RATE as f64 / 8192.0;
+    let bin = RATE as f64 / 4096.0;
     let ratio = 2f64.powf(25.0 / 1200.0);
     for (h, &(low, high)) in e.bands_hz.iter().enumerate() {
         let f = (h + 1) as f64 * 300.0;
@@ -138,17 +140,17 @@ fn settings_are_echoed_and_bands_are_bounded() {
     samples.extend(vec![0.0; 8192]);
     let audio = mono(samples);
     let quiet = audio
-        .harmonic_energy(&HarmonicOptions::new(300.0, 8192..16_384))
+        .harmonic_energy(&HarmonicOptions::new(300.0, RATE, 8192..16_384))
         .unwrap();
     assert_eq!((quiet.harmonic_share, quiet.inharmonic_share), (None, None));
     assert!(quiet.harmonic_shares.iter().all(|&s| s == 0.0));
     let empty = audio
-        .harmonic_energy(&HarmonicOptions::new(300.0, 100..100))
+        .harmonic_energy(&HarmonicOptions::new(300.0, RATE, 100..100))
         .unwrap();
     assert_eq!((empty.frames, empty.harmonic_share), (0, None));
     // Shorter than a frame: one padded frame.
     let short = audio
-        .harmonic_energy(&HarmonicOptions::new(300.0, 0..1000))
+        .harmonic_energy(&HarmonicOptions::new(300.0, RATE, 0..1000))
         .unwrap();
     assert_eq!(short.frames, 1);
     // Its cut-off edges spread the tone: a share, but not a clean one.
@@ -165,7 +167,7 @@ fn channels_are_measured_alone_or_together() {
         audio
             .harmonic_energy(&HarmonicOptions {
                 channel,
-                ..HarmonicOptions::new(220.0, 0..16_384)
+                ..HarmonicOptions::new(220.0, RATE, 0..16_384)
             })
             .unwrap()
             .inharmonic_share
@@ -179,16 +181,20 @@ fn channels_are_measured_alone_or_together() {
 #[test]
 fn bad_arguments_are_refused() {
     let audio = mono(vec![0.5; 10_000]);
-    let options = HarmonicOptions::new(220.0, 0..10_000);
+    let options = HarmonicOptions::new(220.0, RATE, 0..10_000);
     let code = |o: HarmonicOptions| audio.harmonic_energy(&o).unwrap_err().code;
     // 8 bins of an 8192-point FFT at 48 kHz: 46.875 Hz.
-    let fine = audio.harmonic_energy(&HarmonicOptions::new(46.875, 0..10_000));
+    let sized = |f0: f64| HarmonicOptions {
+        fft_size: 8192,
+        ..HarmonicOptions::new(f0, RATE, 0..10_000)
+    };
+    let fine = audio.harmonic_energy(&sized(46.875));
     assert!(fine.is_ok());
     for bad in [
-        HarmonicOptions::new(46.8, 0..10_000),
-        HarmonicOptions::new(24_000.0, 0..10_000),
-        HarmonicOptions::new(f64::NAN, 0..10_000),
-        HarmonicOptions::new(220.0, 0..10_001),
+        sized(46.8),
+        HarmonicOptions::new(24_000.0, RATE, 0..10_000),
+        HarmonicOptions::new(f64::NAN, RATE, 0..10_000),
+        HarmonicOptions::new(220.0, RATE, 0..10_001),
         HarmonicOptions {
             hop: 0,
             ..options.clone()
@@ -219,7 +225,7 @@ fn bad_arguments_are_refused() {
     #[allow(clippy::reversed_empty_ranges)]
     let reversed = 50..10;
     assert_eq!(
-        code(HarmonicOptions::new(220.0, reversed)),
+        code(HarmonicOptions::new(220.0, RATE, reversed)),
         ErrorCode::InvalidArgument
     );
     // The work limit, 2^32, at its edge: 40,329 frames × 8192 × 13 fit and
@@ -228,7 +234,7 @@ fn bad_arguments_are_refused() {
         let long = Audio::new(vec![vec![0.0; frames + 8191]], RATE).unwrap();
         let options = HarmonicOptions {
             hop: 1,
-            ..HarmonicOptions::new(220.0, 0..frames + 8191)
+            ..HarmonicOptions::new(220.0, RATE, 0..frames + 8191)
         };
         let result = long.harmonic_energy(&options);
         match fits {
@@ -291,7 +297,7 @@ fn bands_reach_as_many_cents_below_as_above() {
     // 1000 × 2^(1/4) ≈ 1189 Hz, within the quarter-fundamental cap (250 Hz).
     let options = HarmonicOptions {
         tolerance_cents: 300.0,
-        ..HarmonicOptions::new(1000.0, 0..48_000)
+        ..HarmonicOptions::new(1000.0, RATE, 0..48_000)
     };
     let at = |f: f64| {
         mono(partials(&[(1000.0, 0.3), (f, 0.3)], 48_000))
@@ -339,4 +345,29 @@ fn a_harmonic_on_nyquist_has_its_band() {
     assert_eq!(e.harmonics, 31);
     assert!(e.inharmonic_share.unwrap() < 0.001, "{e:?}");
     assert!((e.harmonic_shares[30] - 0.5).abs() < 0.005, "{e:?}");
+}
+
+#[test]
+fn frames_fit_the_fundamental() {
+    // The shortest power of two of 4096 samples or more for 24 bins.
+    let size = |f0: f64, rate: u32| HarmonicOptions::new(f0, rate, 0..1).fft_size;
+    assert_eq!(size(220.0, 48_000), 8192);
+    assert_eq!(size(55.0, 48_000), 32_768);
+    assert_eq!(size(41.2, 96_000), 65_536);
+    assert_eq!(size(1234.5, 48_000), 4096);
+    assert_eq!(size(0.5, 48_000), 1 << 20);
+    assert_eq!(HarmonicOptions::new(55.0, 48_000, 0..1).hop, 16_384);
+    // The 2.76 × partial of a 55 Hz bass note, 2.25 bins from the third harmonic
+    // with 8192-sample frames, is clear of it with the frames chosen.
+    let f0 = 55.0;
+    let list = [(f0, 0.3), (3.0 * f0, 0.2), (2.76 * f0, 0.3)];
+    let e = energy(partials(&list, 96_000), f0);
+    let expected = power_share(&[0.3], &[0.3, 0.2, 0.3]);
+    let share = e.inharmonic_share.unwrap();
+    assert!((share - expected).abs() < 0.005, "{share} vs {expected}");
+    // Rumble below the fundamental counts: 8 Hz at the tone's RMS, about half;
+    // a frame holds under two of its periods, so the share is rough.
+    let rumble: Vec<f32> = partials(&[(220.0, 0.3), (8.0, 0.3)], 96_000);
+    let share = energy(rumble, 220.0).inharmonic_share.unwrap();
+    assert!((share - 0.5).abs() < 0.05, "{share}");
 }
