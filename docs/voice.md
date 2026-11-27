@@ -195,8 +195,10 @@ and in the final tail.
 | `Fricative` | 0 | 0 | level × 0.3 (robot: level) |
 | `Closure` | 0 | 0 | 0 |
 
-In formant voices these factors put breath and fricative gestures 10–15 dB below a
-vowel of the same level, as in speech (render version 2). Version 1 played them at
+In formant voices these factors set breath and fricative gestures 10–15 dB below a
+vowel of the same level, as in speech (render version 2). They scale the envelope
+before the formant filters, so the rendered gap varies with the preset and the
+sound: about 10 to 21 dB. Version 1 played them at
 the vowel's level, which the owner heard as hissing "ts" sounds and puffs of air
 (2026-11-20).
 

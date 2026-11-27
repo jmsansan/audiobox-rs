@@ -5,11 +5,13 @@
 ### Changed
 
 - Procedural voices are less hissy (owner listening, 2026-11-20: a "ts" and puffs
-  of air). Breath and fricative gestures of formant voices now sound 10–15 dB below
-  their vowels instead of at the same level (`RENDER_VERSION` 2), and the text
+  of air). Breath and fricative gestures of formant voices are set 10–15 dB below
+  their vowels instead of at the same level (`RENDER_VERSION` 2); after the formant
+  filters the rendered gap is about 10 to 21 dB, depending on preset and sound, and the text
   planner opens fewer syllables with plosives and fricatives: plosive 1/4,
   fricative 1/8, breath 1/8, none 1/2 (`PLANNER_VERSION` 2). Robot rendering and all
-  APIs are unchanged; formant renders and every text plan give new samples.
+  APIs are unchanged. Formant renders give new samples, and most text plans change:
+  a syllable that opens straight on its vowel plans as before.
 
 ## 0.6.1 — 2026-11-27
 
