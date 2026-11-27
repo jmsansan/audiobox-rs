@@ -358,6 +358,12 @@ fn classify<'a>(
     warnings: &mut Vec<Dx7Warning>,
 ) -> Result<Option<Message<'a>>> {
     // F0 43 0n ff hh ll ... checksum F7, with `n` a channel and `ff` the format.
+    // `F0 43 F7`: a Yamaha message ended before its substatus.
+    if message.len() == 3 && message[1] == 0x43 {
+        return Err(Error::decode(format!(
+            "The Yamaha message at byte {at} is cut short after 3 bytes"
+        )));
+    }
     if message.len() < 3 || message[1] != 0x43 || message[2] & 0xf0 != 0x00 {
         return Ok(None);
     }
