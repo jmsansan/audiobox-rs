@@ -555,3 +555,28 @@ fn review_cases() {
     assert_eq!(names.len(), 4096);
     assert!(start.elapsed() < std::time::Duration::from_secs(30));
 }
+
+#[test]
+fn review_cases_two() {
+    let voices = generated_bank();
+    // A short bank followed by more data and F7 is a short bank, not 32 voices.
+    let mut short = vec![0xf0, 0x43, 0x00, 0x09, 0x10, 0x00];
+    short.extend(std::iter::repeat_n(0, 2048));
+    short.extend([0x00, 0xf7]);
+    short.extend(std::iter::repeat_n(0, 2047));
+    short.push(0xf7);
+    assert_eq!(short.len(), 4104);
+    assert_eq!(read_dx7(&short).unwrap_err().code, ErrorCode::DecodeError);
+    // A message that is not DX7 data and holds the start of another is cut short.
+    let cut = [vec![0xf0, 0x7d, 0xf0, 0xf7], single(&voices[0])].concat();
+    assert_eq!(read_dx7(&cut).unwrap_err().code, ErrorCode::DecodeError);
+    // A file that is one standard message reads as it always has, whatever its
+    // data bytes hold: a level of F0 is clamped.
+    let mut one = single(&voices[0]);
+    one[6 + 16] = 0xf0;
+    let at = one.len() - 2;
+    one[at] = checksum(&one[6..at]);
+    let read = read_dx7(&one).unwrap();
+    assert_eq!(read.voices.len(), 1);
+    assert!(!read.warnings.is_empty());
+}

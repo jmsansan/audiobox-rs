@@ -235,20 +235,30 @@ pub fn read_dx7(bytes: &[u8]) -> Result<Dx7Voices> {
                 "A message starting at byte {at} does not end with 0xF7"
             )));
         };
-        // A DX7 voice or bank message is framed by its known length when it ends there
-        // with F7, so that a damaged checksum byte that reads F7 is a bad checksum, not
-        // the end of the message.
-        if let Some(full) = dx7_length(&bytes[at..]) {
-            if bytes.get(at + full - 1) == Some(&0xf7) {
+        let known = dx7_length(&bytes[at..]);
+        // A file that is exactly one message with the standard header is read as it
+        // always was, whatever its data bytes hold: a damaged byte is clamped.
+        let whole = at == 0
+            && known == Some(bytes.len())
+            && (bytes[3] != 0x09 || bytes[4..6] == BANK_HEADER[2..4])
+            && bytes.last() == Some(&0xf7);
+        if whole {
+            length = bytes.len();
+        } else if let Some(full) = known {
+            // A DX7 message whose checksum byte reads F7, just before its final F7, is
+            // a bad checksum, not the end of the message. An F7 anywhere else ends it.
+            if length == full - 1 && bytes.get(at + full - 1) == Some(&0xf7) {
                 length = full;
             }
         }
-        // A new message before the end of this one: this one was cut short. (The
-        // checksum byte, just before F7, is not looked at: it may be damaged.)
-        let body_end = (at + length - 1).max(at + 1);
-        let body = &bytes[at + 1..body_end];
-        let checked = if length > 2 {
-            &body[..body.len().saturating_sub(1)]
+        // A new message before the end of this one: this one was cut short. The
+        // checksum byte of a DX7 message, just before F7, may be damaged and is not
+        // looked at.
+        let body = &bytes[at + 1..(at + length - 1).max(at + 1)];
+        let checked = if whole {
+            &[][..]
+        } else if known.is_some() && length > 2 {
+            &body[..body.len() - 1]
         } else {
             body
         };

@@ -442,7 +442,11 @@ bank whose byte count is not `20 00` (old editors often wrote `10 00`, 2048, bef
 all 4096 data bytes), bytes outside any message, and messages that hold something
 else, such as a TX802 performance, which are skipped. Structural faults are errors: a
 message cut short, or a voice or bank message of the wrong length (`DecodeError`), and
-a file with no voice data (`UnsupportedFormat`). A bank saved without its wrapper is
+a file with no voice data (`UnsupportedFormat`). Within a message, `F7` ends it,
+except in the checksum place of a voice or bank message, where it is a damaged
+checksum, and `F0` means it was cut short. A file that is exactly one 163- or
+4104-byte message with the standard header reads as it always has, whatever its data
+bytes hold. A bank saved without its wrapper is
 4096 bytes with no header to recognise it by, so `read_dx7_raw_bank` reads it; it
 refuses any other length and any byte above `7F`.
 
