@@ -208,7 +208,7 @@ enum Message<'a> {
 ///
 /// Every DX7 voice and bank message of the file is read, in order. Minor faults are
 /// accepted with a [`Dx7Warning`]: a wrong checksum, parameter bytes above their
-/// range (clamped), a bank whose byte count disagrees with its 4096 data bytes,
+/// range (clamped), a voice or bank whose byte count disagrees with its data bytes,
 /// bytes outside any message, and messages that hold something else, such as a
 /// TX802 performance, which are skipped. Structural faults are errors:
 /// [`ErrorCode::DecodeError`] for a message cut short or a voice or bank message of
@@ -240,7 +240,7 @@ pub fn read_dx7(bytes: &[u8]) -> Result<Dx7Voices> {
         // always was, whatever its data bytes hold: a damaged byte is clamped.
         let whole = at == 0
             && known == Some(bytes.len())
-            && (bytes[3] != 0x09 || bytes[4..6] == BANK_HEADER[2..4])
+            && bytes[4..6] == standard_count(bytes[3])
             && bytes.last() == Some(&0xf7);
         if whole {
             length = bytes.len();
@@ -364,8 +364,7 @@ fn classify<'a>(
     if message.len() <= 6 {
         // The start of a DX7 voice or bank header, ended by F7 before it is whole.
         let head = &message[3..message.len() - 1];
-        if head.first() == Some(&0x09) || (!head.is_empty() && [0x00, 0x01, 0x1b].starts_with(head))
-        {
+        if matches!(head.first(), Some(0x00 | 0x09)) {
             return Err(Error::decode(format!(
                 "The DX7 message at byte {at} is cut short after {} bytes",
                 message.len()
@@ -375,7 +374,7 @@ fn classify<'a>(
     }
     let (format, count) = (message[3], [message[4], message[5]]);
     let (expected, label) = match (format, count) {
-        (0x00, [0x01, 0x1b]) => (DX7_VOICE_BYTES, "single-voice"),
+        (0x00, _) => (DX7_VOICE_BYTES, "single-voice"),
         (0x09, _) => (DX7_BANK_BYTES, "32-voice"),
         _ => return Ok(None),
     };
@@ -385,12 +384,17 @@ fn classify<'a>(
             message.len()
         )));
     }
-    if format == 0x09 && count != BANK_HEADER[2..4] {
+    if count != standard_count(format) {
         let stated = (count[0] as usize) << 7 | count[1] as usize;
+        let (what, all) = if format == 0x09 {
+            ("bank", 4096)
+        } else {
+            ("voice", 155)
+        };
         warnings.push(Dx7Warning {
             voice: None,
             message: format!(
-                "The bank at byte {at} says it holds {stated} data bytes; all 4096 were read"
+                "The {what} at byte {at} says it holds {stated} data bytes; all {all} were read"
             ),
         });
     }
@@ -562,6 +566,16 @@ pub fn write_dx7_bank(patches: &[FmPatch]) -> Result<Vec<u8>> {
     Ok(message(BANK_HEADER, &data))
 }
 
+/// The byte count of a standard DX7 header of `format`: `01 1B` (155) for a voice,
+/// `20 00` (4096) for a bank.
+fn standard_count(format: u8) -> [u8; 2] {
+    if format == 0x09 {
+        [BANK_HEADER[2], BANK_HEADER[3]]
+    } else {
+        [VOICE_HEADER[2], VOICE_HEADER[3]]
+    }
+}
+
 /// The length a message starting at `bytes[0]` has if its header is a DX7 single
 /// voice or bank, whatever its count bytes say.
 fn dx7_length(bytes: &[u8]) -> Option<usize> {
@@ -570,7 +584,7 @@ fn dx7_length(bytes: &[u8]) -> Option<usize> {
         return None;
     }
     match (header[3], [header[4], header[5]]) {
-        (0x00, [0x01, 0x1b]) => Some(DX7_VOICE_BYTES),
+        (0x00, _) => Some(DX7_VOICE_BYTES),
         (0x09, _) => Some(DX7_BANK_BYTES),
         _ => None,
     }

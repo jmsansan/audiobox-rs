@@ -207,7 +207,7 @@ fn structural_faults_are_errors_and_minor_faults_are_warnings() {
         read.warnings
     );
     // A message that is not DX7 voice data leaves nothing to read.
-    for (index, value) in [(0, 0xf1), (1, 0x42), (2, 0x10), (3, 0x00)] {
+    for (index, value) in [(0, 0xf1), (1, 0x42), (2, 0x10), (3, 0x01)] {
         let mut bad = good.clone();
         bad[index] = value;
         assert_eq!(
@@ -216,6 +216,10 @@ fn structural_faults_are_errors_and_minor_faults_are_warnings() {
             "header byte {index}"
         );
     }
+    // A bank whose format byte says single voice is a voice of the wrong length.
+    let mut as_voice = good.clone();
+    as_voice[3] = 0x00;
+    assert_eq!(code(&as_voice), ErrorCode::DecodeError);
     // A bank whose byte count disagrees with its 4096 data bytes reads, with a warning.
     for (index, value) in [(4, 0x21), (5, 0x01)] {
         let mut odd = good.clone();
@@ -595,4 +599,26 @@ fn a_truncated_dx7_header_is_a_fault() {
     // A short message of another Yamaha format is skipped.
     let other = [vec![0xf0, 0x43, 0x00, 0x7e, 0xf7], bank(&voices)].concat();
     assert_eq!(read_dx7(&other).unwrap().voices.len(), 32);
+}
+
+#[test]
+fn a_voice_with_a_wrong_count_is_still_a_voice() {
+    let voices = generated_bank();
+    // Short: a fault, not another message.
+    let mut short = vec![0xf0, 0x43, 0x00, 0x00, 0x01, 0x1a];
+    short.extend(&voices[0][..154]);
+    short.push(checksum(&voices[0][..154]));
+    short.push(0xf7);
+    let file = [short, bank(&voices)].concat();
+    assert_eq!(read_dx7(&file).unwrap_err().code, ErrorCode::DecodeError);
+    // Of the right length: read with a warning.
+    let mut one = single(&voices[0]);
+    one[5] = 0x1a;
+    let read = read_dx7(&one).unwrap();
+    assert_eq!(read.voices.len(), 1);
+    assert!(
+        read.warnings
+            .iter()
+            .any(|w| w.message.contains("says it holds"))
+    );
 }

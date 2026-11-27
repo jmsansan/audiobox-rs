@@ -438,7 +438,7 @@ Files in the wild vary, and `read_dx7` reads what DX7 editors load. It splits a 
 into system-exclusive messages and reads every voice and bank message, in order, so
 two banks saved together give 64 voices; names stay unique across the file. Minor
 faults read with a warning: a wrong checksum, bytes above their range (clamped), a
-bank whose byte count is not `20 00` (old editors often wrote `10 00`, 2048, before
+voice or bank whose byte count is not `01 1B` or `20 00` (old editors often wrote `10 00`, 2048, before
 all 4096 data bytes), bytes outside any message, and messages that hold something
 else, such as a TX802 performance, which are skipped. Structural faults are errors: a
 message cut short, or a voice or bank message of the wrong length (`DecodeError`), and
@@ -498,7 +498,7 @@ Rules:
 
 - **Faults.** See the rules for files above: a message cut short or of the wrong
   length is `DecodeError` and a file with no voice message `UnsupportedFormat`. A
-  bank whose count bytes are not `20 00`, a wrong checksum and parameter bytes
+  voice or bank whose count bytes are not `01 1B` or `20 00`, a wrong checksum and parameter bytes
   above their range are accepted with a `Dx7Warning`; such bytes are clamped.
 - **Names.** Trailing spaces are dropped, spaces inside become `_`, any other
   character outside letters, digits, `_` and `-` becomes `-`, and an empty name
