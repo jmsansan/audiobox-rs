@@ -330,9 +330,9 @@ fn bad_arguments_are_refused() {
         ErrorCode::LimitExceeded
     );
     // The work limit, 2^32, at its edge: at 20 Hz a frame spans 4800 frames and
-    // transforms 8192, so 40,329 frames × 8192 × 13 fit and 40,330 do not. The
+    // transforms 8192, so 37,449 frames × 8192 × (13 + 1) fit and 37,450 do not. The
     // input is silent, so nothing is transformed.
-    for (frames, fits) in [(40_329, true), (40_330, false)] {
+    for (frames, fits) in [(37_449, true), (37_450, false)] {
         let long = Audio::new(vec![vec![0.0; frames + 4799]], RATE).unwrap();
         let result = long.pitch_track(&PitchOptions::new(20.0, 1000.0, 1));
         match fits {
@@ -374,5 +374,73 @@ fn evaluation_on_generated_fixtures() {
         );
         assert_eq!(voiced, t.frames.len(), "{name}");
         assert!(worst < 5.0, "{name}: {worst}");
+    }
+}
+
+#[test]
+fn pitches_stay_within_the_range() {
+    let options = PitchOptions::new(60.0, 2000.0, 480);
+    // Just outside the range: no pitch, rather than the nearest one in it.
+    for f in [55.0, 2050.0] {
+        let t = track(tone(0.5, &[(1, 0.5)], |_| f), options);
+        for frame in &t.frames {
+            assert_ne!(frame.state, PitchState::Voiced, "{f} Hz: {frame:?}");
+            assert_eq!(frame.frequency_hz, None);
+        }
+    }
+    // Just inside it: the pitch.
+    for f in [62.0, 1950.0] {
+        let t = track(tone(0.5, &[(1, 0.5)], |_| f), options);
+        let p = t.median_frequency(0..t.input_frames).unwrap().unwrap();
+        assert!(cents(p, f).abs() < 5.0, "{f} Hz: {p}");
+    }
+}
+
+#[test]
+fn a_constant_level_is_silence() {
+    // A level stuck at one value, or a DC offset alone, has no period.
+    for level in [0.5f32, -0.01] {
+        let t = track(vec![level; 9600], PitchOptions::new(60.0, 2000.0, 480));
+        for frame in &t.frames {
+            assert_eq!(frame.state, PitchState::Silent, "{frame:?}");
+        }
+    }
+    // A tone on a DC offset keeps its pitch.
+    let shifted: Vec<f32> = tone(0.3, &[(1, 0.3)], |_| 330.0)
+        .iter()
+        .map(|s| s + 0.4)
+        .collect();
+    let t = track(shifted, PitchOptions::new(60.0, 2000.0, 480));
+    let p = t.median_frequency(0..t.input_frames).unwrap().unwrap();
+    assert!(cents(p, 330.0).abs() < 5.0, "{p}");
+}
+
+#[test]
+fn alternatives_appear_only_for_voiced_frames_with_a_real_rival() {
+    let options = PitchOptions::new(60.0, 2000.0, 480);
+    // A clean sine repeats every two periods too: that is not a rival.
+    let t = track(tone(0.5, &[(1, 0.5)], |_| 220.0), options);
+    for frame in &t.frames {
+        if let Some(alternative) = frame.alternative {
+            assert!(
+                (alternative.frequency_hz / 110.0 - 1.0).abs() > 0.03,
+                "{frame:?}"
+            );
+        }
+    }
+    // Noise: no pitch and no alternative.
+    let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+    let noise: Vec<f32> = (0..24_000)
+        .map(|_| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            ((seed >> 11) as f64 / (1u64 << 53) as f64 - 0.5) as f32
+        })
+        .collect();
+    for frame in &track(noise, options).frames {
+        if frame.state != PitchState::Voiced {
+            assert_eq!(frame.alternative, None, "{frame:?}");
+        }
     }
 }

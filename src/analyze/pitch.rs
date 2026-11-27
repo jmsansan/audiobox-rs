@@ -11,7 +11,7 @@ pub const MAX_PITCH_LAG: usize = 8192;
 /// The widest median smoothing, in frames.
 pub const MAX_PITCH_MEDIAN: usize = 15;
 /// The most work one [`Audio::pitch_track`] is allowed, as an estimate: analysis
-/// frames × L × log₂ L, with L the transform size, the power of two at or above two
+/// frames × L × (log₂ L + 1), with L the transform size, the power of two at or above two
 /// periods of `min_hz` in frames. Every frame counts, silent or not.
 pub const MAX_PITCH_WORK: u64 = 1 << 32;
 
@@ -85,9 +85,12 @@ pub struct PitchFrame {
     pub frequency_hz: Option<f64>,
     /// The confidence of the best period found, voiced or not; 0 when silent.
     pub confidence: f64,
-    /// The best period that is more than a semitone from the chosen one, as an
-    /// octave above or below: when its confidence is close to the pitch's, the
-    /// octave is ambiguous. `None` when silent or when there is no other dip.
+    /// The deepest other dip of a voiced frame, more than a semitone from the
+    /// pitch, as the octave above or below: when its confidence is close to the
+    /// pitch's, the octave is ambiguous. Multiples of the period, which any
+    /// periodic sound repeats at, count only when clearly deeper. `None` when the
+    /// frame is not voiced or has no other dip. With smoothing, it and the
+    /// confidence still describe the frame's own estimate.
     pub alternative: Option<PitchCandidate>,
 }
 
@@ -132,6 +135,21 @@ fn median(values: &mut [f64]) -> Option<f64> {
     } else {
         (values[n / 2 - 1] + values[n / 2]) / 2.0
     })
+}
+
+/// The samples a pitch track reads: one channel as it is, or several mixed.
+enum Signal<'a> {
+    One(&'a [f32]),
+    Mixed(&'a [f64]),
+}
+
+impl Signal<'_> {
+    fn at(&self, i: usize) -> f64 {
+        match self {
+            Signal::One(s) => s[i] as f64,
+            Signal::Mixed(s) => s[i],
+        }
+    }
 }
 
 /// The FFT of `real` + i `imag` in place, inverse when `inverse`, unscaled.
@@ -241,9 +259,11 @@ impl Audio {
     /// later. Only whole frames are measured, so the last frames of input may fall
     /// in none; an input shorter than one frame is a single frame, zero-padded.
     /// A frame is silent when the RMS of its first period, over the samples it
-    /// holds, is at or below `silence_db`. A frame is voiced when YIN's normalized
-    /// difference falls below `threshold` within the range; the pitch is then the
-    /// first such dip, refined between samples. Other frames have no pitch. With
+    /// holds and with their mean removed, is at or below `silence_db`: a DC offset
+    /// or a level stuck at one value is silence. A frame is voiced when YIN's
+    /// normalized difference has a dip below `threshold` inside the range of
+    /// periods, and the pitch, that first dip refined between samples, lies from
+    /// `min_hz` to `max_hz`. Other frames have no pitch. With
     /// all channels, the mean of the channels is tracked.
     ///
     /// It is a tool for one voice: in a chord or a mix it finds the period the
@@ -253,10 +273,10 @@ impl Audio {
     ///
     /// Bad options, a missing channel and non-finite samples return
     /// `InvalidArgument`. Default [`Limits`] apply, plus at most
-    /// [`MAX_PITCH_FRAMES`] frames and [`MAX_PITCH_WORK`] for frames × L × log₂ L, or
+    /// [`MAX_PITCH_FRAMES`] frames and [`MAX_PITCH_WORK`] for frames × L × (log₂ L + 1), or
     /// `LimitExceeded`, with L the power of two at or above two periods of
-    /// `min_hz` in frames. The work is O(frames × (channels + L log L)); silent
-    /// frames skip the transforms. The storage is O(L) plus one entry per frame. The FFT uses the platform's math, so results are
+    /// `min_hz` in frames. The work is O(samples × channels) to mix the channels once, plus O(frames × L log L); silent
+    /// frames skip the transforms. The storage is O(L) plus one entry per frame, and with several channels one f64 per input frame. The FFT uses the platform's math, so results are
     /// for reports, not bit-identical across hosts.
     ///
     /// ```
@@ -325,30 +345,53 @@ impl Audio {
             return Err(Error::limit("Too many pitch analysis frames"));
         }
         let size = span.next_power_of_two();
-        // In u64, so that the limit is exact on 32-bit targets too.
+        // In u64, so that the limit is exact on 32-bit targets too. Each frame
+        // reads its span and runs three transforms of `size`.
         if (count as u64)
             .checked_mul(size as u64)
-            .and_then(|n| n.checked_mul(u64::from(size.trailing_zeros())))
+            .and_then(|n| n.checked_mul(u64::from(size.trailing_zeros()) + 1))
             .is_none_or(|n| n > MAX_PITCH_WORK)
         {
             return Err(Error::limit("Pitch analysis exceeds its work limit"));
         }
+        // The channels' mean, once, so that overlapping frames do not mix it again.
+        let mixed: Vec<f64>;
+        let signal: Signal = match channels {
+            [one] => Signal::One(one),
+            _ => {
+                let mut mix = reserve(input_frames)?;
+                let n = channels.len() as f64;
+                mix.extend(
+                    (0..input_frames)
+                        .map(|i| channels.iter().map(|c| c[i] as f64).sum::<f64>() / n),
+                );
+                mixed = mix;
+                Signal::Mixed(&mixed)
+            }
+        };
         let mut yin = Yin::new(window, max_lag);
         let mut x = vec![0.0; span];
         let silence = super::from_db(o.silence_db);
+        let semitone = 2f64.powf(1.0 / 12.0);
         let mut frames = reserve(count)?;
         for start in (0..count).map(|i| i * o.hop) {
             let end = (start + span).min(input_frames);
             for (j, v) in x.iter_mut().enumerate() {
                 *v = if start + j < end {
-                    channels.iter().map(|c| c[start + j] as f64).sum::<f64>()
-                        / channels.len() as f64
+                    signal.at(start + j)
                 } else {
                     0.0
                 };
             }
+            // The silence gate reads the first period with its mean removed, so
+            // that a DC offset or a level stuck at one value counts as silence.
             let heard = (start + window).min(input_frames) - start;
-            let mean_square = x[..heard].iter().map(|v| v * v).sum::<f64>() / heard as f64;
+            let mean = x[..heard].iter().sum::<f64>() / heard as f64;
+            let variance = x[..heard]
+                .iter()
+                .map(|v| (v - mean) * (v - mean))
+                .sum::<f64>()
+                / heard as f64;
             let mut frame = PitchFrame {
                 start_frame: start,
                 state: PitchState::Silent,
@@ -356,44 +399,55 @@ impl Audio {
                 confidence: 0.0,
                 alternative: None,
             };
-            if mean_square > silence * silence {
+            if variance > silence * silence {
                 yin.run(&x);
                 let d = &yin.normalized;
-                let below = (min_lag..=max_lag).find(|&t| d[t] < o.threshold);
-                let chosen = match below {
-                    // Down to the bottom of the dip.
-                    Some(mut t) => {
+                // A dip is a local minimum inside the range of lags, not a slope
+                // that runs into its end.
+                let dip =
+                    |t: usize| t > min_lag && t < max_lag && d[t] <= d[t - 1] && d[t] < d[t + 1];
+                let below = (min_lag..=max_lag)
+                    .find(|&t| d[t] < o.threshold)
+                    .map(|mut t| {
+                        // Down to the bottom of the dip.
                         while t < max_lag && d[t + 1] < d[t] {
                             t += 1;
                         }
                         t
-                    }
-                    None => (min_lag..=max_lag)
-                        .min_by(|&a, &b| d[a].total_cmp(&d[b]))
-                        .unwrap_or(min_lag),
-                };
+                    });
+                let best = (min_lag..=max_lag)
+                    .min_by(|&a, &b| d[a].total_cmp(&d[b]))
+                    .unwrap_or(min_lag);
+                let chosen = below.unwrap_or(best);
                 frame.confidence = (1.0 - d[chosen]).clamp(0.0, 1.0);
                 let lag = yin.refine(chosen);
-                if below.is_some() {
+                let pitch = rate / lag;
+                if below.is_some_and(dip) && (o.min_hz..=o.max_hz).contains(&pitch) {
                     frame.state = PitchState::Voiced;
-                    frame.frequency_hz = Some(rate / lag);
+                    frame.frequency_hz = Some(pitch);
+                    // The deepest other dip more than a semitone away. A sound that
+                    // repeats every period also repeats every two or three: those
+                    // multiples count only when they are clearly deeper.
+                    let near_multiple = |t: usize| {
+                        let ratio = t as f64 / lag;
+                        let k = ratio.round();
+                        k >= 2.0 && (ratio / k).max(k / ratio) < semitone
+                    };
+                    frame.alternative = (min_lag..=max_lag)
+                        .filter(|&t| {
+                            let ratio = t as f64 / lag;
+                            (ratio > semitone || ratio < 1.0 / semitone)
+                                && dip(t)
+                                && (!near_multiple(t) || d[t] < d[chosen] - 0.01)
+                        })
+                        .min_by(|&a, &b| d[a].total_cmp(&d[b]))
+                        .map(|t| PitchCandidate {
+                            frequency_hz: rate / yin.refine(t),
+                            confidence: (1.0 - d[t]).clamp(0.0, 1.0),
+                        });
                 } else {
                     frame.state = PitchState::Unvoiced;
                 }
-                // The deepest other local minimum, more than a semitone away.
-                let semitone = 2f64.powf(1.0 / 12.0);
-                frame.alternative = (min_lag..=max_lag)
-                    .filter(|&t| {
-                        let ratio = t as f64 / lag;
-                        (ratio > semitone || ratio < 1.0 / semitone)
-                            && (t == min_lag || d[t] <= d[t - 1])
-                            && (t == max_lag || d[t] < d[t + 1])
-                    })
-                    .min_by(|&a, &b| d[a].total_cmp(&d[b]))
-                    .map(|t| PitchCandidate {
-                        frequency_hz: rate / yin.refine(t),
-                        confidence: (1.0 - d[t]).clamp(0.0, 1.0),
-                    });
             }
             frames.push(frame);
         }
