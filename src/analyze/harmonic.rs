@@ -44,16 +44,32 @@ impl HarmonicOptions {
     /// with bands of 25 cents and all channels. Frames are long enough for the
     /// fundamental to span [`HARMONIC_BINS`] bins: the shortest power of two of at
     /// least 4096 samples that does (8192 at 220 Hz and 48 kHz, 32768 at 55 Hz),
-    /// at most 1048576, with a hop of half a frame.
+    /// at most 1048576, with a hop of half a frame. A range shorter than that
+    /// gets the longest power of two within it, down to the length at which the
+    /// fundamental spans [`MIN_HARMONIC_BINS`] bins; shorter still, it is one
+    /// padded frame (see [`HarmonicEnergy::padded`]).
     pub fn new(fundamental_hz: f64, sample_rate: u32, range: Range<usize>) -> Self {
-        let wanted = HARMONIC_BINS as f64 * f64::from(sample_rate) / fundamental_hz;
-        let fft_size = if wanted.is_finite() && wanted > 0.0 {
-            (wanted.ceil().min((1 << 20) as f64) as usize)
-                .next_power_of_two()
-                .clamp(4096, 1 << 20)
-        } else {
-            4096
+        // The shortest power of two, from 16 to 2^20, in which the fundamental
+        // spans `bins` bins.
+        let spanning = |bins: usize| {
+            let wanted = bins as f64 * f64::from(sample_rate) / fundamental_hz;
+            if wanted.is_finite() && wanted > 0.0 {
+                (wanted.ceil().min((1 << 20) as f64) as usize)
+                    .next_power_of_two()
+                    .clamp(16, 1 << 20)
+            } else {
+                4096
+            }
         };
+        let within = match range.len() {
+            0..16 => 16,
+            n => 1 << n.ilog2(),
+        };
+        let fft_size = spanning(HARMONIC_BINS)
+            .max(4096)
+            .min(within)
+            .max(spanning(MIN_HARMONIC_BINS))
+            .min(1 << 20);
         Self {
             fundamental_hz,
             fft_size,
@@ -79,6 +95,10 @@ pub struct HarmonicEnergy {
     pub sample_rate: u32,
     /// The analysis frames measured.
     pub frames: usize,
+    /// Whether the range is shorter than one frame, so that its one frame is
+    /// zero-padded: the cut-off edges of the sound then spread its energy over
+    /// other bins, and the shares say more about the cut than the sound.
+    pub padded: bool,
     /// The harmonics counted: every multiple of the fundamental up to half the
     /// sample rate.
     pub harmonics: usize,
@@ -273,10 +293,12 @@ impl Audio {
         } else {
             (vec![0.0; harmonics], None)
         };
+        let padded = count == 1 && length < o.fft_size;
         Ok(HarmonicEnergy {
             options: o,
             sample_rate: self.rate,
             frames: count,
+            padded,
             harmonics,
             bands_hz,
             harmonic_shares,

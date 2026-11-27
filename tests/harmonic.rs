@@ -152,7 +152,8 @@ fn settings_are_echoed_and_bands_are_bounded() {
     let short = audio
         .harmonic_energy(&HarmonicOptions::new(300.0, RATE, 0..1000))
         .unwrap();
-    assert_eq!(short.frames, 1);
+    assert_eq!((short.frames, short.padded), (1, true));
+    assert!(!e.padded);
     // Its cut-off edges spread the tone: a share, but not a clean one.
     let share = short.harmonic_share.unwrap();
     assert!((0.0..=1.0).contains(&share), "{share}");
@@ -350,13 +351,13 @@ fn a_harmonic_on_nyquist_has_its_band() {
 #[test]
 fn frames_fit_the_fundamental() {
     // The shortest power of two of 4096 samples or more for 24 bins.
-    let size = |f0: f64, rate: u32| HarmonicOptions::new(f0, rate, 0..1).fft_size;
+    let size = |f0: f64, rate: u32| HarmonicOptions::new(f0, rate, 0..1 << 21).fft_size;
     assert_eq!(size(220.0, 48_000), 8192);
     assert_eq!(size(55.0, 48_000), 32_768);
     assert_eq!(size(41.2, 96_000), 65_536);
     assert_eq!(size(1234.5, 48_000), 4096);
     assert_eq!(size(0.5, 48_000), 1 << 20);
-    assert_eq!(HarmonicOptions::new(55.0, 48_000, 0..1).hop, 16_384);
+    assert_eq!(HarmonicOptions::new(55.0, 48_000, 0..1 << 21).hop, 16_384);
     // The 2.76 × partial of a 55 Hz bass note, 2.25 bins from the third harmonic
     // with 8192-sample frames, is clear of it with the frames chosen.
     let f0 = 55.0;
@@ -370,4 +371,23 @@ fn frames_fit_the_fundamental() {
     let rumble: Vec<f32> = partials(&[(220.0, 0.3), (8.0, 0.3)], 96_000);
     let share = energy(rumble, 220.0).inharmonic_share.unwrap();
     assert!((share - 0.5).abs() < 0.05, "{share}");
+}
+
+#[test]
+fn short_ranges_get_short_frames_or_say_they_are_padded() {
+    // A quarter second of 41.2 Hz: the longest power of two within it, 8192, is
+    // under 8 bins for it, so one padded frame of 16384.
+    let low = HarmonicOptions::new(41.2, RATE, 0..12_000);
+    assert_eq!(low.fft_size, 16_384);
+    let e = energy(partials(&[(41.2, 0.5)], 12_000), 41.2);
+    assert!(e.padded, "{e:?}");
+    // A second of it: one whole frame of 32768, and a clean share.
+    let e = energy(partials(&[(41.2, 0.5)], 48_000), 41.2);
+    assert!(!e.padded && e.frames == 1, "{e:?}");
+    assert!(e.inharmonic_share.unwrap() < 0.001, "{e:?}");
+    // A quarter second of 220 Hz: frames of 8192 within it, not padded.
+    let options = HarmonicOptions::new(220.0, RATE, 0..12_000);
+    assert_eq!(options.fft_size, 8192);
+    let e = energy(partials(&[(220.0, 0.5)], 12_000), 220.0);
+    assert!(!e.padded && e.inharmonic_share.unwrap() < 0.001, "{e:?}");
 }
