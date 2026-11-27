@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.0 — Unreleased
+
+### Added
+
+- `Audio::envelope` follows a sound's amplitude, as peak or RMS per window over one
+  channel or all, and `Envelope` reads its attack (fraction to fraction of the
+  peak), decay (a drop in dB from the peak) and release tail (from a gate-off frame
+  until it stays below a floor). Times come in frames and seconds with the settings
+  they were measured with, `None` when a threshold is never crossed, and the same on
+  every host (#161). See `docs/sound-measurements.md`.
+
 ## 0.6.2 — 2026-11-27
 
 ### Changed
