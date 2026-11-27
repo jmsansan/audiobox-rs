@@ -265,3 +265,93 @@ fn bad_arguments_are_refused() {
             .map(drop),
     );
 }
+
+#[test]
+fn levels_exactly_at_a_threshold_reach_it() {
+    // 0.625 to 0.0625 is exactly 20 dB, which dB conversion rounds.
+    let mut samples = vec![0.625; 10];
+    samples.extend(vec![0.0625; 30]);
+    let envelope = mono(samples)
+        .envelope(&EnvelopeOptions::new(EnvelopeMethod::Peak, 10))
+        .unwrap();
+    assert_eq!(
+        envelope.decay(20.0).unwrap(),
+        Some(EnvelopeSpan {
+            start_frame: 0,
+            end_frame: 10
+        })
+    );
+    // 0.78125 to 0.0078125 is exactly 40 dB: the tail ends where it reaches it.
+    let mut samples = vec![0.78125; 10];
+    samples.extend(vec![0.0078125; 30]);
+    let envelope = mono(samples)
+        .envelope(&EnvelopeOptions::new(EnvelopeMethod::Peak, 10))
+        .unwrap();
+    assert_eq!(
+        envelope.tail(5, -40.0).unwrap(),
+        Some(EnvelopeSpan {
+            start_frame: 5,
+            end_frame: 10
+        })
+    );
+    // 0.5 is exactly half of 1.
+    let envelope = mono(vec![0.5, 1.0])
+        .envelope(&EnvelopeOptions::new(EnvelopeMethod::Peak, 1))
+        .unwrap();
+    assert_eq!(
+        envelope.attack(0.5, 1.0).unwrap(),
+        Some(EnvelopeSpan {
+            start_frame: 0,
+            end_frame: 1
+        })
+    );
+}
+
+#[test]
+fn a_gate_at_the_end_has_an_empty_tail() {
+    // Loud to the end, in a last window that is shorter than the others.
+    for frames in [100, 105] {
+        let envelope = mono(vec![0.5; frames])
+            .envelope(&EnvelopeOptions::new(EnvelopeMethod::Peak, 10))
+            .unwrap();
+        assert_eq!(
+            envelope.tail(frames, -60.0).unwrap(),
+            Some(EnvelopeSpan {
+                start_frame: frames,
+                end_frame: frames
+            })
+        );
+        assert_eq!(envelope.tail(frames - 1, -60.0).unwrap(), None);
+    }
+}
+
+#[test]
+fn envelope_values_are_pinned() {
+    // The bits of every value, hashed: the same on every host. The input is built
+    // with arithmetic alone (a triangle wave under a linear envelope), so it is too.
+    let audio = mono(
+        (0..48_000)
+            .map(|i| {
+                let level = (i as f64 / 4800.0).min(1.0) * (1.0 - i as f64 / 48_000.0);
+                let phase = (i % 100) as f64 / 100.0;
+                let triangle = 1.0 - 4.0 * (phase - 0.5).abs();
+                (level * triangle) as f32
+            })
+            .collect(),
+    );
+    let hash = |method| {
+        let envelope = audio.envelope(&EnvelopeOptions::new(method, 240)).unwrap();
+        envelope
+            .values
+            .iter()
+            .fold(0xcbf2_9ce4_8422_2325u64, |h, v| {
+                (h ^ v.to_bits()).wrapping_mul(0x0000_0100_0000_01b3)
+            })
+    };
+    let hashes = [hash(EnvelopeMethod::Peak), hash(EnvelopeMethod::Rms)];
+    assert_eq!(
+        hashes,
+        [0xce1d_783e_f725_c8c5, 0x5dfe_1ab8_b928_2302],
+        "{hashes:x?}"
+    );
+}

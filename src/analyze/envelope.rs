@@ -2,6 +2,10 @@
 use super::measurements::reserve;
 use crate::{Audio, Error, Limits, Result};
 
+/// Thresholds are compared with this relative margin, so that a level exactly at a
+/// threshold counts despite the rounding of dB conversions.
+const MARGIN: f64 = 1e-12;
+
 /// How each envelope value summarizes its window of frames.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EnvelopeMethod {
@@ -40,7 +44,7 @@ impl EnvelopeOptions {
 ///
 /// Value `i` covers frames `i * window_frames` up to the next window or the end of
 /// the input; the last window may be shorter. Times read from the envelope are the
-/// starts of windows, so each is exact to one window.
+/// starts of windows, so each is exact to one window; a tail starts at its gate frame.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Envelope {
     pub method: EnvelopeMethod,
@@ -52,7 +56,7 @@ pub struct Envelope {
     pub values: Vec<f64>,
 }
 
-/// A time measured on an envelope, between the starts of two windows.
+/// A time measured on an envelope, in input frames.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EnvelopeSpan {
     pub start_frame: usize,
@@ -151,7 +155,10 @@ impl Envelope {
         let Some((_, peak)) = self.peak_window() else {
             return Ok(None);
         };
-        let first = |fraction: f64| self.values.iter().position(|&v| v >= fraction * peak);
+        let first = |fraction: f64| {
+            let level = fraction * peak * (1.0 - MARGIN);
+            self.values.iter().position(|&v| v >= level)
+        };
         // The peak window reaches both, so both exist.
         Ok(first(from)
             .zip(first(to))
@@ -168,7 +175,7 @@ impl Envelope {
         let Some((p, peak)) = self.peak_window() else {
             return Ok(None);
         };
-        let level = peak * super::from_db(-drop_db);
+        let level = peak * super::from_db(-drop_db) * (1.0 + MARGIN);
         Ok(self.values[p + 1..]
             .iter()
             .position(|&v| v <= level)
@@ -178,7 +185,8 @@ impl Envelope {
     /// The release tail: from `gate_off_frame` (at most the input's frames) until the
     /// envelope stays at or below `floor_db`, a finite level below 0 dB relative to
     /// the peak, to the end of the input. It ends at the end of the last window
-    /// above the floor; it is empty when no window from the gate on is above it.
+    /// above the floor; it is empty when no window holding frames from the gate on is above it,
+    /// as when the gate is at the end of the input.
     /// `None` when the last window is still above the floor, or for silent or
     /// empty input.
     pub fn tail(&self, gate_off_frame: usize, floor_db: f64) -> Result<Option<EnvelopeSpan>> {
@@ -195,12 +203,15 @@ impl Envelope {
         let Some((_, peak)) = self.peak_window() else {
             return Ok(None);
         };
-        let floor = peak * super::from_db(floor_db);
-        let gate_window = gate_off_frame / self.window_frames;
+        let floor = peak * super::from_db(floor_db) * (1.0 + MARGIN);
+        let w = self.window_frames;
+        // Only windows that hold frames from the gate on count.
         let end = match self.values.iter().rposition(|&v| v > floor) {
-            Some(last) if last + 1 == self.values.len() => return Ok(None),
-            Some(last) if last >= gate_window => {
-                ((last + 1) * self.window_frames).max(gate_off_frame)
+            Some(last) if gate_off_frame < self.frames && (last + 1) * w > gate_off_frame => {
+                if last + 1 == self.values.len() {
+                    return Ok(None);
+                }
+                (last + 1) * w
             }
             _ => gate_off_frame,
         };
