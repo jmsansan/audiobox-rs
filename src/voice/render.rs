@@ -19,6 +19,10 @@ const SAW_GAIN: f64 = 0.85;
 const ASPIRATION_GAIN: f64 = 1.6;
 const FRICATION_GAIN: f64 = 0.5;
 const ROBOT_NOISE_GAIN: f64 = 0.3;
+/// Level of breath and fricative gestures in formant voices, relative to an
+/// event's level: about 12 dB below the vowels (render version 2).
+const BREATH_GESTURE: f64 = 0.22;
+const FRICATIVE_GESTURE: f64 = 0.3;
 /// Random-stream domains derived from the seed.
 const ASPIRATION: u64 = 0x6173_7069;
 const FRICATION: u64 = 0x6672_6963;
@@ -377,10 +381,16 @@ impl VoiceSynth {
             return;
         };
         let l = s.level;
+        // Formant voices speak their noise gestures well below their vowels, as
+        // speech does; robot voices keep their own balance.
+        let (breath, fricative) = match p.mode {
+            VoiceMode::Formant(_) => (BREATH_GESTURE, FRICATIVE_GESTURE),
+            VoiceMode::Robot(_) => (1.0, 1.0),
+        };
         self.target = match s.articulation {
             Articulation::Voiced => [l, l * p.breath, 0.0],
-            Articulation::Breath => [0.0, l, 0.0],
-            Articulation::Fricative => [0.0, 0.0, l],
+            Articulation::Breath => [0.0, l * breath, 0.0],
+            Articulation::Fricative => [0.0, 0.0, l * fricative],
             Articulation::Closure => [0.0; 3],
         };
         self.falling_by_release = s.release;

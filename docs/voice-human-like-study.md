@@ -4,7 +4,7 @@
 human-like *timbre* while producing invented, unintelligible syllables? Intelligible
 pronunciation is explicitly not a goal (owner, 2026-10-29).
 
-**Status.** Engine side complete; owner listening of the 0.6 fixtures pending. The
+**Status.** Engine side complete; the owner approved the v2 fixtures (2026-11-27). The
 technical part of the decision is below. The perceptual part (which variants are
 useful, which remain too robotic) is only recorded from the owner's listening, never
 from waveform metrics or an assistant's impression.
@@ -22,12 +22,12 @@ adds no DSP path.
 | Breath | `breath` (aspiration in voiced sound) | 0..=1 |
 | Resonance and bandwidth | `resonance`, `bandwidth` | 0.5..=2, 0.25..=4 |
 | Micro-variation | `jitter`, `shimmer`, `vibrato` | ≤ 50 cents, ≤ 0.5, ≤ 100 cents |
-| Delivery (separate from timbre) | `Delivery::Rigid` / `Expressive` | planner v1 bounds |
+| Delivery (separate from timbre) | `Delivery::Rigid` / `Expressive` | planner bounds |
 
 ## Fixtures that isolate timbre from delivery
 
 `cargo run --release --example voices --features voice` (48 kHz mono, seed 7,
-render v1, profile format v1, planner v1). Each has a raw and an RMS-0.05 copy, the
+render v2, profile format v1, planner v2). Each has a raw and an RMS-0.05 copy, the
 exact `.voice` profile and a `report.csv` row with the applied gain.
 
 | Comparison | Files | Held constant |
@@ -43,9 +43,9 @@ Equal RMS is a comparison control, not equal perceived loudness.
 
 ## Measurements
 
-- **Levels** (raw, from `report.csv`): smooth vowels peak 0.40 / RMS 0.134, saw vowels
-  0.48 / 0.136; characters peak 0.35 (soft-rounded) to 0.68 (airy-breathy); DC below
-  1e-5 everywhere.
+- **Levels** (raw, from `report.csv` of the render and planner v2 fixtures): smooth
+  vowels peak 0.40 / RMS 0.133, saw vowels 0.48 / 0.136; characters peak 0.34
+  (soft-rounded) to 0.68 (airy-breathy); DC below 1e-5 everywhere.
 - **Cost**: 0.6–0.7% of a Ryzen 7 1700X core per formant voice at 44.1/48 kHz, 0.4%
   for robot voices ([voice.md](voice.md#cost)). The softer variants cost the same as
   the saw baseline: the excitation is a few multiplies per sample.
@@ -85,7 +85,8 @@ dependency. Nothing is added to the crate without that decision.
 | 2026-10-29 | October prototype parallel-formant AEIOU | "Está bien pero suena muy robotico" |
 | 2026-10-29 | October prototype expressive AEIOU | "Suena bien la muestra expresiva" |
 | 2026-10-29 | October prototype production, robot and five-character examples | approved ("Si, están bien", "Si, suenan muy bien", "Están bien") |
-| pending | 0.6 fixtures listed above | to be recorded in #118 |
+| 2026-11-20 | 0.6.0 fixtures (render and planner v1) | the voices sound good, but with a "ts" or puffs of air |
+| 2026-11-27 | the fixtures above, render and planner v2, against v1 | approved ("Sí, ha mejorado bastante") |
 
 The October prototype was never merged and its code was lost, so 0.6 is a new
 implementation of the same specification; its approvals describe the direction, not

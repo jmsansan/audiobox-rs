@@ -284,7 +284,7 @@ fn fnv_extend(mut hash: u64, bytes: &[u8]) -> u64 {
     hash
 }
 
-/// Pause lengths of planner version 1, in microseconds.
+/// Pause lengths of planner versions 1 and 2, in microseconds.
 const WORD_GAP_US: u32 = 45_000;
 const COMMA_US: u32 = 220_000;
 const PHRASE_US: u32 = 380_000;
@@ -335,7 +335,7 @@ impl Builder {
 /// pauses and intonation, and the same word always gets the same syllables for a
 /// given seed.
 ///
-/// # Text handling (planner version 1)
+/// # Text handling (planner versions 1 and 2)
 ///
 /// Input is any `&str` of at most [`VoiceLimits::max_text_bytes`] bytes; longer
 /// text is [`ErrorCode::LimitExceeded`](crate::ErrorCode::LimitExceeded). Scalars
@@ -381,9 +381,10 @@ impl Builder {
 /// rendering, and pitches are clamped to ±R and to 20..=4000 Hz.
 ///
 /// Syllables open with a plosive (closure for 12% and burst for 6% of the
-/// syllable), a fricative (22%), a breath (18%) or directly with the vowel, chosen
-/// with the vowel from a hash of the syllable's letters (ASCII lowercased) and the
-/// seed.
+/// syllable) one time in four, a fricative (22%) or a breath (18%) one time in
+/// eight each, and directly with the vowel otherwise, chosen with the vowel from a
+/// hash of the syllable's letters (ASCII lowercased) and the seed (planner
+/// version 2; version 1 used plosives 3/8, fricatives 2/8, breaths 1/8).
 pub fn plan_gibberish(
     text: &str,
     profile: &VoiceProfile,
@@ -504,16 +505,16 @@ pub fn plan_gibberish(
                     )
                 };
                 match onset {
-                    0..=2 => {
+                    0 | 1 => {
                         b.push(gesture(Articulation::Closure, 0.12))?;
                         b.push(gesture(Articulation::Fricative, 0.06))?;
                         vowel_len -= length * 0.18;
                     }
-                    3 | 4 => {
+                    2 => {
                         b.push(gesture(Articulation::Fricative, 0.22))?;
                         vowel_len -= length * 0.22;
                     }
-                    5 => {
+                    3 => {
                         b.push(gesture(Articulation::Breath, 0.18))?;
                         vowel_len -= length * 0.18;
                     }
