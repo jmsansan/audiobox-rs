@@ -11,7 +11,8 @@ pub use measurements::{
     MeasurementBoundary, StereoMeasurements, ThresholdSilence, dc_mean, stereo_measurements,
 };
 pub use spectral::{
-    MAX_SPECTRAL_FRAMES, SpectralFrame, SpectralOptions, SpectralSummary, SpectralTimeline,
+    MAX_SPECTRAL_FRAMES, MAX_SPECTRAL_WORK, MIN_SPECTRAL_FFT, SpectralFrame, SpectralOptions,
+    SpectralSummary, SpectralTimeline,
 };
 use std::f64::consts::PI;
 

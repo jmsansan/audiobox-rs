@@ -5,19 +5,27 @@ use std::ops::Range;
 
 /// The most analysis frames one [`Audio::spectral_timeline`] measures.
 pub const MAX_SPECTRAL_FRAMES: usize = 1 << 20;
+/// The most samples one [`Audio::spectral_timeline`] transforms: analysis frames ×
+/// channels × `fft_size`.
+pub const MAX_SPECTRAL_WORK: usize = 1 << 31;
+/// The smallest `fft_size` of a spectral timeline.
+pub const MIN_SPECTRAL_FFT: usize = 16;
 
 /// How [`Audio::spectral_timeline`] frames and measures the input.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SpectralOptions {
-    /// Samples per analysis frame: a power of two from 2 to 1048576, Hann-windowed
-    /// as [`super::spectrum`] does. Bins are `sample_rate / fft_size` Hz apart.
+    /// Samples per analysis frame: a power of two from 16 to 1048576, Hann-windowed
+    /// as [`super::spectrum`] does. Bins are `sample_rate / fft_size` Hz apart. A
+    /// frame shorter than a few periods of the lowest note sees the waveform move
+    /// within it, so its centroid and flux vary from frame to frame.
     pub fft_size: usize,
     /// Frames between the starts of analysis frames, at least 1.
     pub hop: usize,
     /// One channel by index, or `None` for all channels together.
     pub channel: Option<usize>,
     /// An analysis frame whose RMS is at or below this level, in dBFS (finite), is
-    /// silent and has no measurements.
+    /// silent and has no measurements. A frame above it whose windowed spectrum is
+    /// empty, as a short input's lone first sample, has none either.
     pub silence_db: f64,
 }
 
@@ -43,13 +51,13 @@ pub struct SpectralFrame {
     /// each bin's frequency times its magnitude over the sum of the magnitudes, DC
     /// and Nyquist included. The window's leakage spreads a little magnitude over
     /// every bin, which pulls the centroid slightly toward the middle of the
-    /// spectrum. `None` when the frame is silent.
+    /// spectrum. `None` when the frame is silent or its windowed spectrum is empty.
     pub centroid_hz: Option<f64>,
     /// How much the spectrum's shape changed since the previous frame: the
     /// Euclidean distance between the two magnitude spectra, each scaled to unit
     /// length, divided by √2. It runs from 0 (the same shape at any level) to 1
     /// (no bin in common). `None` for the first frame and when this frame or the
-    /// previous one is silent.
+    /// previous one has no centroid.
     pub flux: Option<f64>,
 }
 
@@ -57,8 +65,9 @@ pub struct SpectralFrame {
 /// measured with.
 ///
 /// Analysis frame `i` starts at input frame `i * hop` and reads `fft_size`
-/// samples, zero-padded past the end of the input, as [`super::spectrogram`]
-/// does. With all channels, each bin's magnitude is the root mean square of the
+/// samples. Only whole frames are measured, so frames end at or before the end of
+/// the input and the last few frames of input may fall in none; an input shorter
+/// than one frame is a single frame, zero-padded. With all channels, each bin's magnitude is the root mean square of the
 /// channels' magnitudes, so that channels in opposite phase do not cancel.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SpectralTimeline {
@@ -135,9 +144,11 @@ impl SpectralTimeline {
 impl Audio {
     /// The spectral centroid and flux of the input over time, as `options` say.
     ///
-    /// Samples must be finite, `hop` at least 1, `silence_db` finite and a channel
+    /// Samples must be finite, `fft_size` a power of two from 16, `hop` at least 1,
+    /// `silence_db` finite and a channel
     /// must exist; otherwise the result is `InvalidArgument`. Default [`Limits`]
-    /// apply, and at most [`MAX_SPECTRAL_FRAMES`] analysis frames. The work is
+    /// apply, with at most [`MAX_SPECTRAL_FRAMES`] analysis frames and
+    /// [`MAX_SPECTRAL_WORK`] samples transformed, or `LimitExceeded`. The work is
     /// O(frames × channels × fft_size × log fft_size) and the storage O(fft_size)
     /// plus one entry per frame. The FFT uses the platform's math, so results are
     /// for reports, not bit-identical across hosts.
@@ -171,6 +182,9 @@ impl Audio {
             return Err(Error::invalid("Silence level must be finite"));
         }
         super::check_fft(self.rate, fft_size)?;
+        if fft_size < MIN_SPECTRAL_FFT {
+            return Err(Error::invalid("Spectral FFT size must be at least 16"));
+        }
         Limits::default().check(self.frames(), self.channels(), self.rate)?;
         let channels: &[Vec<f32>] = match channel {
             Some(c) => self
@@ -183,9 +197,22 @@ impl Audio {
             return Err(Error::invalid("Spectral samples must be finite"));
         }
         let input_frames = self.frames();
-        let count = input_frames.div_ceil(hop);
+        // Whole frames only, so that no frame is padded with silence; an input
+        // shorter than one frame is one padded frame.
+        let count = match input_frames {
+            0 => 0,
+            n if n < fft_size => 1,
+            n => (n - fft_size) / hop + 1,
+        };
         if count > MAX_SPECTRAL_FRAMES {
             return Err(Error::limit("Too many spectral analysis frames"));
+        }
+        if count
+            .checked_mul(channels.len())
+            .and_then(|n| n.checked_mul(fft_size))
+            .is_none_or(|n| n > MAX_SPECTRAL_WORK)
+        {
+            return Err(Error::limit("Spectral analysis exceeds its work limit"));
         }
         let mut frames = reserve(count)?;
         let (window, sum) = super::hann(fft_size);
@@ -197,7 +224,7 @@ impl Audio {
         let mut previous: Option<Vec<f64>> = None;
         let silence = super::from_db(silence_db);
         let silent_power = silence * silence;
-        for start in (0..input_frames).step_by(hop) {
+        for start in (0..count).map(|i| i * hop) {
             let end = (start + fft_size).min(input_frames);
             let mean_square = channels
                 .iter()
@@ -205,46 +232,51 @@ impl Audio {
                 .map(|&s| s as f64 * s as f64)
                 .sum::<f64>()
                 / ((end - start) * channels.len()) as f64;
-            power.fill(0.0);
-            for c in channels {
-                let m = super::transform(&c[start..], &window, sum, &mut real, &mut imag);
-                for (p, v) in power.iter_mut().zip(m) {
-                    *p += v * v;
-                }
-            }
-            let magnitudes: Vec<f64> = power
-                .iter()
-                .map(|p| (p / channels.len() as f64).sqrt())
-                .collect();
-            let total: f64 = magnitudes.iter().sum();
-            let length = magnitudes.iter().map(|m| m * m).sum::<f64>().sqrt();
-            // A window can hide what the samples hold (see `spectrum`): with no
-            // magnitude, there is nothing to measure.
-            let measured = mean_square > silent_power && total > 0.0 && total.is_finite();
             let mut frame = SpectralFrame {
                 start_frame: start,
                 centroid_hz: None,
                 flux: None,
             };
-            if measured {
-                let weighted: f64 = frequencies
-                    .iter()
-                    .zip(&magnitudes)
-                    .map(|(f, m)| f * m)
-                    .sum();
-                frame.centroid_hz = Some(weighted / total);
-                let shape: Vec<f64> = magnitudes.iter().map(|m| m / length).collect();
-                if let Some(before) = &previous {
-                    let distance = shape
-                        .iter()
-                        .zip(before)
-                        .map(|(a, b)| (a - b) * (a - b))
-                        .sum::<f64>()
-                        .sqrt();
-                    frame.flux = Some((distance / std::f64::consts::SQRT_2).min(1.0));
+            let mut measured = false;
+            if mean_square > silent_power {
+                power.fill(0.0);
+                for c in channels {
+                    let m = super::transform(&c[start..], &window, sum, &mut real, &mut imag);
+                    for (p, v) in power.iter_mut().zip(m) {
+                        *p += v * v;
+                    }
                 }
-                previous = Some(shape);
-            } else {
+                let magnitudes: Vec<f64> = power
+                    .iter()
+                    .map(|p| (p / channels.len() as f64).sqrt())
+                    .collect();
+                let total: f64 = magnitudes.iter().sum();
+                let length = magnitudes.iter().map(|m| m * m).sum::<f64>().sqrt();
+                // The window can hide what the samples hold (see `spectrum`), as in
+                // a short input's lone first sample: with no magnitude, there is
+                // nothing to measure.
+                if total > 0.0 && total.is_finite() {
+                    measured = true;
+                    let weighted: f64 = frequencies
+                        .iter()
+                        .zip(&magnitudes)
+                        .map(|(f, m)| f * m)
+                        .sum();
+                    frame.centroid_hz = Some(weighted / total);
+                    let shape: Vec<f64> = magnitudes.iter().map(|m| m / length).collect();
+                    if let Some(before) = &previous {
+                        let distance = shape
+                            .iter()
+                            .zip(before)
+                            .map(|(a, b)| (a - b) * (a - b))
+                            .sum::<f64>()
+                            .sqrt();
+                        frame.flux = Some((distance / std::f64::consts::SQRT_2).min(1.0));
+                    }
+                    previous = Some(shape);
+                }
+            }
+            if !measured {
                 previous = None;
             }
             frames.push(frame);

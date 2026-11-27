@@ -80,8 +80,13 @@ fn brightness(audio: &Audio, section: std::ops::Range<usize>) -> Result<()> {
 ```
 
 - **Frames.** Frame `i` starts at input frame `i × hop` and reads `fft_size`
-  samples, zero-padded past the end, with the Hann window and magnitudes of
-  [`analyze::spectrum`]. Bins are `sample_rate / fft_size` Hz apart.
+  samples, with the Hann window and magnitudes of [`analyze::spectrum`]. Bins are
+  `sample_rate / fft_size` Hz apart; `fft_size` is a power of two from 16. Only
+  whole frames are measured, so that no frame is padded with silence: the last few
+  frames of input may fall in none. An input shorter than one frame is a single
+  frame, zero-padded. A frame shorter than a few periods of the lowest note sees
+  the waveform move within it, so its centroid and flux vary from frame to frame
+  even on a steady sound.
 - **Centroid** (Hz): the amplitude-weighted mean frequency of the frame's magnitude
   spectrum, DC and Nyquist included. Higher is brighter. It matches a sine's
   frequency within 1 % and a harmonic tone's analytic value within 2 % in the
@@ -94,8 +99,9 @@ fn brightness(audio: &Audio, section: std::ops::Range<usize>) -> Result<()> {
   in common. A sine's flux is not exactly 0 when the hop is not a whole number of
   periods, but stays below 0.01 in the tests.
 - **Silence.** A frame whose RMS is at or below `silence_db` (−80 dBFS by default)
-  has neither measurement, and the frame after it has no flux. The first frame has
-  no flux.
+  has neither measurement. Neither has a frame above it whose windowed spectrum is
+  empty, as a short input's lone first sample (the window is 0 there). A frame
+  after one without a centroid has no flux, and the first frame has none.
 - **Channels.** One channel by index, or all of them: then each bin's magnitude is
   the RMS of the channels' magnitudes, so channels in opposite phase do not cancel.
 - **Summary.** Over the frames that start in a range of input frames: the count of
@@ -105,7 +111,9 @@ fn brightness(audio: &Audio, section: std::ops::Range<usize>) -> Result<()> {
 
 Bad options, a missing channel, a range outside the input and non-finite samples
 return `InvalidArgument`. The default `Limits` apply, plus at most
-`MAX_SPECTRAL_FRAMES` (1,048,576) frames, which returns `LimitExceeded`. The work is
+`MAX_SPECTRAL_FRAMES` (1,048,576) frames and `MAX_SPECTRAL_WORK` (2³¹) samples
+transformed (frames × channels × `fft_size`); beyond them the result is
+`LimitExceeded`. Silent frames are not transformed. The work is
 O(frames × channels × fft_size × log fft_size); storage is O(fft_size) plus one
 entry per frame. The FFT uses the platform's math, so these numbers are for reports
 and are not bit-identical across hosts.

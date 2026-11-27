@@ -125,9 +125,9 @@ fn a_change_of_spectrum_shows_as_flux_and_a_centroid_step() {
 #[test]
 fn silence_and_short_inputs_measure_nothing_or_what_they_hold() {
     let t = timeline(&mono(vec![0.0; 4000]), 1024, 1024);
-    assert_eq!(t.frames.len(), 4);
+    assert_eq!(t.frames.len(), 3);
     let summary = t.summary(0..4000).unwrap();
-    assert_eq!((summary.frames, summary.measured), (4, 0));
+    assert_eq!((summary.frames, summary.measured), (3, 0));
     assert_eq!(summary.centroid_mean_hz, None);
     assert_eq!(summary.flux_mean, None);
     for frame in &t.frames {
@@ -141,7 +141,7 @@ fn silence_and_short_inputs_measure_nothing_or_what_they_hold() {
 
     // Shorter than one frame: zero-padded, measured once, with no flux.
     let t = timeline(&mono(tones(&[(3000.0, 0.5, 0.0)], 500)), 1024, 256);
-    assert_eq!(t.frames.len(), 2);
+    assert_eq!(t.frames.len(), 1);
     let first = t.frames[0];
     assert!(first.centroid_hz.unwrap() > 2000.0);
     assert_eq!(first.flux, None);
@@ -187,7 +187,7 @@ fn results_are_finite_and_repeatable() {
     let audio = mono(samples);
     let a = timeline(&audio, 1024, 300);
     assert_eq!(a, timeline(&audio, 1024, 300));
-    assert_eq!(a.frames.len(), 20_000usize.div_ceil(300));
+    assert_eq!(a.frames.len(), (20_000 - 1024) / 300 + 1);
     for frame in &a.frames {
         if let Some(c) = frame.centroid_hz {
             assert!(c.is_finite() && (0.0..=24_000.0).contains(&c));
@@ -210,7 +210,7 @@ fn bad_arguments_are_refused() {
             ..options
         },
         SpectralOptions {
-            fft_size: 1,
+            fft_size: 8,
             ..options
         },
         SpectralOptions {
@@ -240,11 +240,33 @@ fn bad_arguments_are_refused() {
         ErrorCode::InvalidArgument
     );
     // More analysis frames than the limit.
-    let long = Audio::new(vec![vec![0.0; (1 << 20) + 1]], RATE).unwrap();
+    let long = Audio::new(vec![vec![0.0; (1 << 20) + 16]], RATE).unwrap();
     assert_eq!(
-        long.spectral_timeline(&SpectralOptions::new(2, 1))
+        long.spectral_timeline(&SpectralOptions::new(16, 1))
             .unwrap_err()
             .code,
         ErrorCode::LimitExceeded
     );
+    // More samples transformed than the limit, in fewer frames.
+    let long = Audio::new(vec![vec![0.0; 524_288 + 4096]], RATE).unwrap();
+    assert_eq!(
+        long.spectral_timeline(&SpectralOptions::new(4096, 1))
+            .unwrap_err()
+            .code,
+        ErrorCode::LimitExceeded
+    );
+}
+
+#[test]
+fn the_last_frames_are_whole_and_a_lone_sample_measures_nothing() {
+    // A steady sine over the whole input: no padded frame at the end shows flux.
+    let t = timeline(&mono(tones(&[(1000.0, 0.5, 0.0)], 48_000)), 2048, 1024);
+    let last = t.frames.last().unwrap();
+    assert!(last.start_frame + 2048 <= 48_000);
+    let summary = t.summary(0..48_000).unwrap();
+    assert!(summary.flux_max.unwrap() < 0.01, "{summary:?}");
+    // One loud sample at the start: the window hides it.
+    let t = timeline(&mono(vec![0.5]), 16, 4);
+    assert_eq!(t.frames.len(), 1);
+    assert_eq!((t.frames[0].centroid_hz, t.frames[0].flux), (None, None));
 }
