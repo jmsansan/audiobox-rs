@@ -306,3 +306,37 @@ fn bands_reach_as_many_cents_below_as_above() {
     assert!((e.inharmonic_share.unwrap() - 0.5).abs() < 0.01, "{e:?}");
     assert!(at(870.0).inharmonic_share.unwrap() < 0.01);
 }
+
+#[test]
+fn a_dc_offset_alone_has_nothing_to_share() {
+    // Each frame's mean is removed, so a constant level leaks nothing.
+    let e = energy(vec![0.25; 48_000], 220.0);
+    assert_eq!(
+        (e.harmonic_share, e.inharmonic_share),
+        (None, None),
+        "{e:?}"
+    );
+    // A slow drift under a tone: the tone's energy, hardly anything else.
+    let drift: Vec<f32> = partials(&[(220.0, 0.3)], 48_000)
+        .iter()
+        .enumerate()
+        .map(|(i, s)| s + 0.2 + 0.05 * (i as f32 / 48_000.0))
+        .collect();
+    assert!(energy(drift, 220.0).inharmonic_share.unwrap() < 0.001);
+}
+
+#[test]
+fn a_harmonic_on_nyquist_has_its_band() {
+    // 31 × (24 kHz / 31) is 24 kHz exactly, though the division rounds below 31.
+    let f0 = 24_000.0 / 31.0;
+    let rms = 0.3 / 2f64.sqrt();
+    let samples: Vec<f32> = partials(&[(f0, 0.3)], 48_000)
+        .iter()
+        .enumerate()
+        .map(|(i, s)| s + (rms * if i % 2 == 0 { 1.0 } else { -1.0 }) as f32)
+        .collect();
+    let e = energy(samples, f0);
+    assert_eq!(e.harmonics, 31);
+    assert!(e.inharmonic_share.unwrap() < 0.001, "{e:?}");
+    assert!((e.harmonic_shares[30] - 0.5).abs() < 0.005, "{e:?}");
+}

@@ -56,7 +56,8 @@ impl HarmonicOptions {
 ///
 /// The energy is the Hann-windowed one-sided power spectrum (from the magnitudes of
 /// [`super::spectrum`]: half an interior bin's magnitude squared, all of it at
-/// Nyquist) summed over the analysis frames and channels. DC and the bin beside it
+/// Nyquist) summed over the analysis frames and channels, each frame with its mean
+/// removed, so a DC offset adds nothing. DC and the bin beside it
 /// are not counted; rumble and aliases below the fundamental are, as inharmonic.
 #[derive(Clone, Debug, PartialEq)]
 pub struct HarmonicEnergy {
@@ -73,7 +74,8 @@ pub struct HarmonicEnergy {
     /// The share of the energy in each harmonic's band, from the first harmonic.
     pub harmonic_shares: Vec<f64>,
     /// The share of the energy in all the harmonics' bands, from 0 to 1; `None`
-    /// when there is no energy to share, as for silence or no frames.
+    /// when there is no energy to share, as for silence, a DC offset alone or no
+    /// frames.
     pub harmonic_share: Option<f64>,
     /// The share of the energy elsewhere: 1 minus the harmonic share.
     pub inharmonic_share: Option<f64>,
@@ -180,7 +182,15 @@ impl Audio {
         // The bands: from `tolerance_cents` below each harmonic to as far above it,
         // each side at least 2 bins and at most a quarter of the fundamental.
         let nyquist = rate / 2.0;
-        let harmonics = (nyquist / o.fundamental_hz).floor() as usize;
+        // Every multiple at or below Nyquist, counted exactly: the division can
+        // round a harmonic that lands on Nyquist out.
+        let mut harmonics = (nyquist / o.fundamental_hz).floor() as usize;
+        while (harmonics + 1) as f64 * o.fundamental_hz <= nyquist {
+            harmonics += 1;
+        }
+        while harmonics > 0 && harmonics as f64 * o.fundamental_hz > nyquist {
+            harmonics -= 1;
+        }
         let ratio = 2f64.powf(o.tolerance_cents / 1200.0);
         let side = |hz: f64| hz.max(2.0 * bin).min(o.fundamental_hz / 4.0);
         let mut bands_hz = reserve(harmonics)?;
@@ -212,15 +222,22 @@ impl Audio {
         let mut real = vec![0.0; o.fft_size];
         let mut imag = vec![0.0; o.fft_size];
         let mut power = vec![0.0; bins];
+        let mut frame = vec![0.0f32; o.fft_size];
         for i in 0..count {
             let start = o.range.start + i * o.hop;
             let end = (start + o.fft_size).min(o.range.end);
-            // An all-zero frame adds no power: skipping it changes nothing.
-            for c in channels
-                .iter()
-                .filter(|c| c[start..end].iter().any(|&s| s != 0.0))
-            {
-                let m = super::transform(&c[start..end], &window, sum, &mut real, &mut imag);
+            for c in channels.iter().map(|c| &c[start..end]) {
+                // A frame at one level, as silence or a DC offset alone, adds no
+                // power: skipping it changes nothing.
+                if c.iter().all(|&s| s == c[0]) {
+                    continue;
+                }
+                // The frame's mean is removed, so that a DC offset leaks no power
+                // through the window into other bins.
+                let mean = c.iter().map(|&s| f64::from(s)).sum::<f64>() / c.len() as f64;
+                frame.clear();
+                frame.extend(c.iter().map(|&s| (f64::from(s) - mean) as f32));
+                let m = super::transform(&frame, &window, sum, &mut real, &mut imag);
                 for (k, (p, v)) in power.iter_mut().zip(m).enumerate() {
                     *p += weight(k) * v * v;
                 }

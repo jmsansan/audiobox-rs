@@ -309,16 +309,17 @@ fn inharmonicity(note: &Audio) -> Result<()> {
   same), summed over whole analysis frames of the range and over the channels
   measured (one, or all). Frame `i` starts at `range.start + i × hop`; a range
   shorter than one frame is one frame, zero-padded, and its cut-off edges spread
-  its energy over other bins, so a shorter `fft_size` suits short ranges. DC and
-  the bin beside it, where a DC offset's window lobe falls, are not counted;
-  everything else up to half the sample rate is, so rumble and aliases folded
-  below the fundamental count as inharmonic.
+  its energy over other bins, so a shorter `fft_size` suits short ranges. Each
+  frame's mean is removed before the window, so a DC offset adds nothing, and DC
+  and the bin beside it are not counted; everything else up to half the sample
+  rate is, so rumble and aliases folded below the fundamental count as
+  inharmonic.
 - **Bands.** Every harmonic up to half the sample rate has a band from
   `tolerance_cents` (25 by default) below its frequency to as many above it.
   Each side is at least 2 bins (the Hann window's main lobe) and at most a
   quarter of the fundamental, so that bands never meet. The fundamental is at
   least 8 bins (`MIN_HARMONIC_BINS`): 46.875 Hz with the default 8192-sample
-  frames at 48 kHz, 23 Hz with 16384; a bass note at 96 kHz needs 16384 or
+  frames at 48 kHz, 23.4375 Hz with 16384; a bass note at 96 kHz needs 16384 or
   more, as the example chooses.
 - **Resolution.** A partial's window lobe spreads 2 bins to each side, and a band
   reaches at least 2 bins, so a partial within about 4 bins of a harmonic
@@ -326,7 +327,7 @@ fn inharmonicity(note: &Audio) -> Result<()> {
   band. Longer frames resolve closer partials, at the cost of time detail.
 - **Shares.** `harmonic_shares` per harmonic, `harmonic_share` for all bands and
   `inharmonic_share` for the rest, each from 0 to 1; `None` when there is no
-  energy to share, as for silence or an empty range. The result carries its
+  energy to share, as for silence, a DC offset alone or an empty range. The result carries its
   options, the sample rate, the frames measured and each band's edges in Hz.
 
 An inharmonic share is an indicator, not a verdict. Energy away from the
