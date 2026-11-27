@@ -58,4 +58,57 @@ The default `Limits` apply. The work is linear in the input and the storage is o
 value per window. The values are the same on every host: sums run in a fixed order,
 square roots are exactly rounded, and dB thresholds use the crate's own math.
 
+## Spectral centroid and flux
+
+`Audio::spectral_timeline` measures, per analysis frame, how bright a sound is and
+how much its spectrum changed, and `SpectralTimeline::summary` sums up a range:
+
+```rust
+use audiobox::analyze::SpectralOptions;
+use audiobox::{Audio, Result};
+
+fn brightness(audio: &Audio, section: std::ops::Range<usize>) -> Result<()> {
+    // 2048-sample frames every 1024 frames, over all channels.
+    let timeline = audio.spectral_timeline(&SpectralOptions::new(2048, 1024))?;
+    let summary = timeline.summary(section)?;
+    println!(
+        "centroid {:?} Hz, flux mean {:?}",
+        summary.centroid_mean_hz, summary.flux_mean
+    );
+    Ok(())
+}
+```
+
+- **Frames.** Frame `i` starts at input frame `i × hop` and reads `fft_size`
+  samples, zero-padded past the end, with the Hann window and magnitudes of
+  [`analyze::spectrum`]. Bins are `sample_rate / fft_size` Hz apart.
+- **Centroid** (Hz): the amplitude-weighted mean frequency of the frame's magnitude
+  spectrum, DC and Nyquist included. Higher is brighter. It matches a sine's
+  frequency within 1 % and a harmonic tone's analytic value within 2 % in the
+  tests: the window's leakage spreads a little magnitude over every bin and pulls
+  the centroid slightly toward the middle of the spectrum. A DC offset pulls it
+  down.
+- **Flux** (0 to 1): the distance between this frame's and the previous frame's
+  magnitude spectra, each scaled to unit length, divided by √2. It ignores level,
+  so a steady sound that swells has next to none; 0 is the same shape, 1 is no bin
+  in common. A sine's flux is not exactly 0 when the hop is not a whole number of
+  periods, but stays below 0.01 in the tests.
+- **Silence.** A frame whose RMS is at or below `silence_db` (−80 dBFS by default)
+  has neither measurement, and the frame after it has no flux. The first frame has
+  no flux.
+- **Channels.** One channel by index, or all of them: then each bin's magnitude is
+  the RMS of the channels' magnitudes, so channels in opposite phase do not cancel.
+- **Summary.** Over the frames that start in a range of input frames: the count of
+  frames and of measured ones, the mean, lowest and highest centroid and the mean
+  and highest flux, `None` when no frame has the value. Flux compares with the frame
+  before, so the first frame after a change still shows it.
+
+Bad options, a missing channel, a range outside the input and non-finite samples
+return `InvalidArgument`. The default `Limits` apply, plus at most
+`MAX_SPECTRAL_FRAMES` (1,048,576) frames, which returns `LimitExceeded`. The work is
+O(frames × channels × fft_size × log fft_size); storage is O(fft_size) plus one
+entry per frame. The FFT uses the platform's math, so these numbers are for reports
+and are not bit-identical across hosts.
+
 [`Envelope`]: https://docs.rs/audiobox/latest/audiobox/analyze/struct.Envelope.html
+[`analyze::spectrum`]: https://docs.rs/audiobox/latest/audiobox/analyze/fn.spectrum.html

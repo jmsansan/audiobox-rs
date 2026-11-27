@@ -1,6 +1,7 @@
 //! Waveforms, spectral analysis and K-weighted integrated loudness.
 mod envelope;
 mod measurements;
+mod spectral;
 use crate::{Audio, Error, Result};
 pub use envelope::{
     Envelope, EnvelopeMethod, EnvelopeOptions, EnvelopeSpan, EnvelopeThresholds, EnvelopeTimes,
@@ -8,6 +9,9 @@ pub use envelope::{
 pub use measurements::{
     BoundaryMeasurement, BoundarySamples, ChannelStep, MAX_MEASUREMENT_BOUNDARIES,
     MeasurementBoundary, StereoMeasurements, ThresholdSilence, dc_mean, stereo_measurements,
+};
+pub use spectral::{
+    MAX_SPECTRAL_FRAMES, SpectralFrame, SpectralOptions, SpectralSummary, SpectralTimeline,
 };
 use std::f64::consts::PI;
 

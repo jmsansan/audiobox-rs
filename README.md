@@ -431,7 +431,9 @@ and `cargo run --example render_measurements` for a report example.
 
 `Audio::envelope` follows a sound's amplitude and reads its attack, decay and
 release tail at the thresholds you give, with `None` when a threshold is never
-crossed. See [measurements of a sound](docs/sound-measurements.md).
+crossed. `Audio::spectral_timeline` gives the spectral centroid (brightness) and
+flux (change of spectrum) per analysis frame, with summaries over ranges. See
+[measurements of a sound](docs/sound-measurements.md).
 
 `read_audio_file` accepts regular files with a 512 MiB encoded-byte cap, in
 addition to decoded limits. `read_audio_file_with_options` and `ReadAudioOptions`
