@@ -16,7 +16,8 @@
 
 - `read_dx7_raw_bank` and `DX7_RAW_BANK_BYTES`: a 32-voice bank saved without its
   message wrapper (4096 bytes, no header or checksum). `examples/dx7_import.rs` uses
-  it for such files and now reads files of several messages.
+  for such files with `--raw`, reads files of several messages, and reads at most
+  1 MiB.
 
 ## 0.6.0 — 2026-11-20
 

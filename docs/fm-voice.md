@@ -492,8 +492,9 @@ published system-exclusive format.
 
 Rules:
 
-- **Faults.** A wrong size or terminator is `DecodeError`; a header that is not one
-  of the two above is `UnsupportedFormat`. A wrong checksum and parameter bytes
+- **Faults.** See the rules for files above: a message cut short or of the wrong
+  length is `DecodeError` and a file with no voice message `UnsupportedFormat`. A
+  bank whose count bytes are not `20 00`, a wrong checksum and parameter bytes
   above their range are accepted with a `Dx7Warning`; such bytes are clamped.
 - **Names.** Trailing spaces are dropped, spaces inside become `_`, any other
   character outside letters, digits, `_` and `-` becomes `-`, and an empty name

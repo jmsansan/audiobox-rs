@@ -526,3 +526,32 @@ fn other_messages_and_stray_bytes_are_skipped_with_warnings() {
     let short = [good[..4000].to_vec(), vec![0x00, 0xf7]].concat();
     assert_eq!(read_dx7(&short).unwrap_err().code, ErrorCode::DecodeError);
 }
+
+#[test]
+fn review_cases() {
+    let voices = generated_bank();
+    // A damaged checksum byte that reads F7 is a bad checksum, not the end.
+    let mut one = single(&voices[0]);
+    let at = one.len() - 2;
+    one[at] = 0xf7;
+    let read = read_dx7(&one).unwrap();
+    assert_eq!(read.voices.len(), 1);
+    assert!(read.warnings[0].message.contains("Checksum"));
+    // A bank header in a frame too short for a bank is a structural fault.
+    let short = [
+        bank(&voices),
+        vec![0xf0, 0x43, 0x00, 0x09, 0x20, 0x00, 0xf7],
+    ]
+    .concat();
+    assert_eq!(read_dx7(&short).unwrap_err().code, ErrorCode::DecodeError);
+    // Many voices of one name are named quickly and uniquely.
+    let same: Vec<[u8; 155]> = (0..32).map(|i| parameters(3000 + i, "SAME")).collect();
+    let many: Vec<u8> = (0..128).flat_map(|_| bank(&same)).collect();
+    let start = std::time::Instant::now();
+    let read = read_dx7(&many).unwrap();
+    assert_eq!(read.voices.len(), 4096);
+    let names: std::collections::HashSet<&str> =
+        read.voices.iter().map(|v| v.patch.name.as_str()).collect();
+    assert_eq!(names.len(), 4096);
+    assert!(start.elapsed() < std::time::Duration::from_secs(30));
+}

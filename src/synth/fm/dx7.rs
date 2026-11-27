@@ -230,13 +230,29 @@ pub fn read_dx7(bytes: &[u8]) -> Result<Dx7Voices> {
             at += 1;
             continue;
         }
-        let Some(length) = bytes[at..].iter().position(|&b| b == 0xf7).map(|i| i + 1) else {
+        let Some(mut length) = bytes[at..].iter().position(|&b| b == 0xf7).map(|i| i + 1) else {
             return Err(Error::decode(format!(
                 "A message starting at byte {at} does not end with 0xF7"
             )));
         };
-        // A new message before the end of this one: this one was cut short.
-        if let Some(inner) = bytes[at + 1..at + length].iter().position(|&b| b == 0xf0) {
+        // A DX7 voice or bank message is framed by its known length when it ends there
+        // with F7, so that a damaged checksum byte that reads F7 is a bad checksum, not
+        // the end of the message.
+        if let Some(full) = dx7_length(&bytes[at..]) {
+            if bytes.get(at + full - 1) == Some(&0xf7) {
+                length = full;
+            }
+        }
+        // A new message before the end of this one: this one was cut short. (The
+        // checksum byte, just before F7, is not looked at: it may be damaged.)
+        let body_end = (at + length - 1).max(at + 1);
+        let body = &bytes[at + 1..body_end];
+        let checked = if length > 2 {
+            &body[..body.len().saturating_sub(1)]
+        } else {
+            body
+        };
+        if let Some(inner) = checked.iter().position(|&b| b == 0xf0) {
             return Err(Error::decode(format!(
                 "The message starting at byte {at} is cut short at byte {}",
                 at + 1 + inner
@@ -282,7 +298,7 @@ pub fn read_dx7(bytes: &[u8]) -> Result<Dx7Voices> {
         });
     }
     let mut voices: Vec<Dx7Voice> = Vec::new();
-    let mut names = HashSet::new();
+    let mut names = Names::default();
     for message in messages {
         match message {
             Message::Voice(data) => push_voice(data, &mut voices, &mut names, &mut warnings)?,
@@ -316,7 +332,7 @@ pub fn read_dx7_raw_bank(bytes: &[u8]) -> Result<Dx7Voices> {
         )));
     }
     let mut voices = Vec::new();
-    let mut names = HashSet::new();
+    let mut names = Names::default();
     let mut warnings = Vec::new();
     for packed in bytes.chunks_exact(128) {
         push_voice(&unpack(packed), &mut voices, &mut names, &mut warnings)?;
@@ -332,7 +348,7 @@ fn classify<'a>(
     warnings: &mut Vec<Dx7Warning>,
 ) -> Result<Option<Message<'a>>> {
     // F0 43 0n ff hh ll ... checksum F7, with `n` a channel and `ff` the format.
-    if message.len() < 8 || message[1] != 0x43 || message[2] & 0xf0 != 0x00 {
+    if message.len() < 6 || message[1] != 0x43 || message[2] & 0xf0 != 0x00 {
         return Ok(None);
     }
     let (format, count) = (message[3], [message[4], message[5]]);
@@ -378,7 +394,7 @@ fn classify<'a>(
 fn push_voice(
     data: &[u8],
     voices: &mut Vec<Dx7Voice>,
-    names: &mut HashSet<String>,
+    names: &mut Names,
     warnings: &mut Vec<Dx7Warning>,
 ) -> Result<()> {
     let mut fields = Fields {
@@ -387,19 +403,14 @@ fn push_voice(
     };
     let (fm, original_name) = voice(data, &mut fields);
     let base = sanitize(&original_name);
-    let mut name = base.clone();
-    let mut suffix = 2;
-    while names.contains(&name) {
-        name = format!("{base}-{suffix}");
-        suffix += 1;
-    }
+    let name = names.unique(base);
     let patch = FmPatch {
         name,
         volume: 15,
         voice: fm,
     };
     patch.validate()?;
-    names.insert(patch.name.clone());
+
     voices.push(Dx7Voice {
         patch,
         original_name,
@@ -527,4 +538,45 @@ pub fn write_dx7_bank(patches: &[FmPatch]) -> Result<Vec<u8>> {
         data.extend(&v[144..155]);
     }
     Ok(message(BANK_HEADER, &data))
+}
+
+/// The length a message starting at `bytes[0]` has if its header is a DX7 single
+/// voice or bank, whatever its count bytes say.
+fn dx7_length(bytes: &[u8]) -> Option<usize> {
+    let header = bytes.get(..6)?;
+    if header[0] != 0xf0 || header[1] != 0x43 || header[2] & 0xf0 != 0x00 {
+        return None;
+    }
+    match (header[3], [header[4], header[5]]) {
+        (0x00, [0x01, 0x1b]) => Some(DX7_VOICE_BYTES),
+        (0x09, _) => Some(DX7_BANK_BYTES),
+        _ => None,
+    }
+}
+
+/// The names given so far, and for each base name the next suffix to try, so that
+/// many voices of one name are named in linear time.
+#[derive(Default)]
+struct Names {
+    used: HashSet<String>,
+    next: std::collections::HashMap<String, usize>,
+}
+
+impl Names {
+    /// `base`, or `base-2`, `base-3` and so on: the first not given yet.
+    fn unique(&mut self, base: String) -> String {
+        if self.used.insert(base.clone()) {
+            return base;
+        }
+        let mut suffix = self.next.get(&base).copied().unwrap_or(2);
+        let name = loop {
+            let name = format!("{base}-{suffix}");
+            suffix += 1;
+            if self.used.insert(name.clone()) {
+                break name;
+            }
+        };
+        self.next.insert(base, suffix);
+        name
+    }
 }
