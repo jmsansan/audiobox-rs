@@ -81,7 +81,7 @@ fn brightness(audio: &Audio, section: std::ops::Range<usize>) -> Result<()> {
 
 - **Frames.** Frame `i` starts at input frame `i × hop` and reads `fft_size`
   samples, with the Hann window and magnitudes of [`analyze::spectrum`]. Bins are
-  `sample_rate / fft_size` Hz apart; `fft_size` is a power of two from 16. Only
+  `sample_rate / fft_size` Hz apart; `fft_size` is a power of two from 16 to 1,048,576 and `hop` at least 1. Only
   whole frames are measured, so that no frame is padded with silence: the last few
   frames of input may fall in none. An input shorter than one frame is a single
   frame, zero-padded. A frame shorter than a few periods of the lowest note sees
@@ -112,8 +112,8 @@ fn brightness(audio: &Audio, section: std::ops::Range<usize>) -> Result<()> {
 
 Bad options, a missing channel, a range outside the input and non-finite samples
 return `InvalidArgument`. The default `Limits` apply, plus at most
-`MAX_SPECTRAL_FRAMES` (1,048,576) frames and `MAX_SPECTRAL_WORK` (2³², about 4.3
-billion FFT steps: frames × channels × `fft_size` × log₂ `fft_size`); beyond them
+`MAX_SPECTRAL_FRAMES` (1,048,576) frames and `MAX_SPECTRAL_WORK` (2³², a work estimate of
+frames × channels × `fft_size` × log₂ `fft_size`, twice the FFT's butterflies); beyond them
 the result is `LimitExceeded`. Both count every frame, silent or not, before any
 is measured; ten minutes of 48 kHz stereo with 2048-sample frames every 1024 is
 about 1.3 billion. Silent frames are not transformed. The work is a scan of the

@@ -79,11 +79,38 @@ fn band_limited_noise_centers_on_its_band() {
         .map(|f| (f, 0.01, 2.0 * PI * random()))
         .collect();
     let t = timeline(&mono(tones(&partials, 24_000)), 4096, 2048);
-    let summary = inner(&t);
-    let c = summary.centroid_mean_hz.unwrap();
-    assert!((c - 3000.0).abs() < 30.0, "{c}");
-    assert!(summary.centroid_min_hz.unwrap() > 2900.0);
-    assert!(summary.centroid_max_hz.unwrap() < 3100.0);
+    // The mean of the partials' frequencies, every frame within 2 %.
+    let expected = partials.iter().map(|p| p.0).sum::<f64>() / partials.len() as f64;
+    assert_eq!(expected, 2996.09375);
+    assert_eq!(inner(&t).measured, t.frames.len());
+    for frame in &t.frames {
+        let c = frame.centroid_hz.unwrap();
+        assert!((c - expected).abs() / expected < 0.02, "{c}");
+    }
+}
+
+#[test]
+fn the_silence_level_is_the_rms_of_the_channels_measured() {
+    // A sine at −70 dBFS RMS on the left, silence on the right.
+    let amplitude = 2f64.sqrt() * 10f64.powf(-70.0 / 20.0);
+    let left = tones(&[(1000.0, amplitude, 0.0)], 8192);
+    let audio = Audio::new(vec![left, vec![0.0; 8192]], RATE).unwrap();
+    let measured = |channel, silence_db| {
+        let t = audio
+            .spectral_timeline(&SpectralOptions {
+                channel,
+                silence_db,
+                ..SpectralOptions::new(1024, 1024)
+            })
+            .unwrap();
+        t.summary(0..8192).unwrap().measured
+    };
+    // The left alone is at −70 dB; pooled with the silent right, at −73 dB.
+    assert_eq!(measured(Some(0), -72.0), 8);
+    assert_eq!(measured(None, -72.0), 0);
+    assert_eq!(measured(None, -74.0), 8);
+    assert_eq!(measured(Some(0), -69.0), 0);
+    assert_eq!(measured(Some(1), -200.0), 0);
 }
 
 #[test]
@@ -261,14 +288,16 @@ fn bad_arguments_are_refused() {
             .code,
         ErrorCode::LimitExceeded
     );
-    // More samples transformed than the limit, in fewer frames.
-    let long = Audio::new(vec![vec![0.0; 524_288 + 4096]], RATE).unwrap();
-    assert_eq!(
-        long.spectral_timeline(&SpectralOptions::new(4096, 1))
-            .unwrap_err()
-            .code,
-        ErrorCode::LimitExceeded
-    );
+    // The work limit, 2^32, at its edge: 87,381 frames × 4096 × 12 fit and
+    // 87,382 do not. The input is silent, so nothing is transformed.
+    for (frames, fits) in [(87_381, true), (87_382, false)] {
+        let long = Audio::new(vec![vec![0.0; frames + 4095]], RATE).unwrap();
+        let result = long.spectral_timeline(&SpectralOptions::new(4096, 1));
+        match fits {
+            true => assert_eq!(result.unwrap().frames.len(), frames),
+            false => assert_eq!(result.unwrap_err().code, ErrorCode::LimitExceeded),
+        }
+    }
 }
 
 #[test]

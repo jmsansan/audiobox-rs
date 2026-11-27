@@ -5,10 +5,11 @@ use std::ops::Range;
 
 /// The most analysis frames one [`Audio::spectral_timeline`] measures.
 pub const MAX_SPECTRAL_FRAMES: usize = 1 << 20;
-/// The most work one [`Audio::spectral_timeline`] is allowed, in FFT butterfly
-/// steps: analysis frames × channels × `fft_size` × log₂ `fft_size`. Every frame
-/// counts, silent or not. About 4.3 billion: a few seconds on a desktop core.
-pub const MAX_SPECTRAL_WORK: usize = 1 << 32;
+/// The most work one [`Audio::spectral_timeline`] is allowed, as an estimate:
+/// analysis frames × channels × `fft_size` × log₂ `fft_size` (twice the FFT's
+/// butterflies). Every frame counts, silent or not. About 4.3 billion: a few
+/// seconds on a desktop core.
+pub const MAX_SPECTRAL_WORK: u64 = 1 << 32;
 /// The smallest `fft_size` of a spectral timeline.
 pub const MIN_SPECTRAL_FFT: usize = 16;
 
@@ -212,10 +213,11 @@ impl Audio {
         if count > MAX_SPECTRAL_FRAMES {
             return Err(Error::limit("Too many spectral analysis frames"));
         }
-        if count
-            .checked_mul(channels.len())
-            .and_then(|n| n.checked_mul(fft_size))
-            .and_then(|n| n.checked_mul(fft_size.trailing_zeros() as usize))
+        // In u64, so that the limit is exact on 32-bit targets too.
+        if (count as u64)
+            .checked_mul(channels.len() as u64)
+            .and_then(|n| n.checked_mul(fft_size as u64))
+            .and_then(|n| n.checked_mul(u64::from(fft_size.trailing_zeros())))
             .is_none_or(|n| n > MAX_SPECTRAL_WORK)
         {
             return Err(Error::limit("Spectral analysis exceeds its work limit"));
