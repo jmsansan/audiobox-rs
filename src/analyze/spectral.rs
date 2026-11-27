@@ -5,9 +5,10 @@ use std::ops::Range;
 
 /// The most analysis frames one [`Audio::spectral_timeline`] measures.
 pub const MAX_SPECTRAL_FRAMES: usize = 1 << 20;
-/// The most samples one [`Audio::spectral_timeline`] transforms: analysis frames ×
-/// channels × `fft_size`.
-pub const MAX_SPECTRAL_WORK: usize = 1 << 31;
+/// The most work one [`Audio::spectral_timeline`] is allowed, in FFT butterfly
+/// steps: analysis frames × channels × `fft_size` × log₂ `fft_size`. Every frame
+/// counts, silent or not. About 4.3 billion: a few seconds on a desktop core.
+pub const MAX_SPECTRAL_WORK: usize = 1 << 32;
 /// The smallest `fft_size` of a spectral timeline.
 pub const MIN_SPECTRAL_FFT: usize = 16;
 
@@ -24,7 +25,8 @@ pub struct SpectralOptions {
     /// One channel by index, or `None` for all channels together.
     pub channel: Option<usize>,
     /// An analysis frame whose RMS is at or below this level, in dBFS (finite), is
-    /// silent and has no measurements. A frame above it whose windowed spectrum is
+    /// silent and has no measurements: the RMS of its unwindowed samples, pooled
+    /// over the channels measured. A frame above it whose windowed spectrum is
     /// empty, as a short input's lone first sample, has none either.
     pub silence_db: f64,
 }
@@ -50,8 +52,8 @@ pub struct SpectralFrame {
     /// The amplitude-weighted mean frequency of the spectrum, in Hz: the sum of
     /// each bin's frequency times its magnitude over the sum of the magnitudes, DC
     /// and Nyquist included. The window's leakage spreads a little magnitude over
-    /// every bin, which pulls the centroid slightly toward the middle of the
-    /// spectrum. `None` when the frame is silent or its windowed spectrum is empty.
+    /// other bins, which shifts the centroid slightly from the analytic value.
+    /// `None` when the frame is silent or its windowed spectrum is empty.
     pub centroid_hz: Option<f64>,
     /// How much the spectrum's shape changed since the previous frame: the
     /// Euclidean distance between the two magnitude spectra, each scaled to unit
@@ -86,7 +88,8 @@ pub struct SpectralTimeline {
 pub struct SpectralSummary {
     /// Analysis frames that start in the range.
     pub frames: usize,
-    /// Of those, the frames with a centroid: the ones that are not silent.
+    /// Of those, the frames with a centroid: not silent, and with a windowed
+    /// spectrum that is not empty.
     pub measured: usize,
     /// The mean, lowest and highest centroid, in Hz; `None` without a measured frame.
     pub centroid_mean_hz: Option<f64>,
@@ -148,9 +151,11 @@ impl Audio {
     /// `silence_db` finite and a channel
     /// must exist; otherwise the result is `InvalidArgument`. Default [`Limits`]
     /// apply, with at most [`MAX_SPECTRAL_FRAMES`] analysis frames and
-    /// [`MAX_SPECTRAL_WORK`] samples transformed, or `LimitExceeded`. The work is
-    /// O(frames × channels × fft_size × log fft_size) and the storage O(fft_size)
-    /// plus one entry per frame. The FFT uses the platform's math, so results are
+    /// [`MAX_SPECTRAL_WORK`], or `LimitExceeded`; both count every frame before any
+    /// is measured. The work is O(samples) for the finiteness check plus
+    /// O(frames × channels × fft_size × log fft_size), less for silent frames,
+    /// which are not transformed; the storage is O(fft_size) plus one entry per
+    /// frame. An empty input has no frames. The FFT uses the platform's math, so results are
     /// for reports, not bit-identical across hosts.
     ///
     /// ```
@@ -210,6 +215,7 @@ impl Audio {
         if count
             .checked_mul(channels.len())
             .and_then(|n| n.checked_mul(fft_size))
+            .and_then(|n| n.checked_mul(fft_size.trailing_zeros() as usize))
             .is_none_or(|n| n > MAX_SPECTRAL_WORK)
         {
             return Err(Error::limit("Spectral analysis exceeds its work limit"));

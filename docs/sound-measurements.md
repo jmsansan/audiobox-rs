@@ -90,32 +90,35 @@ fn brightness(audio: &Audio, section: std::ops::Range<usize>) -> Result<()> {
 - **Centroid** (Hz): the amplitude-weighted mean frequency of the frame's magnitude
   spectrum, DC and Nyquist included. Higher is brighter. It matches a sine's
   frequency within 1 % and a harmonic tone's analytic value within 2 % in the
-  tests: the window's leakage spreads a little magnitude over every bin and pulls
-  the centroid slightly toward the middle of the spectrum. A DC offset pulls it
-  down.
+  tests, in every frame: the window's leakage spreads a little magnitude over
+  other bins, which shifts the centroid slightly. A DC offset pulls it down.
 - **Flux** (0 to 1): the distance between this frame's and the previous frame's
   magnitude spectra, each scaled to unit length, divided by √2. It ignores level,
   so a steady sound that swells has next to none; 0 is the same shape, 1 is no bin
   in common. A sine's flux is not exactly 0 when the hop is not a whole number of
   periods, but stays below 0.01 in the tests.
 - **Silence.** A frame whose RMS is at or below `silence_db` (−80 dBFS by default)
-  has neither measurement. Neither has a frame above it whose windowed spectrum is
+  has neither measurement. The RMS is of the frame's unwindowed samples, over the
+  samples it holds (not a short input's padding) and pooled over the channels
+  measured, so a quiet channel lowers it. Neither has a frame above it whose windowed spectrum is
   empty, as a short input's lone first sample (the window is 0 there). A frame
   after one without a centroid has no flux, and the first frame has none.
 - **Channels.** One channel by index, or all of them: then each bin's magnitude is
   the RMS of the channels' magnitudes, so channels in opposite phase do not cancel.
 - **Summary.** Over the frames that start in a range of input frames: the count of
-  frames and of measured ones, the mean, lowest and highest centroid and the mean
+  frames and of measured ones (those with a centroid), the mean, lowest and highest centroid and the mean
   and highest flux, `None` when no frame has the value. Flux compares with the frame
   before, so the first frame after a change still shows it.
 
 Bad options, a missing channel, a range outside the input and non-finite samples
 return `InvalidArgument`. The default `Limits` apply, plus at most
-`MAX_SPECTRAL_FRAMES` (1,048,576) frames and `MAX_SPECTRAL_WORK` (2³¹) samples
-transformed (frames × channels × `fft_size`); beyond them the result is
-`LimitExceeded`. Silent frames are not transformed. The work is
-O(frames × channels × fft_size × log fft_size); storage is O(fft_size) plus one
-entry per frame. The FFT uses the platform's math, so these numbers are for reports
+`MAX_SPECTRAL_FRAMES` (1,048,576) frames and `MAX_SPECTRAL_WORK` (2³², about 4.3
+billion FFT steps: frames × channels × `fft_size` × log₂ `fft_size`); beyond them
+the result is `LimitExceeded`. Both count every frame, silent or not, before any
+is measured; ten minutes of 48 kHz stereo with 2048-sample frames every 1024 is
+about 1.3 billion. Silent frames are not transformed. The work is a scan of the
+samples plus O(frames × channels × fft_size × log fft_size); storage is
+O(fft_size) plus one entry per frame. An empty input has no frames. The FFT uses the platform's math, so these numbers are for reports
 and are not bit-identical across hosts.
 
 [`Envelope`]: https://docs.rs/audiobox/latest/audiobox/analyze/struct.Envelope.html

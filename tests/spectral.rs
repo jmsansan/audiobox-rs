@@ -36,8 +36,11 @@ fn inner(t: &SpectralTimeline) -> audiobox::analyze::SpectralSummary {
 fn a_sine_has_its_frequency_as_centroid() {
     for f in [250.0, 1000.0, 5000.0] {
         let t = timeline(&mono(tones(&[(f, 0.5, 0.0)], 48_000)), 4096, 2048);
-        let c = inner(&t).centroid_mean_hz.unwrap();
-        assert!((c - f).abs() / f < 0.01, "{f} Hz: centroid {c}");
+        assert_eq!(inner(&t).measured, t.frames.len());
+        for frame in &t.frames {
+            let c = frame.centroid_hz.unwrap();
+            assert!((c - f).abs() / f < 0.01, "{f} Hz: centroid {c}");
+        }
     }
 }
 
@@ -51,9 +54,12 @@ fn a_harmonic_tone_has_its_analytic_centroid() {
     let t = timeline(&mono(tones(&partials, 48_000)), 4096, 2048);
     let harmonic: f64 = (1..=10).map(|k| 1.0 / k as f64).sum();
     let expected = 2000.0 / harmonic;
-    let c = inner(&t).centroid_mean_hz.unwrap();
-    // Within 2 %: the window's leakage spreads a little magnitude over every bin.
-    assert!((c - expected).abs() / expected < 0.02, "{c} vs {expected}");
+    // Within 2 %, in every frame: the window's leakage spreads a little magnitude
+    // over other bins.
+    for frame in &t.frames {
+        let c = frame.centroid_hz.unwrap();
+        assert!((c - expected).abs() / expected < 0.02, "{c} vs {expected}");
+    }
 }
 
 #[test]
@@ -86,6 +92,12 @@ fn a_steady_sound_has_no_flux() {
     let t = timeline(&mono(vec![0.25; 8192]), 1024, 512);
     let summary = inner(&t);
     assert_eq!(summary.flux_max, Some(0.0));
+    // Its centroid is the DC bin's, spread by the window into the next bin.
+    assert_eq!(summary.measured, t.frames.len());
+    for frame in &t.frames {
+        let c = frame.centroid_hz.unwrap();
+        assert!(c.is_finite() && c > 0.0 && c < 48_000.0 / 1024.0, "{c}");
+    }
     // A steady chord at any phase: next to none.
     let chord = tones(
         &[(440.0, 0.3, 0.0), (660.0, 0.2, 1.0), (1320.0, 0.1, 2.0)],
@@ -143,7 +155,9 @@ fn silence_and_short_inputs_measure_nothing_or_what_they_hold() {
     let t = timeline(&mono(tones(&[(3000.0, 0.5, 0.0)], 500)), 1024, 256);
     assert_eq!(t.frames.len(), 1);
     let first = t.frames[0];
-    assert!(first.centroid_hz.unwrap() > 2000.0);
+    let c = first.centroid_hz.unwrap();
+    // Cut off by the padding, the tone spreads upward: finite, above its pitch.
+    assert!(c.is_finite() && c > 2700.0 && c < 12_000.0, "{c}");
     assert_eq!(first.flux, None);
 
     // A silent frame between two sounds: no flux on either side of it.
