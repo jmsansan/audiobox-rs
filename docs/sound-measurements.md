@@ -271,5 +271,62 @@ Evaluation on the generated fixtures of `tests/pitch.rs`, free to share, at 48 k
 A wider range lengthens the frame, which averages more of a moving pitch: the
 same vibrato from 60 Hz to 2 kHz, every 10 ms, errs by up to 11.5 cents.
 
+## Harmonic and inharmonic energy
+
+`Audio::harmonic_energy` measures how much of a sound's spectral energy lies at
+the harmonics of a fundamental, and how much elsewhere:
+
+```rust
+use audiobox::analyze::{HarmonicOptions, PitchOptions};
+use audiobox::{Audio, Result};
+
+fn inharmonicity(note: &Audio) -> Result<()> {
+    let all = 0..note.frames();
+    // A fundamental from the pitch track, or one the caller knows.
+    let track = note.pitch_track(&PitchOptions::new(60.0, 2000.0, 480))?;
+    if let Some(f0) = track.median_frequency(all.clone())? {
+        let energy = note.harmonic_energy(&HarmonicOptions::new(f0, all))?;
+        println!("inharmonic share {:?}", energy.inharmonic_share);
+    }
+    Ok(())
+}
+```
+
+- **Energy.** The Hann-windowed power spectrum (each bin's magnitude squared, as
+  `analyze::spectrum` scales it) summed over whole analysis frames of the range and
+  over the channels measured (one, or all). Frame `i` starts at
+  `range.start + i × hop`; a range shorter than one frame is one frame,
+  zero-padded, and its cut-off edges spread its energy over other bins, so a
+  shorter `fft_size` suits short ranges. Bins below half the fundamental, DC and
+  rumble, are not counted.
+- **Bands.** Every harmonic up to half the sample rate has a band of
+  ±`tolerance_cents` (25 by default) of its frequency, at least 2 bins (the Hann
+  window's main lobe) and at most a quarter of the fundamental, so that bands
+  never meet. The fundamental is at least 8 bins (`MIN_HARMONIC_BINS`): 94 Hz with
+  4096-sample frames at 48 kHz, 23 Hz with 16384.
+- **Shares.** `harmonic_shares` per harmonic, `harmonic_share` for all bands and
+  `inharmonic_share` for the rest, each from 0 to 1; `None` when there is no
+  energy to share, as for silence or an empty range. The result carries its
+  options, the sample rate, the frames measured and each band's width in Hz.
+
+An inharmonic share is an indicator, not a verdict. Energy away from the
+harmonics can be aliasing folded back from above half the sample rate (the top
+octave of a bright FM patch), the partials of a bell or a metallic patch on
+purpose, noise, a second note, or vibrato and a fundamental that drift out of
+their bands. The share says how much, not which, nor whether it sounds wrong. In
+the tests, ten harmonics of 110, 220 or 523.25 Hz are more than 99.9 % harmonic;
+a partial at 2.76 × the fundamental raises the inharmonic share by its power's
+share within 0.5 %; and a naively generated sawtooth at 1234.5 Hz shows its
+aliases as inharmonic energy, ten times and more that of the same sawtooth
+limited to the harmonics below half the sample rate.
+
+Bad options, a fundamental out of range, a range outside the input, a missing
+channel and non-finite samples return `InvalidArgument`. The default `Limits`
+apply, plus at most `MAX_HARMONIC_FRAMES` (1,048,576) frames and
+`MAX_HARMONIC_WORK` (2³², frames × channels × `fft_size` × log₂ `fft_size`),
+counted before any frame is measured, or `LimitExceeded`. A channel's frame of
+exact zeros adds no energy and is not transformed. The FFT uses the platform's math, so shares are for reports and
+not bit-identical across hosts.
+
 [`Envelope`]: https://docs.rs/audiobox/latest/audiobox/analyze/struct.Envelope.html
 [`analyze::spectrum`]: https://docs.rs/audiobox/latest/audiobox/analyze/fn.spectrum.html

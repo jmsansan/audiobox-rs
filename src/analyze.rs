@@ -1,11 +1,15 @@
 //! Waveforms, spectral analysis and K-weighted integrated loudness.
 mod envelope;
+mod harmonic;
 mod measurements;
 mod pitch;
 mod spectral;
 use crate::{Audio, Error, Result};
 pub use envelope::{
     Envelope, EnvelopeMethod, EnvelopeOptions, EnvelopeSpan, EnvelopeThresholds, EnvelopeTimes,
+};
+pub use harmonic::{
+    HarmonicEnergy, HarmonicOptions, MAX_HARMONIC_FRAMES, MAX_HARMONIC_WORK, MIN_HARMONIC_BINS,
 };
 pub use measurements::{
     BoundaryMeasurement, BoundarySamples, ChannelStep, MAX_MEASUREMENT_BOUNDARIES,
