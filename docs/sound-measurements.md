@@ -118,8 +118,79 @@ the result is `LimitExceeded`. Both count every frame, silent or not, before any
 is measured; ten minutes of 48 kHz stereo with 2048-sample frames every 1024 is
 about 1.3 billion. Silent frames are not transformed. The work is a scan of the
 samples plus O(frames × channels × fft_size × log fft_size); storage is
-O(fft_size) plus one entry per frame. An empty input has no frames. The FFT uses the platform's math, so these numbers are for reports
-and are not bit-identical across hosts.
+O(fft_size) plus one entry per frame. An empty input has no frames. The FFT uses
+the platform's math, so these numbers are for reports and are not bit-identical
+across hosts.
+
+## Pitch track
+
+`Audio::pitch_track` follows the pitch of one voice by the YIN method (de
+Cheveigné and Kawahara, 2002): per analysis frame, whether the sound is voiced,
+its pitch, how periodic it is, and the best other period.
+
+```rust
+use audiobox::analyze::{PitchOptions, PitchState};
+use audiobox::{Audio, Result};
+
+fn melody(voice: &Audio) -> Result<()> {
+    // 60 Hz to 1.5 kHz, a frame every 10 ms at 48 kHz.
+    let track = voice.pitch_track(&PitchOptions::new(60.0, 1500.0, 480))?;
+    for frame in &track.frames {
+        if frame.state == PitchState::Voiced {
+            println!("{} {:?}", frame.start_frame, frame.frequency_hz);
+        }
+    }
+    Ok(())
+}
+```
+
+- **Frames.** Frame `i` starts at input frame `i × hop` and reads two periods of
+  `min_hz` (`PitchTrack::span_frames`): its first period is compared with the
+  samples up to one period later. A pitch describes that span, so it lags the
+  sound by up to that much: at 60 Hz, 33 ms. Only whole frames are measured; an
+  input shorter than one frame is a single frame, zero-padded.
+- **States.** `Silent` when the RMS of the frame's first period is at or below
+  `silence_db` (−60 dBFS by default); `Voiced` when YIN's normalized difference
+  falls below `threshold` (0.15 by default) between `max_hz` and `min_hz`;
+  `Unvoiced` otherwise, as noise, a chord or a transition. Only voiced frames have
+  a pitch; nothing is guessed for the others.
+- **Pitch.** The first dip below the threshold, at its bottom, refined between
+  samples. **Confidence** is 1 minus the normalized difference at the best period,
+  from 0 to 1, for voiced and unvoiced frames; 0 when silent.
+- **Alternative.** The deepest other dip more than a semitone from the pitch. A
+  sound with a weak fundamental and a strong octave has both octaves as dips, so
+  the pitch and the alternative are the two candidates: when their confidences
+  are close, the octave is ambiguous, and the caller decides.
+- **Smoothing.** `median` (odd, 1 to 15) replaces each voiced pitch with the median
+  of the voiced pitches within that many frames; silent and unvoiced frames stay
+  without one. `PitchTrack::median_frequency` gives the median pitch of a range.
+- **Channels.** One channel by index, or the mean of all channels.
+
+It is a tool for one voice, not melody extraction: in a chord it finds the period
+the notes repeat at together (a fifth on 220 and 330 Hz gives 110 Hz), or a lower
+confidence when they share none, and it does not choose a part in a mix. Note
+names and quantization are the caller's.
+
+Bad options, a missing channel, a range outside the input and non-finite samples
+return `InvalidArgument`. `min_hz` is at least `sample_rate / MAX_PITCH_LAG`
+(8192) and `max_hz` at most half the sample rate. The default `Limits` apply,
+plus at most `MAX_PITCH_FRAMES` (1,048,576) frames and `MAX_PITCH_WORK` (2³², a
+work estimate of frames × L × log₂ L, with L the power of two at or above two
+periods of `min_hz`), counted before any frame is measured, or `LimitExceeded`.
+Silent frames skip the transforms. The FFT uses the platform's math, so pitches
+are for reports and not bit-identical across hosts; the tests' tolerances (5
+cents for steady tones, 15 for glides and vibrato) leave room for that.
+
+Evaluation on the generated fixtures of `tests/pitch.rs`, free to share, at 48 kHz
+with frames every 10 ms from 60 Hz to 2 kHz:
+
+| Fixture | Voiced frames | Largest error |
+| --- | --- | --- |
+| Sines at 82.41, 440 and 1760 Hz, 1 s | all | 0.001, 0.08 and 1.0 cents |
+| Sawtooth, 30 harmonics, at 147 and 523.25 Hz | all | 0.03 and 0.6 cents |
+| Glide 220 → 440 Hz in 1 s; 440 Hz ±50 cents of vibrato at 5 Hz | all | 6.4 cents from the pitch at the frame's middle |
+| White noise, 0.5 s | none of 47 | — |
+| Tritone (220 Hz and 220 × √2 Hz) | mean confidence 0.90, against 1.00 for a sine | — |
 
 [`Envelope`]: https://docs.rs/audiobox/latest/audiobox/analyze/struct.Envelope.html
 [`analyze::spectrum`]: https://docs.rs/audiobox/latest/audiobox/analyze/fn.spectrum.html

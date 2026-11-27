@@ -1,6 +1,7 @@
 //! Waveforms, spectral analysis and K-weighted integrated loudness.
 mod envelope;
 mod measurements;
+mod pitch;
 mod spectral;
 use crate::{Audio, Error, Result};
 pub use envelope::{
@@ -9,6 +10,10 @@ pub use envelope::{
 pub use measurements::{
     BoundaryMeasurement, BoundarySamples, ChannelStep, MAX_MEASUREMENT_BOUNDARIES,
     MeasurementBoundary, StereoMeasurements, ThresholdSilence, dc_mean, stereo_measurements,
+};
+pub use pitch::{
+    MAX_PITCH_FRAMES, MAX_PITCH_LAG, MAX_PITCH_MEDIAN, MAX_PITCH_WORK, PitchCandidate, PitchFrame,
+    PitchOptions, PitchState, PitchTrack,
 };
 pub use spectral::{
     MAX_SPECTRAL_FRAMES, MAX_SPECTRAL_WORK, MIN_SPECTRAL_FFT, SpectralFrame, SpectralOptions,

@@ -1,0 +1,378 @@
+use audiobox::analyze::{PitchOptions, PitchState, PitchTrack};
+use audiobox::{Audio, ErrorCode};
+use std::f64::consts::PI;
+
+const RATE: u32 = 48_000;
+
+fn mono(samples: Vec<f32>) -> Audio {
+    Audio::new(vec![samples], RATE).unwrap()
+}
+
+/// A tone whose frequency at time `t` (s) is `pitch(t)`, with harmonics
+/// `(number, amplitude)`, `seconds` long. The phase follows the frequency.
+fn tone(seconds: f64, harmonics: &[(u32, f64)], pitch: impl Fn(f64) -> f64) -> Vec<f32> {
+    let mut phase = 0.0;
+    (0..(seconds * RATE as f64) as usize)
+        .map(|i| {
+            let t = i as f64 / RATE as f64;
+            let value: f64 = harmonics
+                .iter()
+                .map(|&(k, a)| a * (k as f64 * phase).sin())
+                .sum();
+            phase += 2.0 * PI * pitch(t) / RATE as f64;
+            value as f32
+        })
+        .collect()
+}
+
+fn track(samples: Vec<f32>, options: PitchOptions) -> PitchTrack {
+    mono(samples).pitch_track(&options).unwrap()
+}
+
+fn cents(a: f64, b: f64) -> f64 {
+    1200.0 * (a / b).log2()
+}
+
+/// The time of a frame's middle, in seconds.
+fn middle(track: &PitchTrack, i: usize) -> f64 {
+    (track.frames[i].start_frame + track.span_frames / 2) as f64 / RATE as f64
+}
+
+#[test]
+fn isolated_tones_have_their_pitch() {
+    for f in [82.41, 110.0, 220.0, 440.0, 880.0, 1760.0] {
+        let t = track(
+            tone(0.5, &[(1, 0.5)], |_| f),
+            PitchOptions::new(60.0, 2000.0, 480),
+        );
+        for frame in &t.frames {
+            assert_eq!(frame.state, PitchState::Voiced, "{f} Hz: {frame:?}");
+            let p = frame.frequency_hz.unwrap();
+            assert!(cents(p, f).abs() < 5.0, "{f} Hz: {p}");
+            assert!(frame.confidence > 0.95, "{f} Hz: {frame:?}");
+        }
+    }
+}
+
+#[test]
+fn harmonic_rich_notes_have_their_fundamental() {
+    // A band-limited sawtooth and a reed-like tone with odd harmonics.
+    let saw: Vec<(u32, f64)> = (1..=30).map(|k| (k, 0.5 / k as f64)).collect();
+    let odd: Vec<(u32, f64)> = (0..10)
+        .map(|k| (2 * k + 1, 0.5 / (2 * k + 1) as f64))
+        .collect();
+    for (harmonics, f) in [(&saw, 147.0), (&saw, 523.25), (&odd, 196.0)] {
+        let t = track(
+            tone(0.5, harmonics, |_| f),
+            PitchOptions::new(60.0, 2000.0, 480),
+        );
+        let p = t.median_frequency(0..t.input_frames).unwrap().unwrap();
+        assert!(cents(p, f).abs() < 5.0, "{f} Hz: {p}");
+        assert!(t.frames.iter().all(|f| f.state == PitchState::Voiced));
+    }
+}
+
+#[test]
+fn slides_and_vibrato_are_followed() {
+    // A glide from 220 to 440 Hz in one second, even in cents.
+    let glide = |t: f64| 220.0 * 2f64.powf(t);
+    let t = track(
+        tone(1.0, &[(1, 0.5), (2, 0.2)], glide),
+        PitchOptions::new(100.0, 1000.0, 480),
+    );
+    for i in 0..t.frames.len() {
+        let p = t.frames[i].frequency_hz.unwrap();
+        let expected = glide(middle(&t, i));
+        assert!(cents(p, expected).abs() < 15.0, "{i}: {p} vs {expected}");
+    }
+    // 440 Hz with ±50 cents of vibrato at 5 Hz.
+    let vibrato = |t: f64| 440.0 * 2f64.powf(50.0 / 1200.0 * (2.0 * PI * 5.0 * t).sin());
+    let t = track(
+        tone(1.0, &[(1, 0.5)], vibrato),
+        PitchOptions::new(100.0, 1000.0, 240),
+    );
+    let mut deviation = (0.0f64, 0.0f64);
+    for i in 0..t.frames.len() {
+        let p = t.frames[i].frequency_hz.unwrap();
+        let expected = vibrato(middle(&t, i));
+        assert!(cents(p, expected).abs() < 15.0, "{i}: {p} vs {expected}");
+        let c = cents(p, 440.0);
+        deviation = (deviation.0.min(c), deviation.1.max(c));
+    }
+    assert!(deviation.0 < -40.0 && deviation.1 > 40.0, "{deviation:?}");
+}
+
+#[test]
+fn noise_and_rests_have_no_pitch() {
+    let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+    let noise: Vec<f32> = (0..24_000)
+        .map(|_| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            ((seed >> 11) as f64 / (1u64 << 53) as f64 - 0.5) as f32
+        })
+        .collect();
+    let t = track(noise, PitchOptions::new(60.0, 2000.0, 480));
+    let voiced = t
+        .frames
+        .iter()
+        .filter(|f| f.state == PitchState::Voiced)
+        .count();
+    assert!(
+        voiced * 20 <= t.frames.len(),
+        "{voiced} of {}",
+        t.frames.len()
+    );
+    for frame in &t.frames {
+        assert_eq!(
+            frame.frequency_hz.is_some(),
+            frame.state == PitchState::Voiced
+        );
+    }
+
+    // A note, a rest, a note.
+    let mut samples = tone(0.3, &[(1, 0.5)], |_| 330.0);
+    samples.extend(vec![0.0; 14_400]);
+    samples.extend(tone(0.3, &[(1, 0.5)], |_| 330.0));
+    let t = track(samples, PitchOptions::new(60.0, 2000.0, 480));
+    let rest = 14_400..28_800;
+    let mut silent = 0;
+    for frame in &t.frames {
+        // Frames whose first period lies in the rest.
+        let heard = frame.start_frame..frame.start_frame + t.span_frames / 2;
+        if rest.contains(&heard.start) && rest.contains(&(heard.end - 1)) {
+            assert_eq!(frame.state, PitchState::Silent, "{frame:?}");
+            assert_eq!((frame.frequency_hz, frame.confidence), (None, 0.0));
+            assert_eq!(frame.alternative, None);
+            silent += 1;
+        }
+    }
+    assert!(silent > 20, "{silent}");
+}
+
+#[test]
+fn a_change_of_register_is_followed() {
+    let mut samples = tone(0.5, &[(1, 0.5), (2, 0.2)], |_| 110.0);
+    samples.extend(tone(0.5, &[(1, 0.5), (2, 0.2)], |_| 880.0));
+    let t = track(samples, PitchOptions::new(60.0, 2000.0, 480));
+    for frame in &t.frames {
+        let end = frame.start_frame + t.span_frames;
+        let expected = if end <= 24_000 {
+            110.0
+        } else if frame.start_frame >= 24_000 {
+            880.0
+        } else {
+            // Frames that straddle the change.
+            continue;
+        };
+        let p = frame.frequency_hz.unwrap();
+        assert!(cents(p, expected).abs() < 5.0, "{frame:?}");
+    }
+}
+
+#[test]
+fn chords_and_octaves_show_in_confidence_and_alternatives() {
+    let options = PitchOptions::new(60.0, 2000.0, 480);
+    // A fifth (220 + 330 Hz) repeats at 110 Hz: that is the period found.
+    let fifth = track(tone(0.5, &[(2, 0.4), (3, 0.4)], |_| 110.0), options);
+    let p = fifth
+        .median_frequency(0..fifth.input_frames)
+        .unwrap()
+        .unwrap();
+    assert!(cents(p, 110.0).abs() < 5.0, "{p}");
+    // Two tones a tritone apart, an irrational ratio: no common period.
+    let mut a = tone(0.5, &[(1, 0.4)], |_| 220.0);
+    for (s, b) in a
+        .iter_mut()
+        .zip(tone(0.5, &[(1, 0.4)], |_| 220.0 * 2f64.sqrt()))
+    {
+        *s += b;
+    }
+    let tritone = track(a, options);
+    let pure = track(tone(0.5, &[(1, 0.4)], |_| 220.0), options);
+    let mean =
+        |t: &PitchTrack| t.frames.iter().map(|f| f.confidence).sum::<f64>() / t.frames.len() as f64;
+    assert!(
+        mean(&tritone) < mean(&pure) - 0.05,
+        "{} vs {}",
+        mean(&tritone),
+        mean(&pure)
+    );
+    // A weak fundamental under a strong octave: the other octave is the alternative.
+    let octave = track(tone(0.5, &[(1, 0.05), (2, 0.5)], |_| 220.0), options);
+    for frame in &octave.frames {
+        let p = frame.frequency_hz.unwrap();
+        let other = frame.alternative.unwrap().frequency_hz;
+        let pair = if p < other { (p, other) } else { (other, p) };
+        assert!(
+            cents(pair.0, 220.0).abs() < 5.0 && cents(pair.1, 440.0).abs() < 5.0,
+            "{frame:?}"
+        );
+    }
+}
+
+#[test]
+fn median_smoothing_removes_a_lone_wrong_frame() {
+    // A 3 ms burst of 1 kHz inside a 220 Hz note.
+    let mut samples = tone(0.4, &[(1, 0.5)], |_| 220.0);
+    let burst = tone(0.003, &[(1, 0.5)], |_| 1000.0);
+    samples[9600..9600 + burst.len()].copy_from_slice(&burst);
+    let options = PitchOptions {
+        median: 5,
+        ..PitchOptions::new(100.0, 2000.0, 480)
+    };
+    let smooth = track(samples.clone(), options);
+    let raw = track(
+        samples,
+        PitchOptions {
+            median: 1,
+            ..options
+        },
+    );
+    let worst = |t: &PitchTrack| {
+        t.frames
+            .iter()
+            .filter_map(|f| f.frequency_hz)
+            .map(|p| cents(p, 220.0).abs())
+            .fold(0.0, f64::max)
+    };
+    assert!(worst(&smooth) <= worst(&raw));
+    assert!(worst(&smooth) < 20.0, "{}", worst(&smooth));
+    assert_eq!(smooth.options.median, 5);
+}
+
+#[test]
+fn short_empty_and_repeated_inputs() {
+    let options = PitchOptions::new(100.0, 1000.0, 100);
+    let empty = Audio::new(vec![Vec::new()], RATE).unwrap();
+    let t = empty.pitch_track(&options).unwrap();
+    assert!(t.frames.is_empty());
+    assert_eq!(t.median_frequency(0..0).unwrap(), None);
+    // Shorter than a frame (two periods of 100 Hz): one padded frame.
+    let t = track(tone(0.005, &[(1, 0.5)], |_| 440.0), options);
+    assert_eq!(t.frames.len(), 1);
+    assert_eq!(t.span_frames, 960);
+    // Whole frames only: none starts past the last whole one.
+    let t = track(tone(0.1, &[(1, 0.5)], |_| 440.0), options);
+    assert_eq!(t.frames.len(), (4800 - 960) / 100 + 1);
+    assert!(t.frames.iter().all(|f| f.start_frame + 960 <= 4800));
+    // The same input, the same track.
+    let samples = tone(0.2, &[(1, 0.5), (3, 0.1)], |_| 300.0);
+    assert_eq!(track(samples.clone(), options), track(samples, options));
+}
+
+#[test]
+fn bad_arguments_are_refused() {
+    let audio = mono(vec![0.5; 2000]);
+    let options = PitchOptions::new(100.0, 1000.0, 100);
+    let code = |o: PitchOptions| audio.pitch_track(&o).unwrap_err().code;
+    for bad in [
+        PitchOptions {
+            min_hz: 0.0,
+            ..options
+        },
+        PitchOptions {
+            min_hz: f64::NAN,
+            ..options
+        },
+        PitchOptions {
+            min_hz: 5.0,
+            ..options
+        },
+        PitchOptions {
+            max_hz: 100.0,
+            ..options
+        },
+        PitchOptions {
+            max_hz: 30_000.0,
+            ..options
+        },
+        PitchOptions { hop: 0, ..options },
+        PitchOptions {
+            threshold: 0.0,
+            ..options
+        },
+        PitchOptions {
+            threshold: 1.0,
+            ..options
+        },
+        PitchOptions {
+            silence_db: f64::NEG_INFINITY,
+            ..options
+        },
+        PitchOptions {
+            channel: Some(1),
+            ..options
+        },
+        PitchOptions {
+            median: 2,
+            ..options
+        },
+        PitchOptions {
+            median: 17,
+            ..options
+        },
+    ] {
+        assert_eq!(code(bad), ErrorCode::InvalidArgument, "{bad:?}");
+    }
+    let t = audio.pitch_track(&options).unwrap();
+    assert_eq!(
+        t.median_frequency(0..2001).unwrap_err().code,
+        ErrorCode::InvalidArgument
+    );
+    // More analysis frames than the limit.
+    let long = Audio::new(vec![vec![0.0; (1 << 20) + 960]], RATE).unwrap();
+    assert_eq!(
+        long.pitch_track(&PitchOptions::new(100.0, 1000.0, 1))
+            .unwrap_err()
+            .code,
+        ErrorCode::LimitExceeded
+    );
+    // The work limit, 2^32, at its edge: at 20 Hz a frame spans 4800 frames and
+    // transforms 8192, so 40,329 frames × 8192 × 13 fit and 40,330 do not. The
+    // input is silent, so nothing is transformed.
+    for (frames, fits) in [(40_329, true), (40_330, false)] {
+        let long = Audio::new(vec![vec![0.0; frames + 4799]], RATE).unwrap();
+        let result = long.pitch_track(&PitchOptions::new(20.0, 1000.0, 1));
+        match fits {
+            true => assert_eq!(result.unwrap().frames.len(), frames),
+            false => assert_eq!(result.unwrap_err().code, ErrorCode::LimitExceeded),
+        }
+    }
+}
+
+/// The evaluation recorded in `docs/sound-measurements.md`: the largest error in
+/// cents and the voiced share per fixture, all generated here and free to share.
+#[test]
+fn evaluation_on_generated_fixtures() {
+    let options = PitchOptions::new(60.0, 2000.0, 480);
+    let saw: Vec<(u32, f64)> = (1..=30).map(|k| (k, 0.5 / k as f64)).collect();
+    let cases: Vec<(&str, Vec<f32>, f64)> = vec![
+        ("sine 82.41 Hz", tone(1.0, &[(1, 0.5)], |_| 82.41), 82.41),
+        ("sine 440 Hz", tone(1.0, &[(1, 0.5)], |_| 440.0), 440.0),
+        ("sine 1760 Hz", tone(1.0, &[(1, 0.5)], |_| 1760.0), 1760.0),
+        ("sawtooth 147 Hz", tone(1.0, &saw, |_| 147.0), 147.0),
+        ("sawtooth 523.25 Hz", tone(1.0, &saw, |_| 523.25), 523.25),
+    ];
+    for (name, samples, f) in cases {
+        let t = track(samples, options);
+        let voiced = t
+            .frames
+            .iter()
+            .filter(|f| f.state == PitchState::Voiced)
+            .count();
+        let worst = t
+            .frames
+            .iter()
+            .filter_map(|f| f.frequency_hz)
+            .map(|p| cents(p, f).abs())
+            .fold(0.0, f64::max);
+        eprintln!(
+            "{name}: {voiced}/{} voiced, worst {worst:.3} cents",
+            t.frames.len()
+        );
+        assert_eq!(voiced, t.frames.len(), "{name}");
+        assert!(worst < 5.0, "{name}: {worst}");
+    }
+}
