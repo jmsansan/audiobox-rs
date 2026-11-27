@@ -434,6 +434,24 @@ crate, and the rights to an imported file are for whoever supplies it to check.
 `n` is a channel and is ignored. After the data come a checksum (the two's complement
 of the sum of the data bytes, in seven bits) and `F7`.
 
+Files in the wild vary, and `read_dx7` reads what DX7 editors load. It splits a file
+into system-exclusive messages and reads every voice and bank message, in order, so
+two banks saved together give 64 voices; names stay unique across the file. Minor
+faults read with a warning: a wrong checksum, bytes above their range (clamped), a
+voice or bank whose byte count is not `01 1B` or `20 00` (old editors often wrote
+`10 00`, 2048, before all 4096 data bytes), bytes outside any message, and messages
+that hold something else, such as a TX802 performance or another maker's data, which
+are skipped, however short. Structural faults are errors: a message cut short by the
+next `F0`, a Yamaha message ended before its DX7 header is whole, a voice or bank
+message of the wrong length (`DecodeError`), and a file with no voice data
+(`UnsupportedFormat`). Within a message, `F7` ends it, except in the checksum place
+of a voice or bank message, where it is a damaged checksum. A file that is exactly
+one 163- or 4104-byte message with the standard header reads as it always has,
+whatever its data bytes hold, as `read_dx7` in 0.6.0 did; that includes a file of
+those bytes made by joining pieces of other dumps. A bank saved without its wrapper is
+4096 bytes with no header to recognise it by, so `read_dx7_raw_bank` reads it; it
+refuses any other length and any byte above `7F`.
+
 The 155 single-voice bytes hold operator 6 first, then 5 down to 1, 21 bytes each:
 
 | Offset | Field | Range | Patch key |
@@ -480,8 +498,9 @@ published system-exclusive format.
 
 Rules:
 
-- **Faults.** A wrong size or terminator is `DecodeError`; a header that is not one
-  of the two above is `UnsupportedFormat`. A wrong checksum and parameter bytes
+- **Faults.** See the rules for files above: a message cut short or of the wrong
+  length is `DecodeError` and a file with no voice message `UnsupportedFormat`. A
+  voice or bank whose count bytes are not `01 1B` or `20 00`, a wrong checksum and parameter bytes
   above their range are accepted with a `Dx7Warning`; such bytes are clamped.
 - **Names.** Trailing spaces are dropped, spaces inside become `_`, any other
   character outside letters, digits, `_` and `-` becomes `-`, and an empty name

@@ -11,8 +11,8 @@ mod dx7;
 mod presets;
 mod voice;
 pub use dx7::{
-    DX7_BANK_BYTES, DX7_BANK_VOICES, DX7_VOICE_BYTES, Dx7Voice, Dx7Voices, Dx7Warning, read_dx7,
-    write_dx7_bank, write_dx7_voice,
+    DX7_BANK_BYTES, DX7_BANK_VOICES, DX7_RAW_BANK_BYTES, DX7_VOICE_BYTES, Dx7Voice, Dx7Voices,
+    Dx7Warning, read_dx7, read_dx7_raw_bank, write_dx7_bank, write_dx7_voice,
 };
 pub use presets::FM_PRESETS;
 pub(super) use voice::{FmPlan, FmVoice};

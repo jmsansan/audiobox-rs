@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- `read_dx7` reads the DX7 file variants that DX7 editors load (#158). It splits a
+  file into system-exclusive messages and reads every voice and bank message, so two
+  banks saved together give 64 voices with unique names. A bank whose byte count
+  disagrees with its 4096 data bytes (the `10 00` many old editors wrote), bytes
+  outside any message and messages of other data, such as TX802 performances, now
+  read with a warning instead of failing. Files it already accepted read exactly as
+  before. A message cut short is still a `DecodeError`.
+
+### Added
+
+- `read_dx7_raw_bank` and `DX7_RAW_BANK_BYTES`: a 32-voice bank saved without its
+  message wrapper (4096 bytes, no header or checksum). `examples/dx7_import.rs` uses
+  for such files with `--raw`, reads files of several messages, and reads at most
+  1 MiB.
+
 ## 0.6.0 — 2026-11-20
 
 Procedural voices, and the six-operator FM synthesizer developed since 0.5.1.

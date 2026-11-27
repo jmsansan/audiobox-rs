@@ -347,10 +347,11 @@ mod drum;
 pub use drum::{Drum, DrumKind, DrumKit};
 mod fm;
 pub use fm::{
-    DX7_BANK_BYTES, DX7_BANK_VOICES, DX7_VOICE_BYTES, Dx7Voice, Dx7Voices, Dx7Warning,
-    FM_ALGORITHMS, FM_CARRIER_PEAK, FM_OPERATORS, FM_OVERSAMPLE_DELAY, FM_PRESETS, Fm, FmCurve,
-    FmEnvelope, FmFrequency, FmLfo, FmLfoWave, FmOperator, FmPatch, FmRouting, FmScaling,
-    MAX_FM_TEXT_BYTES, MAX_FM_UNISON_VOICES, read_dx7, write_dx7_bank, write_dx7_voice,
+    DX7_BANK_BYTES, DX7_BANK_VOICES, DX7_RAW_BANK_BYTES, DX7_VOICE_BYTES, Dx7Voice, Dx7Voices,
+    Dx7Warning, FM_ALGORITHMS, FM_CARRIER_PEAK, FM_OPERATORS, FM_OVERSAMPLE_DELAY, FM_PRESETS, Fm,
+    FmCurve, FmEnvelope, FmFrequency, FmLfo, FmLfoWave, FmOperator, FmPatch, FmRouting, FmScaling,
+    MAX_FM_TEXT_BYTES, MAX_FM_UNISON_VOICES, read_dx7, read_dx7_raw_bank, write_dx7_bank,
+    write_dx7_voice,
 };
 mod parse;
 mod prepared;
