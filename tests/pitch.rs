@@ -329,10 +329,10 @@ fn bad_arguments_are_refused() {
         .unwrap_err();
     assert_eq!(error.code, ErrorCode::LimitExceeded);
     assert_eq!(error.message, "Too many pitch analysis frames");
-    // The work limit, 2^33, at its edge: at 20 Hz a frame spans 4807 frames and
-    // transforms 8192, so 74,898 frames × 8192 × (13 + 1) fit and 74,899 do not. The
+    // The work limit, 2^34, at its edge: at 20 Hz a frame spans 4807 frames and
+    // transforms 8192, so 149,796 frames × 8192 × (13 + 1) fit and 149,797 do not. The
     // input is silent, so nothing is transformed.
-    for (frames, fits) in [(74_898, true), (74_899, false)] {
+    for (frames, fits) in [(149_796, true), (149_797, false)] {
         let long = Audio::new(vec![vec![0.0; frames + 4806]], RATE).unwrap();
         let result = long.pitch_track(&PitchOptions::new(20.0, 1000.0, 1));
         match fits {
@@ -340,10 +340,10 @@ fn bad_arguments_are_refused() {
             false => assert_eq!(result.unwrap_err().code, ErrorCode::LimitExceeded),
         }
     }
-    // A range reaching periods under 48 frames counts a refinement per frame:
-    // 100 Hz to 2 kHz spans 962 frames and transforms 1024, so 111,848 frames ×
-    // (1024 × (10 + 1) + 2^16) fit and 111,849 do not.
-    for (frames, fits) in [(111_848, true), (111_849, false)] {
+    // A range reaching periods under 48 frames counts three refinements a frame:
+    // 100 Hz to 2 kHz spans 962 frames and transforms 1024, so 82,646 frames ×
+    // (1024 × (10 + 1) + 3 × 2^16) fit and 82,647 do not.
+    for (frames, fits) in [(82_646, true), (82_647, false)] {
         let long = Audio::new(vec![vec![0.0; frames + 961]], RATE).unwrap();
         let result = long.pitch_track(&PitchOptions::new(100.0, 2000.0, 1));
         match fits {
@@ -689,5 +689,44 @@ fn strong_second_harmonics_short_ranges_and_strict_thresholds() {
             cents(frame.frequency_hz.unwrap(), 1998.0).abs() < 5.0,
             "{frame:?}"
         );
+    }
+}
+
+#[test]
+fn short_periods_are_refined_before_the_threshold() {
+    let at = |parts: &[(f64, f64)], rate: u32| -> Audio {
+        let samples = (0..(0.3 * rate as f64) as usize)
+            .map(|i| {
+                parts
+                    .iter()
+                    .map(|&(f, a)| a * (2.0 * PI * f * i as f64 / rate as f64).sin())
+                    .sum::<f64>() as f32
+            })
+            .collect();
+        Audio::new(vec![samples], rate).unwrap()
+    };
+    // B♭6 at 16 kHz with strong second and third harmonics: its own pitch, not
+    // the octave below, though its dip's parabola is above the threshold.
+    let f = 1864.655;
+    let note = at(&[(f, 0.3), (2.0 * f, 0.5), (3.0 * f, 0.5)], 16_000);
+    let t = note
+        .pitch_track(&PitchOptions::new(60.0, 2000.0, 160))
+        .unwrap();
+    for frame in &t.frames {
+        assert_eq!(frame.state, PitchState::Voiced, "{frame:?}");
+        assert!(cents(frame.frequency_hz.unwrap(), f).abs() < 5.0, "{frame:?}");
+    }
+    // A voiced frame's refined dip is below the threshold: G6 and B6 together.
+    let dyad = at(&[(1567.98, 0.4), (1975.53, 0.4)], 16_000);
+    let t = dyad
+        .pitch_track(&PitchOptions::new(60.0, 2000.0, 160))
+        .unwrap();
+    for frame in t.frames.iter().filter(|f| f.state == PitchState::Voiced) {
+        assert!(frame.confidence > 0.85, "{frame:?}");
+    }
+    // In the margin above a ceiling of 1 kHz (48 samples): set to the ceiling.
+    let t = track(tone(0.3, &[(1, 0.5)], |_| 1002.0), PitchOptions::new(100.0, 1000.0, 480));
+    for frame in &t.frames {
+        assert_eq!(frame.frequency_hz, Some(1000.0), "{frame:?}");
     }
 }

@@ -24,14 +24,20 @@ const EXACT_LAG: f64 = 48.0;
 /// The work of that refinement, per frame, in the units of [`MAX_PITCH_WORK`]:
 /// 10 evaluations of at most 192 terms of 32 taps.
 const EXACT_WORK: u64 = 1 << 16;
+/// The most refinements between samples in one frame.
+const MAX_REFINEMENTS: u64 = 3;
+/// How far above the threshold a short period's parabola may put its dip and
+/// still be refined before the threshold decides.
+const REFINE_MARGIN: f64 = 0.3;
 /// The widest median smoothing, in frames.
 pub const MAX_PITCH_MEDIAN: usize = 15;
 /// The most work one [`Audio::pitch_track`] is allowed, as an estimate: analysis
 /// frames × (L × (log₂ L + 1) + R), with L the transform size, the power of two at
-/// or above [`PitchTrack::span_frames`], and R 2^16 for the refinement between
-/// samples when the range reaches periods under 48 frames, 0 otherwise. Every
+/// or above [`PitchTrack::span_frames`], and R 3 × 2^16 for up to three refinements
+/// between samples when the range reaches periods under 48 frames, 0 otherwise.
+/// Every
 /// frame counts, silent or not.
-pub const MAX_PITCH_WORK: u64 = 1 << 33;
+pub const MAX_PITCH_WORK: u64 = 1 << 34;
 
 /// How [`Audio::pitch_track`] looks for a pitch.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -491,7 +497,7 @@ impl Audio {
         let min_lag = ((rate / o.max_hz).floor() as usize).max(2);
         // One period of `min_hz`, and at least 32 samples, so that a range of
         // short periods alone still integrates over several.
-        let window = max_lag.max(MIN_PITCH_WINDOW) - 1;
+        let window = (max_lag - 1).max(MIN_PITCH_WINDOW);
         // The lags searched reach the margin below `min_hz`, and one lag more on
         // each side, so that a dip at either end is a local minimum with both
         // neighbours.
@@ -513,8 +519,9 @@ impl Audio {
         // In u64, so that the limit is exact on 32-bit targets too. Each frame
         // reads its span and runs three transforms of `size`, and when the range
         // reaches periods under `EXACT_LAG`, one refinement between samples.
-        let refine = if (min_lag as f64) < EXACT_LAG {
-            EXACT_WORK
+        let short_range = (min_lag as f64) < EXACT_LAG;
+        let refine = if short_range {
+            MAX_REFINEMENTS * EXACT_WORK
         } else {
             0
         };
@@ -603,14 +610,29 @@ impl Audio {
                         }
                     })
                 };
-                let first = dips(1).find(|b| b.depth < o.threshold).map(|b| {
-                    // Short periods in the range only, as the work limit counts.
-                    if b.lag < EXACT_LAG && b.lag + 1.0 >= lo as f64 {
+                // A short period's dip in the range, when the range reaches such
+                // periods, is refined between samples before the threshold decides,
+                // if its parabola puts it near the threshold: at most
+                // `MAX_REFINEMENTS` a frame, as the work limit counts.
+                let mut refinements = 0;
+                let mut first = None;
+                for b in dips(1) {
+                    let b = if short_range
+                        && b.lag < EXACT_LAG
+                        && b.lag + 1.0 >= lo as f64
+                        && b.depth < o.threshold + REFINE_MARGIN
+                        && refinements < MAX_REFINEMENTS
+                    {
+                        refinements += 1;
                         yin.exact(&x, b)
                     } else {
                         b
+                    };
+                    if b.depth < o.threshold {
+                        first = Some(b);
+                        break;
                     }
-                });
+                }
                 if let Some(chosen) = first.filter(|b| in_range(b.lag) && !repeats_above(b)) {
                     frame.state = PitchState::Voiced;
                     frame.frequency_hz = Some(pitch(chosen.lag));
