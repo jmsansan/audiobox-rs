@@ -196,10 +196,11 @@ and in the final tail.
 | `Closure` | 0 | 0 | 0 |
 
 In formant voices these factors set breath and fricative gestures 10–15 dB below a
-vowel of the same level, as in speech (render version 2). They scale the gestures'
-levels, not the rendered result: aspiration then passes through the formant filters
-and frication through its own band-pass, so the rendered gap varies with the preset
-and the sound, about 10 to 21 dB. Version 1 played them at
+vowel of the same level, as in speech (render version 2). They scale the
+gestures' envelope targets, not the rendered result: aspiration then passes through
+the formant filters and frication through its own band-pass, and a short gesture may
+not reach its target. In the `voices` example fixtures, the RMS of each breath or
+fricative gesture measured about 10 to 21 dB below the vowel after it. Version 1 played them at
 the vowel's level, which the owner heard as hissing "ts" sounds and puffs of air
 (2026-11-20).
 
