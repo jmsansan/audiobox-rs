@@ -714,7 +714,10 @@ fn short_periods_are_refined_before_the_threshold() {
         .unwrap();
     for frame in &t.frames {
         assert_eq!(frame.state, PitchState::Voiced, "{frame:?}");
-        assert!(cents(frame.frequency_hz.unwrap(), f).abs() < 5.0, "{frame:?}");
+        assert!(
+            cents(frame.frequency_hz.unwrap(), f).abs() < 5.0,
+            "{frame:?}"
+        );
     }
     // A voiced frame's refined dip is below the threshold: G6 and B6 together.
     let dyad = at(&[(1567.98, 0.4), (1975.53, 0.4)], 16_000);
@@ -725,7 +728,10 @@ fn short_periods_are_refined_before_the_threshold() {
         assert!(frame.confidence > 0.85, "{frame:?}");
     }
     // In the margin above a ceiling of 1 kHz (48 samples): set to the ceiling.
-    let t = track(tone(0.3, &[(1, 0.5)], |_| 1002.0), PitchOptions::new(100.0, 1000.0, 480));
+    let t = track(
+        tone(0.3, &[(1, 0.5)], |_| 1002.0),
+        PitchOptions::new(100.0, 1000.0, 480),
+    );
     for frame in &t.frames {
         assert_eq!(frame.frequency_hz, Some(1000.0), "{frame:?}");
     }
