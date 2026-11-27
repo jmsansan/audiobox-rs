@@ -314,7 +314,9 @@ fn inharmonicity(note: &Audio) -> Result<()> {
   `analyze::spectrum` (half an interior bin's magnitude squared, all of it at
   Nyquist, so that a sine and a Nyquist component of the same RMS weigh the
   same), summed over whole analysis frames of the range and over the channels
-  measured (one, or all). Frame `i` starts at `range.start + i × hop`. Each
+  measured (one, or all). Frame `i` starts at `range.start + i × hop`, and when
+  the hops leave a tail, one more frame ends at the range's end, so that every
+  sample of the range is measured. Each
   frame's mean is removed before the window, so a DC offset adds nothing, and
   every bin but DC counts: rumble and aliases away from the harmonics are
   inharmonic, while an alias that folds into a harmonic's band counts as
@@ -327,14 +329,19 @@ fn inharmonicity(note: &Audio) -> Result<()> {
   quarter of the fundamental, so that bands never meet.
 - **Resolution.** A partial's window lobe spreads 2 bins to each side, and a band
   reaches at least 2 bins, so a partial within about 4 bins of a harmonic is
-  counted partly in that harmonic's band. With the frames `new` chooses, that is
-  a sixth of the fundamental: a bell's partial at 2.76 × the fundamental lies
-  5.8 bins from the third harmonic. Frames set shorter by hand resolve less.
+  counted partly in that harmonic's band. With 24 bins per fundamental, as `new`
+  chooses when the range allows, that is a sixth of the fundamental: a bell's
+  partial at 2.76 × the fundamental lies 5.8 bins from the third harmonic. A
+  shorter range, or frames set shorter by hand, give fewer bins and resolve less
+  (a quarter second of 55 Hz at 48 kHz gets 8192-sample frames, 9.4 bins: such a
+  partial is then partly counted as the third harmonic). The result reports the
+  bins the fundamental spans (`fundamental_bins`).
 - **Shares.** `harmonic_shares` per harmonic, `harmonic_share` for all bands and
-  `inharmonic_share` for the rest, each from 0 to 1; `None` when there is no
-  energy to share, as for silence, a DC offset alone or an empty range. The
-  result carries its options, the sample rate, the frames measured and each
-  band's edges in Hz.
+  `inharmonic_share` for the rest, each from 0 to 1. When there is no energy to
+  share, as for silence, a DC offset alone or an empty range, the two totals are
+  `None` and every per-harmonic share is 0. The result carries its options, the
+  sample rate, the frames measured, whether its one frame is padded, the bins
+  per fundamental and each band's edges in Hz.
 
 An inharmonic share is an indicator, not a verdict. Energy away from the
 harmonics can be aliasing folded back from above half the sample rate (the top

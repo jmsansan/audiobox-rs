@@ -124,7 +124,9 @@ fn settings_are_echoed_and_bands_are_bounded() {
     assert_eq!(e.sample_rate, RATE);
     // 300 Hz spans 24 bins with 4096-sample frames, every 2048.
     assert_eq!((e.options.fft_size, e.options.hop), (4096, 2048));
-    assert_eq!(e.frames, (20_000 - 4096) / 2048 + 1);
+    // Eight frames every hop end at 18432; a ninth ends at the range's end.
+    assert_eq!(e.frames, (20_000 - 4096) / 2048 + 2);
+    assert_eq!(e.fundamental_bins, 300.0 / (RATE as f64 / 4096.0));
     assert_eq!(e.harmonics, 80);
     assert_eq!(e.bands_hz.len(), 80);
     let bin = RATE as f64 / 4096.0;
@@ -381,13 +383,28 @@ fn short_ranges_get_short_frames_or_say_they_are_padded() {
     assert_eq!(low.fft_size, 16_384);
     let e = energy(partials(&[(41.2, 0.5)], 12_000), 41.2);
     assert!(e.padded, "{e:?}");
-    // A second of it: one whole frame of 32768, and a clean share.
+    // A second of it: a whole frame of 32768 and one ending at the end, clean.
     let e = energy(partials(&[(41.2, 0.5)], 48_000), 41.2);
-    assert!(!e.padded && e.frames == 1, "{e:?}");
+    assert!(!e.padded && e.frames == 2, "{e:?}");
     assert!(e.inharmonic_share.unwrap() < 0.001, "{e:?}");
     // A quarter second of 220 Hz: frames of 8192 within it, not padded.
     let options = HarmonicOptions::new(220.0, RATE, 0..12_000);
     assert_eq!(options.fft_size, 8192);
     let e = energy(partials(&[(220.0, 0.5)], 12_000), 220.0);
     assert!(!e.padded && e.inharmonic_share.unwrap() < 0.001, "{e:?}");
+}
+
+#[test]
+fn the_tail_of_a_range_is_measured() {
+    // A clean second of 41.2 Hz, then 0.3 s of a partial at 2.76 × it: the last
+    // frame ends at the range's end, so the partial is seen.
+    let f0 = 41.2;
+    let mut samples = partials(&[(f0, 0.5)], 48_000);
+    samples.extend(partials(&[(f0, 0.5), (2.76 * f0, 0.5)], 14_400));
+    let e = energy(samples, f0);
+    assert!(e.inharmonic_share.unwrap() > 0.05, "{e:?}");
+    // A quarter second of 55 Hz gets 8192-sample frames: under 24 bins, as the
+    // result says.
+    let e = energy(partials(&[(55.0, 0.5)], 12_000), 55.0);
+    assert!(!e.padded && e.fundamental_bins < 24.0, "{e:?}");
 }

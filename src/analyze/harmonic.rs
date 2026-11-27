@@ -87,8 +87,9 @@ impl HarmonicOptions {
 /// The energy is the Hann-windowed one-sided power spectrum (from the magnitudes of
 /// [`super::spectrum`]: half an interior bin's magnitude squared, all of it at
 /// Nyquist) summed over the analysis frames and channels, each frame with its mean
-/// removed, so a DC offset adds nothing. Every bin but DC counts, rumble and
-/// aliases below the fundamental as inharmonic.
+/// removed, so a DC offset adds nothing. Every bin but DC counts: rumble and
+/// aliases away from the harmonics as inharmonic, an alias that folds into a
+/// harmonic's band as harmonic.
 #[derive(Clone, Debug, PartialEq)]
 pub struct HarmonicEnergy {
     pub options: HarmonicOptions,
@@ -99,6 +100,10 @@ pub struct HarmonicEnergy {
     /// zero-padded: the cut-off edges of the sound then spread its energy over
     /// other bins, and the shares say more about the cut than the sound.
     pub padded: bool,
+    /// The bins the fundamental spans, `fundamental_hz / (sample_rate / fft_size)`:
+    /// [`HARMONIC_BINS`] (24) or more resolve a partial a sixth of the fundamental
+    /// from a harmonic, fewer resolve less (a short range gets fewer).
+    pub fundamental_bins: f64,
     /// The harmonics counted: every multiple of the fundamental up to half the
     /// sample rate.
     pub harmonics: usize,
@@ -197,10 +202,16 @@ impl Audio {
             return Err(Error::invalid("Harmonic samples must be finite"));
         }
         let length = o.range.len();
-        let count = match length {
-            0 => 0,
-            n if n < o.fft_size => 1,
-            n => (n - o.fft_size) / o.hop + 1,
+        // Whole frames every hop, and one more ending at the range's end when the
+        // hops leave a tail, so that every sample is measured.
+        let (count, tail) = match length {
+            0 => (0, false),
+            n if n < o.fft_size => (1, false),
+            n => {
+                let whole = (n - o.fft_size) / o.hop + 1;
+                let tail = (whole - 1) * o.hop + o.fft_size < n;
+                (whole + usize::from(tail), tail)
+            }
         };
         if count > MAX_HARMONIC_FRAMES {
             return Err(Error::limit("Too many harmonic analysis frames"));
@@ -259,7 +270,11 @@ impl Audio {
         let mut power = vec![0.0; bins];
         let mut frame = vec![0.0f32; o.fft_size];
         for i in 0..count {
-            let start = o.range.start + i * o.hop;
+            let start = if tail && i == count - 1 {
+                o.range.end - o.fft_size
+            } else {
+                o.range.start + i * o.hop
+            };
             let end = (start + o.fft_size).min(o.range.end);
             for c in channels.iter().map(|c| &c[start..end]) {
                 // A frame at one level, as silence or a DC offset alone, adds no
@@ -294,11 +309,13 @@ impl Audio {
             (vec![0.0; harmonics], None)
         };
         let padded = count == 1 && length < o.fft_size;
+        let fundamental_bins = o.fundamental_hz / bin;
         Ok(HarmonicEnergy {
             options: o,
             sample_rate: self.rate,
             frames: count,
             padded,
+            fundamental_bins,
             harmonics,
             bands_hz,
             harmonic_shares,
