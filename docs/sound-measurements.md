@@ -145,9 +145,10 @@ fn melody(voice: &Audio) -> Result<()> {
 ```
 
 - **Frames.** Frame `i` starts at input frame `i × hop` and reads two periods of
-  `min_hz` (`PitchTrack::span_frames`): its first period is compared with the
-  samples up to one period later. A pitch describes that span, so it lags the
-  sound by up to that much: at 60 Hz, 33 ms. Only whole frames are measured; an
+  `min_hz` and a few samples (`PitchTrack::span_frames`): its first period is
+  compared with the samples up to one period later, and a little more, for the
+  margin below `min_hz`. A pitch describes that span, so it lags the sound by up
+  to that much: at 60 Hz, 33 ms. Only whole frames are measured; an
   input shorter than one frame is a single frame, zero-padded.
 - **States.** `Silent` when the RMS of the frame's first period, with its mean
   removed, is at or below `silence_db` (−60 dBFS by default): a DC offset or a
@@ -156,7 +157,10 @@ fn melody(voice: &Audio) -> Result<()> {
   `threshold` (0.15 by default). `Voiced` when that dip's period lies in the
   range: the pitch from `min_hz` to `max_hz`, the ends included. A tone outside
   the range has no pitch, rather than the nearest one in it or one of its
-  period's multiples. So a weak fundamental in the range under a strong harmonic
+  period's multiples; nor does one that repeats a shorter period above the range
+  that is nearly as periodic (below twice the threshold), as a tone of a few
+  samples per period, whose dip refines too shallow. So a weak fundamental in the
+  range under a strong harmonic
   above `max_hz` has no pitch either: a ceiling above the harmonic gives the
   harmonic as the pitch and the fundamental as the alternative. `Unvoiced`
   otherwise, as noise, a chord or a transition. Only voiced frames have a pitch;
@@ -164,8 +168,9 @@ fn melody(voice: &Audio) -> Result<()> {
 - **Pitch.** That dip's period, refined between samples: the bottom of the
   parabola through the raw difference function, which is symmetric about a
   whole period, unlike the normalized one. An estimate within 5 cents past an
-  end of the range is set to that end. Sines err by under 1 cent up to 6 kHz at
-  48 kHz in the tests, and by 2.6 cents at 7 kHz, a period of under 7 samples.
+  end of the range is set to that end. `max_hz` is at most `sample_rate /
+  MIN_PITCH_LAG` (8), so that a pitch spans at least 8 samples: sines err by
+  under 1 cent up to that ceiling (6 kHz at 48 kHz) in the tests.
   **Confidence** is 1 minus the normalized difference at the refined bottom, from
   0 to 1: of the pitch's dip for a voiced frame, of the deepest dip in the range
   for an unvoiced one (0 without one, as for a tone below the range); 0 when
@@ -193,10 +198,10 @@ names and quantization are the caller's.
 
 Bad options, a missing channel, a range outside the input and non-finite samples
 return `InvalidArgument`. `min_hz` is at least `sample_rate / MAX_PITCH_LAG`
-(8192) and `max_hz` at most half the sample rate. The default `Limits` apply,
+(8192) and `max_hz` at most `sample_rate / MIN_PITCH_LAG` (8). The default `Limits` apply,
 plus at most `MAX_PITCH_FRAMES` (1,048,576) frames and `MAX_PITCH_WORK` (2³², a
 work estimate of frames × L × (log₂ L + 1), with L the power of two at or above
-two periods of `min_hz`), counted before any frame is measured, or
+the frame's span), counted before any frame is measured, or
 `LimitExceeded`. Several channels are mixed once, into one buffer of the input's
 length. Silent frames skip the transforms. The FFT uses the platform's math, so pitches
 are for reports and not bit-identical across hosts; the tests' tolerances (5
@@ -214,7 +219,7 @@ Evaluation on the generated fixtures of `tests/pitch.rs`, free to share, at 48 k
 | Tritone (220 Hz and 220 × √2 Hz) | 60 Hz–2 kHz, 10 ms hop | mean confidence 0.90, against 1.00 for a sine | — |
 
 A wider range lengthens the frame, which averages more of a moving pitch: the
-same vibrato from 60 Hz to 2 kHz, every 10 ms, errs by up to 11.4 cents.
+same vibrato from 60 Hz to 2 kHz, every 10 ms, errs by up to 11.5 cents.
 
 [`Envelope`]: https://docs.rs/audiobox/latest/audiobox/analyze/struct.Envelope.html
 [`analyze::spectrum`]: https://docs.rs/audiobox/latest/audiobox/analyze/fn.spectrum.html

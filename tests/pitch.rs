@@ -249,14 +249,15 @@ fn short_empty_and_repeated_inputs() {
     let t = empty.pitch_track(&options).unwrap();
     assert!(t.frames.is_empty());
     assert_eq!(t.median_frequency(0..0).unwrap(), None);
-    // Shorter than a frame (two periods of 100 Hz): one padded frame.
+    // Shorter than a frame (two periods of 100 Hz and the margin, 961 frames):
+    // one padded frame.
     let t = track(tone(0.005, &[(1, 0.5)], |_| 440.0), options);
     assert_eq!(t.frames.len(), 1);
-    assert_eq!(t.span_frames, 960);
+    assert_eq!(t.span_frames, 961);
     // Whole frames only: none starts past the last whole one.
     let t = track(tone(0.1, &[(1, 0.5)], |_| 440.0), options);
-    assert_eq!(t.frames.len(), (4800 - 960) / 100 + 1);
-    assert!(t.frames.iter().all(|f| f.start_frame + 960 <= 4800));
+    assert_eq!(t.frames.len(), (4800 - 961) / 100 + 1);
+    assert!(t.frames.iter().all(|f| f.start_frame + 961 <= 4800));
     // The same input, the same track.
     let samples = tone(0.2, &[(1, 0.5), (3, 0.1)], |_| 300.0);
     assert_eq!(track(samples.clone(), options), track(samples, options));
@@ -285,7 +286,7 @@ fn bad_arguments_are_refused() {
             ..options
         },
         PitchOptions {
-            max_hz: 30_000.0,
+            max_hz: 6_000.1,
             ..options
         },
         PitchOptions { hop: 0, ..options },
@@ -329,11 +330,11 @@ fn bad_arguments_are_refused() {
             .code,
         ErrorCode::LimitExceeded
     );
-    // The work limit, 2^32, at its edge: at 20 Hz a frame spans 4800 frames and
+    // The work limit, 2^32, at its edge: at 20 Hz a frame spans 4806 frames and
     // transforms 8192, so 37,449 frames × 8192 × (13 + 1) fit and 37,450 do not. The
     // input is silent, so nothing is transformed.
     for (frames, fits) in [(37_449, true), (37_450, false)] {
-        let long = Audio::new(vec![vec![0.0; frames + 4799]], RATE).unwrap();
+        let long = Audio::new(vec![vec![0.0; frames + 4805]], RATE).unwrap();
         let result = long.pitch_track(&PitchOptions::new(20.0, 1000.0, 1));
         match fits {
             true => assert_eq!(result.unwrap().frames.len(), frames),
@@ -523,7 +524,7 @@ fn alternatives_stay_within_the_range() {
 #[test]
 fn high_clean_tones_have_no_rival() {
     // Short periods, a few samples long: the depths between samples decide.
-    let options = PitchOptions::new(100.0, 8000.0, 480);
+    let options = PitchOptions::new(100.0, 6000.0, 480);
     for f in [3000.0, 3840.0] {
         let t = track(tone(0.3, &[(1, 0.5)], |_| f), options);
         for frame in &t.frames {
@@ -559,7 +560,7 @@ fn high_tones_at_the_top_of_the_range_and_strict_thresholds() {
     // A strict threshold is applied to the refined depth: still the fundamental.
     let strict = PitchOptions {
         threshold: 0.02,
-        ..PitchOptions::new(100.0, 8000.0, 480)
+        ..PitchOptions::new(100.0, 6000.0, 480)
     };
     for frame in &track(tone(0.3, &[(1, 0.5)], |_| 3840.0), strict).frames {
         assert_eq!(frame.state, PitchState::Voiced, "{frame:?}");
@@ -571,7 +572,7 @@ fn high_tones_at_the_top_of_the_range_and_strict_thresholds() {
     // A clean 5050 Hz sine, a 9.5-sample period: its repeats are no rival.
     let t = track(
         tone(0.3, &[(1, 0.5)], |_| 5050.0),
-        PitchOptions::new(100.0, 8000.0, 480),
+        PitchOptions::new(100.0, 6000.0, 480),
     );
     for frame in &t.frames {
         assert_eq!(frame.state, PitchState::Voiced, "{frame:?}");
@@ -580,5 +581,53 @@ fn high_tones_at_the_top_of_the_range_and_strict_thresholds() {
             "{frame:?}"
         );
         assert_eq!(frame.alternative, None, "{frame:?}");
+    }
+}
+
+#[test]
+fn short_periods_and_the_margins_of_the_range() {
+    let sine = |f: f64, rate: u32, seconds: f64| -> Audio {
+        let samples = (0..(seconds * rate as f64) as usize)
+            .map(|i| (0.5 * (2.0 * PI * f * i as f64 / rate as f64).sin()) as f32)
+            .collect();
+        Audio::new(vec![samples], rate).unwrap()
+    };
+    // The ceiling is at most an 8-sample period: 2 kHz at 16 kHz.
+    let low_rate = sine(1998.0, 16_000, 0.3);
+    assert_eq!(
+        low_rate
+            .pitch_track(&PitchOptions::new(60.0, 2500.0, 160))
+            .unwrap_err()
+            .code,
+        ErrorCode::InvalidArgument
+    );
+    let t = low_rate
+        .pitch_track(&PitchOptions::new(60.0, 2000.0, 160))
+        .unwrap();
+    for frame in &t.frames {
+        assert_eq!(frame.state, PitchState::Voiced, "{frame:?}");
+        assert!(
+            cents(frame.frequency_hz.unwrap(), 1998.0).abs() < 5.0,
+            "{frame:?}"
+        );
+    }
+    // Tones above the range, of a few samples per period, whose first dip
+    // refines too shallow: still no pitch, rather than a repeat.
+    for (f, rate, max_hz) in [(4500.0, 16_000, 2000.0), (7700.0, 48_000, 6000.0)] {
+        let t = sine(f, rate, 0.3)
+            .pitch_track(&PitchOptions::new(100.0, max_hz, 480))
+            .unwrap();
+        for frame in &t.frames {
+            assert_ne!(frame.state, PitchState::Voiced, "{f} Hz: {frame:?}");
+        }
+    }
+    // Within the margin below the floor: set to it.
+    let t = track(
+        tone(0.5, &[(1, 0.5)], |_| 59.9),
+        PitchOptions::new(60.0, 2000.0, 480),
+    );
+    for frame in &t.frames {
+        assert_eq!(frame.state, PitchState::Voiced, "{frame:?}");
+        assert_eq!(frame.frequency_hz, Some(60.0), "{frame:?}");
     }
 }

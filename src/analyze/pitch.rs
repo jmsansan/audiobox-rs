@@ -8,6 +8,10 @@ pub const MAX_PITCH_FRAMES: usize = 1 << 20;
 /// The longest period, in frames, a pitch track looks for: `min_hz` is at least
 /// `sample_rate / MAX_PITCH_LAG`.
 pub const MAX_PITCH_LAG: usize = 8192;
+/// The shortest period, in frames, a pitch track looks for: `max_hz` is at most
+/// `sample_rate / MIN_PITCH_LAG`. Shorter periods are too few samples to refine
+/// a pitch within cents.
+pub const MIN_PITCH_LAG: usize = 8;
 /// The widest median smoothing, in frames.
 pub const MAX_PITCH_MEDIAN: usize = 15;
 /// The most work one [`Audio::pitch_track`] is allowed, as an estimate: analysis
@@ -19,10 +23,11 @@ pub const MAX_PITCH_WORK: u64 = 1 << 32;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PitchOptions {
     /// The lowest pitch looked for, in Hz, above 0 and at least
-    /// `sample_rate / MAX_PITCH_LAG`. It sets the frame's length: two periods of it.
+    /// `sample_rate / MAX_PITCH_LAG`. It sets the frame's length: two periods of it
+    /// and a few samples.
     pub min_hz: f64,
-    /// The highest pitch looked for, in Hz, above `min_hz` and at most half the
-    /// sample rate.
+    /// The highest pitch looked for, in Hz, above `min_hz` and at most
+    /// `sample_rate / MIN_PITCH_LAG` (6 kHz at 48 kHz).
     pub max_hz: f64,
     /// Frames between the starts of analysis frames, at least 1.
     pub hop: usize,
@@ -104,7 +109,8 @@ pub struct PitchTrack {
     pub sample_rate: u32,
     /// Frames in the input.
     pub input_frames: usize,
-    /// Frames each analysis frame reads: two periods of `min_hz`. A pitch describes
+    /// Frames each analysis frame reads: two periods of `min_hz`, and a few samples
+    /// for the margin below it. A pitch describes
     /// that span, so it lags the sound by up to that much.
     pub span_frames: usize,
     pub frames: Vec<PitchFrame>,
@@ -295,7 +301,8 @@ impl Audio {
     /// Kawahara, 2002).
     ///
     /// Frame `i` starts at input frame `i * hop` and reads two periods of
-    /// `min_hz`: the first period is compared with the samples up to one period
+    /// `min_hz` and a few samples: the first period is compared with the samples up
+    /// to one period
     /// later. Only whole frames are measured, so the last frames of input may fall
     /// in none; an input shorter than one frame is a single frame, zero-padded.
     /// A frame is silent when the RMS of its first period, over the samples it
@@ -317,8 +324,8 @@ impl Audio {
     /// Bad options, a missing channel and non-finite samples return
     /// `InvalidArgument`. Default [`Limits`] apply, plus at most
     /// [`MAX_PITCH_FRAMES`] frames and [`MAX_PITCH_WORK`] for frames × L × (log₂ L + 1), or
-    /// `LimitExceeded`, with L the power of two at or above two periods of
-    /// `min_hz` in frames. The work is O(samples × channels) to mix the channels once, plus O(frames × L log L); silent
+    /// `LimitExceeded`, with L the power of two at or above the span of
+    /// a frame. The work is O(samples × channels) to mix the channels once, plus O(frames × L log L); silent
     /// frames skip the transforms. The storage is O(L) plus one entry per frame, and with several channels one f64 per input frame. The FFT uses the platform's math, so results are
     /// for reports, not bit-identical across hosts.
     ///
@@ -344,9 +351,9 @@ impl Audio {
                 "Lowest pitch must be finite, above 0 and at least the sample rate / 8192",
             ));
         }
-        if !(o.max_hz > o.min_hz && o.max_hz <= rate / 2.0) {
+        if !(o.max_hz > o.min_hz && o.max_hz * MIN_PITCH_LAG as f64 <= rate) {
             return Err(Error::invalid(
-                "Highest pitch must be above the lowest and at most half the sample rate",
+                "Highest pitch must be above the lowest and at most the sample rate / 8",
             ));
         }
         if o.hop == 0 {
@@ -373,12 +380,18 @@ impl Audio {
             return Err(Error::invalid("Pitch samples must be finite"));
         }
         let input_frames = self.frames();
+        // The range, with a margin of the estimate's accuracy (5 cents): a pitch
+        // estimated just past an end is set to it.
+        let margin = 2f64.powf(5.0 / 1200.0);
         let max_lag = (rate / o.min_hz).ceil() as usize;
         let min_lag = ((rate / o.max_hz).floor() as usize).max(2);
         let window = max_lag - 1;
-        // One lag more on each side than the range needs, so that a dip at either
-        // end of it is a local minimum with both neighbours.
-        let top = max_lag + 1;
+        // The lags searched reach the margin below `min_hz`, and one lag more on
+        // each side, so that a dip at either end is a local minimum with both
+        // neighbours.
+        let hi = ((rate * margin / o.min_hz).floor() as usize).max(max_lag);
+        let lo = min_lag - 1;
+        let top = hi + 1;
         let span = window + top;
         // Whole frames only, so that no frame is padded with silence; an input
         // shorter than one frame is one padded frame.
@@ -416,10 +429,6 @@ impl Audio {
             }
         };
         let mut yin = Yin::new(window, top);
-        let (lo, hi) = (min_lag - 1, max_lag);
-        // The range, with a margin of the estimate's accuracy (5 cents): a pitch
-        // estimated just past an end is set to it.
-        let margin = 2f64.powf(5.0 / 1200.0);
         let in_range = |lag: f64| (o.min_hz / margin..=o.max_hz * margin).contains(&(rate / lag));
         let pitch = |lag: f64| (rate / lag).clamp(o.min_hz, o.max_hz);
         let mut x = vec![0.0; span];
@@ -468,8 +477,18 @@ impl Audio {
                 // YIN's choice: the first dip below the threshold, from the shortest
                 // lag. When its period lies outside the range, the frame has no
                 // pitch, rather than one of the period's multiples.
+                // Nor when it repeats a shorter period above the range that is
+                // nearly as periodic: a period of a few samples refines to a
+                // shallower dip than it is, and may miss the threshold.
+                let repeats_above = |c: &Bottom| {
+                    dips(1).take_while(|b| b.lag < c.lag).any(|b| {
+                        rate / b.lag > o.max_hz * margin
+                            && b.depth < 2.0 * o.threshold
+                            && near_multiple(c.lag, b.lag)
+                    })
+                };
                 let first = dips(1).find(|b| b.depth < o.threshold);
-                if let Some(chosen) = first.filter(|b| in_range(b.lag)) {
+                if let Some(chosen) = first.filter(|b| in_range(b.lag) && !repeats_above(b)) {
                     frame.state = PitchState::Voiced;
                     frame.frequency_hz = Some(pitch(chosen.lag));
                     frame.confidence = (1.0 - chosen.depth).clamp(0.0, 1.0);

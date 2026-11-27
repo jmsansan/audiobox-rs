@@ -12,8 +12,8 @@ pub use measurements::{
     MeasurementBoundary, StereoMeasurements, ThresholdSilence, dc_mean, stereo_measurements,
 };
 pub use pitch::{
-    MAX_PITCH_FRAMES, MAX_PITCH_LAG, MAX_PITCH_MEDIAN, MAX_PITCH_WORK, PitchCandidate, PitchFrame,
-    PitchOptions, PitchState, PitchTrack,
+    MAX_PITCH_FRAMES, MAX_PITCH_LAG, MAX_PITCH_MEDIAN, MAX_PITCH_WORK, MIN_PITCH_LAG,
+    PitchCandidate, PitchFrame, PitchOptions, PitchState, PitchTrack,
 };
 pub use spectral::{
     MAX_SPECTRAL_FRAMES, MAX_SPECTRAL_WORK, MIN_SPECTRAL_FFT, SpectralFrame, SpectralOptions,
