@@ -10,6 +10,11 @@
   until it stays below a floor). Times come in frames and seconds with the settings
   they were measured with, `None` when a threshold is never crossed, and the same on
   every host (#161). See `docs/sound-measurements.md`.
+- `Audio::spectral_timeline` measures the spectral centroid (amplitude-weighted
+  mean frequency, Hz) and spectral flux (change of the spectrum's shape since the
+  previous frame, 0 to 1) per analysis frame, over one channel or all, with silent
+  frames left unmeasured and `SpectralTimeline::summary` over a range of input
+  frames (#124).
 
 ## 0.6.2 — 2026-11-27
 
