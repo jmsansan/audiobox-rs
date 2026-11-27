@@ -580,3 +580,19 @@ fn review_cases_two() {
     assert_eq!(read.voices.len(), 1);
     assert!(!read.warnings.is_empty());
 }
+
+#[test]
+fn a_truncated_dx7_header_is_a_fault() {
+    let voices = generated_bank();
+    for head in [
+        vec![0xf0, 0x43, 0x00, 0x09, 0xf7],
+        vec![0xf0, 0x43, 0x00, 0x09, 0x20, 0xf7],
+        vec![0xf0, 0x43, 0x00, 0x00, 0x01, 0xf7],
+    ] {
+        let file = [head, bank(&voices)].concat();
+        assert_eq!(read_dx7(&file).unwrap_err().code, ErrorCode::DecodeError);
+    }
+    // A short message of another Yamaha format is skipped.
+    let other = [vec![0xf0, 0x43, 0x00, 0x7e, 0xf7], bank(&voices)].concat();
+    assert_eq!(read_dx7(&other).unwrap().voices.len(), 32);
+}

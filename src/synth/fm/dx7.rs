@@ -358,7 +358,19 @@ fn classify<'a>(
     warnings: &mut Vec<Dx7Warning>,
 ) -> Result<Option<Message<'a>>> {
     // F0 43 0n ff hh ll ... checksum F7, with `n` a channel and `ff` the format.
-    if message.len() < 6 || message[1] != 0x43 || message[2] & 0xf0 != 0x00 {
+    if message.len() < 3 || message[1] != 0x43 || message[2] & 0xf0 != 0x00 {
+        return Ok(None);
+    }
+    if message.len() <= 6 {
+        // The start of a DX7 voice or bank header, ended by F7 before it is whole.
+        let head = &message[3..message.len() - 1];
+        if head.first() == Some(&0x09) || (!head.is_empty() && [0x00, 0x01, 0x1b].starts_with(head))
+        {
+            return Err(Error::decode(format!(
+                "The DX7 message at byte {at} is cut short after {} bytes",
+                message.len()
+            )));
+        }
         return Ok(None);
     }
     let (format, count) = (message[3], [message[4], message[5]]);
