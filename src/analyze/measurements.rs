@@ -95,7 +95,7 @@ fn finite(sample: f32) -> Result<f64> {
         Err(Error::invalid("Measurement samples must be finite"))
     }
 }
-fn reserve<T>(count: usize) -> Result<Vec<T>> {
+pub(super) fn reserve<T>(count: usize) -> Result<Vec<T>> {
     let mut values = Vec::new();
     values
         .try_reserve_exact(count)

@@ -429,6 +429,10 @@ outputs are bounded. These measurements do not classify audible defects or fix
 audio. See [render measurement units and limits](docs/render-measurements.md)
 and `cargo run --example render_measurements` for a report example.
 
+`Audio::envelope` follows a sound's amplitude and reads its attack, decay and
+release tail at the thresholds you give, with `None` when a threshold is never
+crossed. See [measurements of a sound](docs/sound-measurements.md).
+
 `read_audio_file` accepts regular files with a 512 MiB encoded-byte cap, in
 addition to decoded limits. `read_audio_file_with_options` and `ReadAudioOptions`
 allow separate encoded/decode budgets. Symlinks to regular files are supported;
