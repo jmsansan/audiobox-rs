@@ -362,9 +362,10 @@ fn classify<'a>(
         return Ok(None);
     }
     if message.len() <= 6 {
-        // The start of a DX7 voice or bank header, ended by F7 before it is whole.
+        // A bulk header ended by F7 before its format, or the start of a DX7 voice or
+        // bank header before it is whole.
         let head = &message[3..message.len() - 1];
-        if matches!(head.first(), Some(0x00 | 0x09)) {
+        if matches!(head.first(), None | Some(0x00 | 0x09)) {
             return Err(Error::decode(format!(
                 "The DX7 message at byte {at} is cut short after {} bytes",
                 message.len()
