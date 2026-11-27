@@ -4,7 +4,7 @@
 human-like *timbre* while producing invented, unintelligible syllables? Intelligible
 pronunciation is explicitly not a goal (owner, 2026-10-29).
 
-**Status.** Engine side complete; owner listening of the 0.6 fixtures pending. The
+**Status.** Engine side complete; the owner approved the v2 fixtures (2026-11-27). The
 technical part of the decision is below. The perceptual part (which variants are
 useful, which remain too robotic) is only recorded from the owner's listening, never
 from waveform metrics or an assistant's impression.
@@ -85,7 +85,8 @@ dependency. Nothing is added to the crate without that decision.
 | 2026-10-29 | October prototype parallel-formant AEIOU | "Está bien pero suena muy robotico" |
 | 2026-10-29 | October prototype expressive AEIOU | "Suena bien la muestra expresiva" |
 | 2026-10-29 | October prototype production, robot and five-character examples | approved ("Si, están bien", "Si, suenan muy bien", "Están bien") |
-| pending | 0.6 fixtures listed above | to be recorded in #118 |
+| 2026-11-20 | 0.6.0 fixtures (render and planner v1) | the voices sound good, but with a "ts" or puffs of air |
+| 2026-11-27 | the fixtures above, render and planner v2, against v1 | approved ("Sí, ha mejorado bastante") |
 
 The October prototype was never merged and its code was lost, so 0.6 is a new
 implementation of the same specification; its approvals describe the direction, not
