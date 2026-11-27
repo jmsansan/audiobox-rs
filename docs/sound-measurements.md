@@ -151,26 +151,32 @@ fn melody(voice: &Audio) -> Result<()> {
   input shorter than one frame is a single frame, zero-padded.
 - **States.** `Silent` when the RMS of the frame's first period, with its mean
   removed, is at or below `silence_db` (−60 dBFS by default): a DC offset or a
-  level stuck at one value is silence. `Voiced` when YIN's normalized difference
-  has a dip below `threshold` (0.15 by default) whose period lies in the range:
-  the pitch from `min_hz` to `max_hz`, the ends included. A tone just outside the
-  range has no pitch, rather than the nearest one in it or a subharmonic: after a
-  dip above the range, its multiples count only when clearly deeper, as for a weak
-  fundamental under a strong harmonic above `max_hz`. `Unvoiced` otherwise, as
-  noise, a chord or a transition. Only voiced frames have a pitch; nothing is
-  guessed for the others.
-- **Pitch.** The first such dip, at its bottom, refined between samples by a
-  parabola. An estimate within 5 cents past an end of the range is set to that
-  end. Short periods limit the refinement: a tone of a few samples per period
-  (above about 4 kHz at 48 kHz) errs by more than 5 cents. **Confidence** is 1
-  minus the normalized difference at the refined bottom of the best dip in the
-  range, from 0 to 1, for voiced and unvoiced frames; 0 when silent.
+  level stuck at one value is silence. Otherwise YIN takes the first dip of its
+  normalized difference, from the shortest period, whose refined bottom is below
+  `threshold` (0.15 by default). `Voiced` when that dip's period lies in the
+  range: the pitch from `min_hz` to `max_hz`, the ends included. A tone outside
+  the range has no pitch, rather than the nearest one in it or one of its
+  period's multiples. So a weak fundamental in the range under a strong harmonic
+  above `max_hz` has no pitch either: a ceiling above the harmonic gives the
+  harmonic as the pitch and the fundamental as the alternative. `Unvoiced`
+  otherwise, as noise, a chord or a transition. Only voiced frames have a pitch;
+  nothing is guessed for the others.
+- **Pitch.** That dip's period, refined between samples: the bottom of the
+  parabola through the raw difference function, which is symmetric about a
+  whole period, unlike the normalized one. An estimate within 5 cents past an
+  end of the range is set to that end. Sines err by under 1 cent up to 6 kHz at
+  48 kHz in the tests, and by 2.6 cents at 7 kHz, a period of under 7 samples.
+  **Confidence** is 1 minus the normalized difference at the refined bottom, from
+  0 to 1: of the pitch's dip for a voiced frame, of the deepest dip in the range
+  for an unvoiced one (0 without one, as for a tone below the range); 0 when
+  silent.
 - **Alternative.** For a voiced frame, the deepest other dip in the range more
   than a semitone from the pitch. A sound with a weak fundamental and a strong
   octave has both octaves as dips, so the pitch and the alternative are the two
   candidates: when their confidences are close, the octave is ambiguous, and the
   caller decides. Any periodic sound also repeats every two or three periods;
-  those multiples count only when clearly deeper than the pitch, so a clean tone
+  those multiples count only when deeper than the pitch by more than 0.01 and the
+  refinement's uncertainty (how much it lowered either depth), so a clean tone
   has no rival, and of equally deep dips the shortest period is the alternative.
 - **Smoothing.** `median` (odd, 1 to 15) replaces each voiced pitch with the median
   of the voiced pitches within that many frames; silent and unvoiced frames stay
@@ -200,15 +206,15 @@ Evaluation on the generated fixtures of `tests/pitch.rs`, free to share, at 48 k
 
 | Fixture | Settings | Voiced frames | Largest error |
 | --- | --- | --- | --- |
-| Sines at 82.41, 440 and 1760 Hz, 1 s | 60 Hz–2 kHz, 10 ms hop | all | 0.001, 0.08 and 1.0 cents |
-| Sawtooth, 30 harmonics, at 147 and 523.25 Hz | 60 Hz–2 kHz, 10 ms hop | all | 0.03 and 0.6 cents |
+| Sines at 82.41, 440 and 1760 Hz, 1 s | 60 Hz–2 kHz, 10 ms hop | all | 0.001, 0.009 and 0.08 cents |
+| Sawtooth, 30 harmonics, at 147 and 523.25 Hz | 60 Hz–2 kHz, 10 ms hop | all | 0.04 and 0.7 cents |
 | Glide 220 → 440 Hz in 1 s | 100 Hz–1 kHz, 10 ms hop | all | 5.0 cents from the pitch at the frame's middle |
-| 440 Hz with ±50 cents of vibrato at 5 Hz | 100 Hz–1 kHz, 5 ms hop | all | 6.4 cents, likewise |
+| 440 Hz with ±50 cents of vibrato at 5 Hz | 100 Hz–1 kHz, 5 ms hop | all | 6.3 cents, likewise |
 | White noise, 0.5 s | 60 Hz–2 kHz, 10 ms hop | none of 47 | — |
 | Tritone (220 Hz and 220 × √2 Hz) | 60 Hz–2 kHz, 10 ms hop | mean confidence 0.90, against 1.00 for a sine | — |
 
 A wider range lengthens the frame, which averages more of a moving pitch: the
-same vibrato from 60 Hz to 2 kHz, every 10 ms, errs by up to 11.5 cents.
+same vibrato from 60 Hz to 2 kHz, every 10 ms, errs by up to 11.4 cents.
 
 [`Envelope`]: https://docs.rs/audiobox/latest/audiobox/analyze/struct.Envelope.html
 [`analyze::spectrum`]: https://docs.rs/audiobox/latest/audiobox/analyze/fn.spectrum.html

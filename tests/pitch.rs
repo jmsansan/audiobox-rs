@@ -462,22 +462,48 @@ fn pitches_at_the_ends_of_the_range_are_found() {
 }
 
 #[test]
-fn a_weak_fundamental_under_a_harmonic_above_the_range() {
-    // 440 Hz is above the range and 220 Hz in it: the fundamental, whose dip is
-    // clearly deeper than the harmonic's.
+fn a_period_above_the_range_gives_no_pitch() {
+    // YIN takes the first dip below the threshold. When its period is above the
+    // range, the frame has no pitch rather than one of the period's multiples:
+    // a sine above the range repeats at twice and four times its period too.
     let options = PitchOptions::new(60.0, 430.0, 480);
-    let t = track(tone(0.5, &[(1, 0.1), (2, 0.5)], |_| 220.0), options);
-    for frame in &t.frames {
-        assert_eq!(frame.state, PitchState::Voiced, "{frame:?}");
-        assert!(
-            cents(frame.frequency_hz.unwrap(), 220.0).abs() < 5.0,
-            "{frame:?}"
-        );
+    for f in [500.0, 1000.0] {
+        let t = track(tone(0.5, &[(1, 0.5)], |_| f), options);
+        for frame in &t.frames {
+            assert_ne!(frame.state, PitchState::Voiced, "{f} Hz: {frame:?}");
+        }
     }
-    // A sine above the range repeats at twice its period too: still no pitch.
-    let t = track(tone(0.5, &[(1, 0.5)], |_| 500.0), options);
+    let t = track(
+        tone(0.3, &[(1, 0.5)], |_| 5050.0),
+        PitchOptions::new(60.0, 2000.0, 480),
+    );
     for frame in &t.frames {
         assert_ne!(frame.state, PitchState::Voiced, "{frame:?}");
+    }
+    // A weak fundamental in the range under a strong harmonic above it is a
+    // limit of the method: no pitch. A ceiling above the harmonic gives it, with
+    // the fundamental as the alternative.
+    let weak = tone(0.5, &[(1, 0.05), (2, 0.5)], |_| 220.0);
+    for frame in &track(weak.clone(), options).frames {
+        assert_ne!(frame.state, PitchState::Voiced, "{frame:?}");
+    }
+    for frame in &track(weak, PitchOptions::new(60.0, 1000.0, 480)).frames {
+        let other = frame.alternative.unwrap().frequency_hz;
+        assert!(
+            cents(frame.frequency_hz.unwrap(), 440.0).abs() < 5.0,
+            "{frame:?}"
+        );
+        assert!(cents(other, 220.0).abs() < 5.0, "{frame:?}");
+    }
+    // A tone just below the range: no pitch, and no confidence from the slope
+    // into the end of the range.
+    let t = track(
+        tone(0.5, &[(1, 0.5)], |_| 59.0),
+        PitchOptions::new(60.0, 2000.0, 480),
+    );
+    for frame in &t.frames {
+        assert_ne!(frame.state, PitchState::Voiced, "{frame:?}");
+        assert!(frame.confidence < 0.5, "{frame:?}");
     }
 }
 
@@ -513,5 +539,46 @@ fn high_clean_tones_have_no_rival() {
                 );
             }
         }
+    }
+}
+
+#[test]
+fn high_tones_at_the_top_of_the_range_and_strict_thresholds() {
+    // A 12-sample period at the top of the range.
+    let t = track(
+        tone(0.3, &[(1, 0.5)], |_| 4000.0),
+        PitchOptions::new(60.0, 4000.0, 480),
+    );
+    for frame in &t.frames {
+        assert_eq!(frame.state, PitchState::Voiced, "{frame:?}");
+        assert!(
+            cents(frame.frequency_hz.unwrap(), 4000.0).abs() < 5.0,
+            "{frame:?}"
+        );
+    }
+    // A strict threshold is applied to the refined depth: still the fundamental.
+    let strict = PitchOptions {
+        threshold: 0.02,
+        ..PitchOptions::new(100.0, 8000.0, 480)
+    };
+    for frame in &track(tone(0.3, &[(1, 0.5)], |_| 3840.0), strict).frames {
+        assert_eq!(frame.state, PitchState::Voiced, "{frame:?}");
+        assert!(
+            cents(frame.frequency_hz.unwrap(), 3840.0).abs() < 5.0,
+            "{frame:?}"
+        );
+    }
+    // A clean 5050 Hz sine, a 9.5-sample period: its repeats are no rival.
+    let t = track(
+        tone(0.3, &[(1, 0.5)], |_| 5050.0),
+        PitchOptions::new(100.0, 8000.0, 480),
+    );
+    for frame in &t.frames {
+        assert_eq!(frame.state, PitchState::Voiced, "{frame:?}");
+        assert!(
+            cents(frame.frequency_hz.unwrap(), 5050.0).abs() < 5.0,
+            "{frame:?}"
+        );
+        assert_eq!(frame.alternative, None, "{frame:?}");
     }
 }
