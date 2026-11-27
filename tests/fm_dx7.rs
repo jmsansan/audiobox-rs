@@ -624,3 +624,13 @@ fn a_voice_with_a_wrong_count_is_still_a_voice() {
             .any(|w| w.message.contains("says it holds"))
     );
 }
+
+#[test]
+fn short_messages_of_other_makers_are_skipped() {
+    let voices = generated_bank();
+    for head in [vec![0xf0, 0xf7], vec![0xf0, 0x00, 0x20, 0xf7]] {
+        let read = read_dx7(&[head, bank(&voices)].concat()).unwrap();
+        assert_eq!(read.voices.len(), 32);
+        assert!(read.warnings.iter().any(|w| w.message.contains("skipped")));
+    }
+}
