@@ -4,6 +4,8 @@
 use super::{
     Fm, FmCurve, FmEnvelope, FmFrequency, FmLfo, FmLfoWave, FmOperator, FmPatch, FmScaling,
 };
+use std::collections::HashSet;
+
 use crate::{Error, ErrorCode, Result};
 
 /// Bytes of a single-voice message: 155 parameters in a 6-byte header, a checksum
@@ -190,39 +192,172 @@ fn sanitize(original: &str) -> String {
     }
 }
 
-/// Reads a single voice (163 bytes) or a 32-voice bank (4104 bytes).
+/// Bytes of a 32-voice bank without its message wrapper: what some editors save.
+pub const DX7_RAW_BANK_BYTES: usize = 4096;
+
+/// What a system-exclusive message of a file holds.
+enum Message<'a> {
+    /// A single voice: its 155 parameter bytes.
+    Voice(&'a [u8]),
+    /// A 32-voice bank: its 4096 packed bytes.
+    Bank(&'a [u8]),
+}
+
+/// Reads DX7 voice data: a single voice (163 bytes), a 32-voice bank (4104 bytes),
+/// or a file of several such messages, such as two banks saved together.
 ///
-/// A wrong checksum and parameter bytes above their range are accepted with a
-/// [`Dx7Warning`]; such bytes are clamped. A wrong size, header or terminator is an
-/// error: [`ErrorCode::DecodeError`] for the size and the terminator,
-/// [`ErrorCode::UnsupportedFormat`] for a message that is not DX7 voice data.
+/// Every DX7 voice and bank message of the file is read, in order. Minor faults are
+/// accepted with a [`Dx7Warning`]: a wrong checksum, parameter bytes above their
+/// range (clamped), a bank whose byte count disagrees with its 4096 data bytes,
+/// bytes outside any message, and messages that hold something else, such as a
+/// TX802 performance, which are skipped. Structural faults are errors:
+/// [`ErrorCode::DecodeError`] for a message cut short or a voice or bank message of
+/// the wrong length, and [`ErrorCode::UnsupportedFormat`] for a file with no DX7
+/// voice data at all. A bank saved without its wrapper has no header to recognise
+/// it by; read it with [`read_dx7_raw_bank`].
 pub fn read_dx7(bytes: &[u8]) -> Result<Dx7Voices> {
-    let bank = match bytes.len() {
-        DX7_VOICE_BYTES => false,
-        DX7_BANK_BYTES => true,
-        n => {
+    if bytes.is_empty() {
+        return Err(Error::decode("DX7 voice data is empty"));
+    }
+    let mut warnings = Vec::new();
+    let mut messages = Vec::new();
+    let mut stray = 0usize;
+    let mut skipped = Vec::new();
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] != 0xf0 {
+            stray += 1;
+            at += 1;
+            continue;
+        }
+        let Some(length) = bytes[at..].iter().position(|&b| b == 0xf7).map(|i| i + 1) else {
             return Err(Error::decode(format!(
-                "DX7 voice data is {DX7_VOICE_BYTES} or {DX7_BANK_BYTES} bytes, not {n}"
+                "A message starting at byte {at} does not end with 0xF7"
+            )));
+        };
+        // A new message before the end of this one: this one was cut short.
+        if let Some(inner) = bytes[at + 1..at + length].iter().position(|&b| b == 0xf0) {
+            return Err(Error::decode(format!(
+                "The message starting at byte {at} is cut short at byte {}",
+                at + 1 + inner
             )));
         }
-    };
-    let expected = if bank { BANK_HEADER } else { VOICE_HEADER };
-    let header_ok = bytes[0] == 0xf0
-        && bytes[1] == 0x43
-        && bytes[2] & 0xf0 == expected[0]
-        && bytes[3..6] == expected[1..];
-    if !header_ok {
+        let message = &bytes[at..at + length];
+        match classify(message, at, &mut warnings)? {
+            Some(m) => messages.push(m),
+            None => skipped.push(length),
+        }
+        at += length;
+    }
+    if messages.is_empty() {
+        let hint = if bytes.len() == DX7_RAW_BANK_BYTES && !bytes.contains(&0xf0) {
+            "; a 4096-byte bank without its message wrapper reads with read_dx7_raw_bank"
+        } else {
+            ""
+        };
         return Err(Error::new(
             ErrorCode::UnsupportedFormat,
-            "Not a DX7 single-voice or 32-voice message",
+            format!("No DX7 single-voice or 32-voice message{hint}"),
         ));
     }
-    if bytes[bytes.len() - 1] != 0xf7 {
-        return Err(Error::decode("DX7 voice data does not end with 0xF7"));
+    if stray > 0 {
+        warnings.push(Dx7Warning {
+            voice: None,
+            message: format!(
+                "{stray} {} outside any message {} ignored",
+                if stray == 1 { "byte" } else { "bytes" },
+                if stray == 1 { "was" } else { "were" }
+            ),
+        });
     }
-    let data = &bytes[6..bytes.len() - 2];
+    if !skipped.is_empty() {
+        let sizes: Vec<String> = skipped.iter().map(|n| n.to_string()).collect();
+        warnings.push(Dx7Warning {
+            voice: None,
+            message: format!(
+                "{} messages that are not DX7 voice data ({} bytes) were skipped",
+                skipped.len(),
+                sizes.join(", ")
+            ),
+        });
+    }
+    let mut voices: Vec<Dx7Voice> = Vec::new();
+    let mut names = HashSet::new();
+    for message in messages {
+        match message {
+            Message::Voice(data) => push_voice(data, &mut voices, &mut names, &mut warnings)?,
+            Message::Bank(data) => {
+                for packed in data.chunks_exact(128) {
+                    push_voice(&unpack(packed), &mut voices, &mut names, &mut warnings)?;
+                }
+            }
+        }
+    }
+    Ok(Dx7Voices { voices, warnings })
+}
+
+/// Reads a 32-voice bank saved without its message wrapper: exactly 4096 bytes of
+/// packed voices, with no header and no checksum.
+///
+/// Such a file cannot be recognised by its bytes, so it has its own function. Fails
+/// with [`ErrorCode::DecodeError`] if `bytes` is not 4096 bytes long, or holds a
+/// byte above 0x7F, which voice data never does.
+pub fn read_dx7_raw_bank(bytes: &[u8]) -> Result<Dx7Voices> {
+    if bytes.len() != DX7_RAW_BANK_BYTES {
+        return Err(Error::decode(format!(
+            "A raw DX7 bank is {DX7_RAW_BANK_BYTES} bytes, not {}",
+            bytes.len()
+        )));
+    }
+    if let Some(at) = bytes.iter().position(|&b| b > 0x7f) {
+        return Err(Error::decode(format!(
+            "Byte {at} is {:#04x}; DX7 voice data is seven-bit",
+            bytes[at]
+        )));
+    }
+    let mut voices = Vec::new();
+    let mut names = HashSet::new();
     let mut warnings = Vec::new();
-    let stored = bytes[bytes.len() - 2];
+    for packed in bytes.chunks_exact(128) {
+        push_voice(&unpack(packed), &mut voices, &mut names, &mut warnings)?;
+    }
+    Ok(Dx7Voices { voices, warnings })
+}
+
+/// What a message is: DX7 voice data (with its checksum checked), or `None` for a
+/// message of something else.
+fn classify<'a>(
+    message: &'a [u8],
+    at: usize,
+    warnings: &mut Vec<Dx7Warning>,
+) -> Result<Option<Message<'a>>> {
+    // F0 43 0n ff hh ll ... checksum F7, with `n` a channel and `ff` the format.
+    if message.len() < 8 || message[1] != 0x43 || message[2] & 0xf0 != 0x00 {
+        return Ok(None);
+    }
+    let (format, count) = (message[3], [message[4], message[5]]);
+    let (expected, label) = match (format, count) {
+        (0x00, [0x01, 0x1b]) => (DX7_VOICE_BYTES, "single-voice"),
+        (0x09, _) => (DX7_BANK_BYTES, "32-voice"),
+        _ => return Ok(None),
+    };
+    if message.len() != expected {
+        return Err(Error::decode(format!(
+            "The DX7 {label} message at byte {at} is {} bytes, not {expected}",
+            message.len()
+        )));
+    }
+    if format == 0x09 && count != BANK_HEADER[2..4] {
+        let stated = (count[0] as usize) << 7 | count[1] as usize;
+        warnings.push(Dx7Warning {
+            voice: None,
+            message: format!(
+                "The bank at byte {at} says it holds {stated} data bytes; all 4096 were read"
+            ),
+        });
+    }
+    let data = &message[6..message.len() - 2];
+    let stored = message[message.len() - 2];
     if stored != checksum(data) {
         warnings.push(Dx7Warning {
             voice: None,
@@ -232,37 +367,44 @@ pub fn read_dx7(bytes: &[u8]) -> Result<Dx7Voices> {
             ),
         });
     }
-    let mut voices: Vec<Dx7Voice> = Vec::new();
-    let count = if bank { DX7_BANK_VOICES } else { 1 };
-    for index in 0..count {
-        let mut fields = Fields {
-            voice: index,
-            warnings: &mut warnings,
-        };
-        let (fm, original_name) = if bank {
-            voice(&unpack(&data[index * 128..][..128]), &mut fields)
-        } else {
-            voice(data, &mut fields)
-        };
-        let base = sanitize(&original_name);
-        let mut name = base.clone();
-        let mut suffix = 2;
-        while voices.iter().any(|v| v.patch.name == name) {
-            name = format!("{base}-{suffix}");
-            suffix += 1;
-        }
-        let patch = FmPatch {
-            name,
-            volume: 15,
-            voice: fm,
-        };
-        patch.validate()?;
-        voices.push(Dx7Voice {
-            patch,
-            original_name,
-        });
+    Ok(Some(if format == 0x00 {
+        Message::Voice(data)
+    } else {
+        Message::Bank(data)
+    }))
+}
+
+/// Reads the 155 parameter bytes of one voice and adds it under a unique name.
+fn push_voice(
+    data: &[u8],
+    voices: &mut Vec<Dx7Voice>,
+    names: &mut HashSet<String>,
+    warnings: &mut Vec<Dx7Warning>,
+) -> Result<()> {
+    let mut fields = Fields {
+        voice: voices.len(),
+        warnings,
+    };
+    let (fm, original_name) = voice(data, &mut fields);
+    let base = sanitize(&original_name);
+    let mut name = base.clone();
+    let mut suffix = 2;
+    while names.contains(&name) {
+        name = format!("{base}-{suffix}");
+        suffix += 1;
     }
-    Ok(Dx7Voices { voices, warnings })
+    let patch = FmPatch {
+        name,
+        volume: 15,
+        voice: fm,
+    };
+    patch.validate()?;
+    names.insert(patch.name.clone());
+    voices.push(Dx7Voice {
+        patch,
+        original_name,
+    });
+    Ok(())
 }
 
 /// The 155 parameter bytes of a patch, or the engine extensions that DX7 data

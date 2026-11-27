@@ -193,21 +193,21 @@ fn structural_faults_are_errors_and_minor_faults_are_warnings() {
     let voices = generated_bank();
     let good = bank(&voices);
     let code = |bytes: &[u8]| read_dx7(bytes).unwrap_err().code;
+    // A message cut short, or empty data, is an error.
     assert_eq!(code(&good[..good.len() - 1]), ErrorCode::DecodeError);
-    assert_eq!(
-        code(&[good.clone(), vec![0xf7]].concat()),
-        ErrorCode::DecodeError
-    );
+    assert_eq!(code(&good[..163]), ErrorCode::DecodeError);
     assert_eq!(code(&[]), ErrorCode::DecodeError);
-    assert_eq!(code(&good[..163]), ErrorCode::UnsupportedFormat);
-    for (index, value) in [
-        (0, 0xf1),
-        (1, 0x42),
-        (2, 0x10),
-        (3, 0x00),
-        (4, 0x21),
-        (5, 0x01),
-    ] {
+    // A stray byte after the bank is ignored with a warning.
+    let read = read_dx7(&[good.clone(), vec![0xf7]].concat()).unwrap();
+    assert_eq!(read.voices, read_dx7(&good).unwrap().voices);
+    assert_eq!(read.warnings.len(), 1);
+    assert!(
+        read.warnings[0].message.contains("1 byte outside"),
+        "{:?}",
+        read.warnings
+    );
+    // A message that is not DX7 voice data leaves nothing to read.
+    for (index, value) in [(0, 0xf1), (1, 0x42), (2, 0x10), (3, 0x00)] {
         let mut bad = good.clone();
         bad[index] = value;
         assert_eq!(
@@ -215,6 +215,14 @@ fn structural_faults_are_errors_and_minor_faults_are_warnings() {
             ErrorCode::UnsupportedFormat,
             "header byte {index}"
         );
+    }
+    // A bank whose byte count disagrees with its 4096 data bytes reads, with a warning.
+    for (index, value) in [(4, 0x21), (5, 0x01)] {
+        let mut odd = good.clone();
+        odd[index] = value;
+        let read = read_dx7(&odd).unwrap();
+        assert_eq!(read.voices, read_dx7(&good).unwrap().voices, "byte {index}");
+        assert!(read.warnings[0].message.contains("data bytes"));
     }
     let mut bad = good.clone();
     *bad.last_mut().unwrap() = 0x00;
@@ -404,4 +412,117 @@ fn arbitrary_bytes_never_panic_and_imports_render() {
         let audio = Score::parse(&text).unwrap().render_stereo(24000).unwrap();
         assert!(audio.channel_data(0).unwrap().iter().all(|x| x.is_finite()));
     }
+}
+
+#[test]
+fn a_bank_with_a_wrong_byte_count_reads_with_a_warning() {
+    // Old editors wrote `10 00` (2048) although all 4096 data bytes are there.
+    let voices = generated_bank();
+    let mut odd = bank(&voices);
+    (odd[4], odd[5]) = (0x10, 0x00);
+    let read = read_dx7(&odd).unwrap();
+    assert_eq!(read.voices.len(), DX7_BANK_VOICES);
+    for (voice, v) in read.voices.iter().zip(&voices) {
+        check(&voice.patch, v);
+    }
+    assert_eq!(read.warnings.len(), 1);
+    assert_eq!(read.warnings[0].voice, None);
+    assert!(
+        read.warnings[0].message.contains("2048"),
+        "{:?}",
+        read.warnings
+    );
+}
+
+#[test]
+fn raw_banks_read_with_their_own_function() {
+    let voices = generated_bank();
+    let wrapped = bank(&voices);
+    let raw = &wrapped[6..6 + DX7_RAW_BANK_BYTES];
+    let read = read_dx7_raw_bank(raw).unwrap();
+    assert!(read.warnings.is_empty());
+    assert_eq!(read.voices, read_dx7(&wrapped).unwrap().voices);
+    // read_dx7 cannot recognise one, and says where to look.
+    let err = read_dx7(raw).unwrap_err();
+    assert_eq!(err.code, ErrorCode::UnsupportedFormat);
+    assert!(err.message.contains("read_dx7_raw_bank"));
+    // Wrong lengths and eight-bit bytes are not raw banks.
+    assert_eq!(
+        read_dx7_raw_bank(&raw[1..]).unwrap_err().code,
+        ErrorCode::DecodeError
+    );
+    let mut high = raw.to_vec();
+    high[100] = 0x80;
+    assert_eq!(
+        read_dx7_raw_bank(&high).unwrap_err().code,
+        ErrorCode::DecodeError
+    );
+}
+
+#[test]
+fn every_voice_message_of_a_file_is_read() {
+    let first = generated_bank();
+    let second: Vec<[u8; 155]> = (0..32)
+        .map(|i| parameters(2000 + i, &format!("TWO {i:02}")))
+        .collect();
+    // Two banks saved together: 64 voices, in order.
+    let both = [bank(&first), bank(&second)].concat();
+    assert_eq!(both.len(), 2 * DX7_BANK_BYTES);
+    let read = read_dx7(&both).unwrap();
+    assert!(read.warnings.is_empty(), "{:?}", read.warnings);
+    assert_eq!(read.voices.len(), 64);
+    for (voice, v) in read.voices.iter().zip(first.iter().chain(&second)) {
+        check(&voice.patch, v);
+    }
+    // The same bank twice: names stay unique.
+    let twice = read_dx7(&[bank(&first), bank(&first)].concat()).unwrap();
+    assert_eq!(
+        twice.voices[32].patch.name,
+        format!("{}-2", twice.voices[0].patch.name)
+    );
+    // A clamp warning names the voice by its place in the whole file.
+    let mut v = parameters(9, "LATE");
+    v[16] = 120;
+    let read = read_dx7(&[single(&first[0]), single(&v)].concat()).unwrap();
+    assert_eq!(read.voices.len(), 2);
+    assert_eq!(read.warnings[0].voice, Some(1));
+}
+
+#[test]
+fn other_messages_and_stray_bytes_are_skipped_with_warnings() {
+    let voices = generated_bank();
+    let good = bank(&voices);
+    let expected = read_dx7(&good).unwrap().voices;
+    // A bank followed by trailing data that is not a message.
+    let trailing = [good.clone(), vec![0x00; 1128]].concat();
+    let read = read_dx7(&trailing).unwrap();
+    assert_eq!(read.voices, expected);
+    assert!(read.warnings[0].message.contains("1128 bytes outside"));
+    // A bank and a performance message of another instrument: the bank is read.
+    let mut performance = vec![0xf0, 0x43, 0x00, 0x7e, 0x01, 0x28];
+    performance.extend(std::iter::repeat_n(0x11, 168));
+    performance.extend([0x00, 0xf7]);
+    let read = read_dx7(&[performance.clone(), good.clone()].concat()).unwrap();
+    assert_eq!(read.voices, expected);
+    assert_eq!(read.warnings.len(), 1);
+    assert!(
+        read.warnings[0]
+            .message
+            .contains("not DX7 voice data (176 bytes)")
+    );
+    // A single voice with two extra bytes.
+    let one = single(&voices[3]);
+    let read = read_dx7(&[one.clone(), vec![0x00, 0x00]].concat()).unwrap();
+    assert_eq!(read.voices, read_dx7(&one).unwrap().voices);
+    // A file of other messages only is not voice data.
+    assert_eq!(
+        read_dx7(&performance).unwrap_err().code,
+        ErrorCode::UnsupportedFormat
+    );
+    // A message cut short by the start of the next one is an error.
+    let cut = [good[..2000].to_vec(), good.clone()].concat();
+    assert_eq!(read_dx7(&cut).unwrap_err().code, ErrorCode::DecodeError);
+    // A voice or bank message of the wrong length is an error.
+    let short = [good[..4000].to_vec(), vec![0x00, 0xf7]].concat();
+    assert_eq!(read_dx7(&short).unwrap_err().code, ErrorCode::DecodeError);
 }

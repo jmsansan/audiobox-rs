@@ -434,6 +434,18 @@ crate, and the rights to an imported file are for whoever supplies it to check.
 `n` is a channel and is ignored. After the data come a checksum (the two's complement
 of the sum of the data bytes, in seven bits) and `F7`.
 
+Files in the wild vary, and `read_dx7` reads what DX7 editors load. It splits a file
+into system-exclusive messages and reads every voice and bank message, in order, so
+two banks saved together give 64 voices; names stay unique across the file. Minor
+faults read with a warning: a wrong checksum, bytes above their range (clamped), a
+bank whose byte count is not `20 00` (old editors often wrote `10 00`, 2048, before
+all 4096 data bytes), bytes outside any message, and messages that hold something
+else, such as a TX802 performance, which are skipped. Structural faults are errors: a
+message cut short, or a voice or bank message of the wrong length (`DecodeError`), and
+a file with no voice data (`UnsupportedFormat`). A bank saved without its wrapper is
+4096 bytes with no header to recognise it by, so `read_dx7_raw_bank` reads it; it
+refuses any other length and any byte above `7F`.
+
 The 155 single-voice bytes hold operator 6 first, then 5 down to 1, 21 bytes each:
 
 | Offset | Field | Range | Patch key |
