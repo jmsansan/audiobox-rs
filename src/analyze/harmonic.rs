@@ -30,7 +30,9 @@ pub struct HarmonicOptions {
     /// fraction of one (`fft_size / hop` a multiple of 4), at which the squared
     /// Hann windows sum to a nearly constant weight (within 0.3 % at 32 points, far
     /// less for longer frames), so that a sound weighs the same wherever it
-    /// falls between the range's margins.
+    /// falls between the range's margins; content below a few bins, which each
+    /// frame's mean removal and the skipped DC bin treat by frame, can still vary
+    /// by about a percent with its alignment.
     pub hop: usize,
     /// How far from each harmonic its band reaches, in cents below and above it
     /// (finite, at least 0). Each side of the band is at least 2 bins wide, the
@@ -101,8 +103,9 @@ pub struct HarmonicEnergy {
     /// The analysis frames measured.
     pub frames: usize,
     /// Whether the range is shorter than one frame, so that its one frame is
-    /// zero-padded: the cut-off edges of the sound then spread its energy over
-    /// other bins, and the shares say more about the cut than the sound.
+    /// zero-padded: the cut-off edges of the sound can then spread its energy over
+    /// other bins (a sound that fades in and out within the range need not). An
+    /// empty range has no frames and is not padded.
     pub padded: bool,
     /// The bins the fundamental spans, `fundamental_hz / (sample_rate / fft_size)`:
     /// how finely the window separates frequencies (a short range gets fewer).

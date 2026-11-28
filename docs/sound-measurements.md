@@ -309,14 +309,17 @@ fn inharmonicity(note: &Audio) -> Result<()> {
   edge. A shorter range gets the longest power
   of two within it, down to the length at which the fundamental spans
   `MIN_HARMONIC_BINS` (8) bins. A range shorter even than that is one frame,
-  zero-padded, and the result says so (`padded`): the sound's cut-off edges
-  then spread its energy over other bins, so the shares say more about the cut
-  than the sound (a clean quarter second of 41.2 Hz is padded at 48 kHz). The
+  zero-padded, and the result says so (`padded`): the sound's cut-off edges can
+  then spread its energy over other bins, so the shares may say more about the cut
+  than the sound (a clean quarter second of 41.2 Hz is padded at 48 kHz). An empty
+  range has no frames, is not padded and has nothing to share. The
   fields can be set by hand; the fundamental must then be at least 8 bins, and
   the hop a quarter frame or a whole fraction of one (`fft_size / hop` a multiple
   of 4), at which the squared windows sum to a nearly constant weight (within
   0.3 % at 32 points, far less for longer frames), so that a sound weighs
-  the same wherever it falls between the range's margins.
+  the same wherever it falls between the range's margins; content below a few
+  bins, which each frame's mean removal and the skipped DC bin treat by frame, can
+  still vary by about a percent with its alignment.
 - **Energy.** The Hann-windowed one-sided power spectrum, from the magnitudes of
   `analyze::spectrum` (half an interior bin's magnitude squared, all of it at
   Nyquist, so that a sine and a Nyquist component of the same RMS weigh the
