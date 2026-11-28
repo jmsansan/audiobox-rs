@@ -118,8 +118,162 @@ the result is `LimitExceeded`. Both count every frame, silent or not, before any
 is measured; ten minutes of 48 kHz stereo with 2048-sample frames every 1024 is
 about 1.3 billion. Silent frames are not transformed. The work is a scan of the
 samples plus O(frames × channels × fft_size × log fft_size); storage is
-O(fft_size) plus one entry per frame. An empty input has no frames. The FFT uses the platform's math, so these numbers are for reports
-and are not bit-identical across hosts.
+O(fft_size) plus one entry per frame. An empty input has no frames. The FFT uses
+the platform's math, so these numbers are for reports and are not bit-identical
+across hosts.
+
+## Pitch track
+
+`Audio::pitch_track` follows the pitch of one voice by the YIN method (de
+Cheveigné and Kawahara, 2002): per analysis frame, whether the sound is voiced,
+its pitch, how periodic it is, and the best other period.
+
+```rust
+use audiobox::analyze::{PitchOptions, PitchState};
+use audiobox::{Audio, Result};
+
+fn melody(voice: &Audio) -> Result<()> {
+    // 60 Hz to 1.5 kHz, a frame every 10 ms at 48 kHz.
+    let track = voice.pitch_track(&PitchOptions::new(60.0, 1500.0, 480))?;
+    for frame in &track.frames {
+        if frame.state == PitchState::Voiced {
+            println!("{} {:?}", frame.start_frame, frame.frequency_hz);
+        }
+    }
+    Ok(())
+}
+```
+
+- **Frames.** Frame `i` starts at input frame `i × hop` and reads
+  `PitchTrack::span_frames`: an integration window of one period of `min_hz`
+  (at least 96 samples, so that a narrow range of high pitches still integrates
+  over several periods), compared with the samples up to one period later and a
+  few more, for the margin below `min_hz`. Every frame also reads 17 samples of
+  the input on each side of the span, for interpolating between samples. A pitch
+  describes that span and those samples, so it
+  lags the sound by up to that much: at 60 Hz, 33 ms and 17 samples. Only whole frames are
+  measured; an input shorter than one frame is a single frame, zero-padded.
+- **States.** `Silent` when the RMS of the frame's integration window, with its
+  mean removed, is at or below `silence_db` (−60 dBFS by default): a DC offset or
+  a level stuck at one value is silence. Otherwise YIN takes the first dip of its
+  normalized difference, from the shortest period, whose refined bottom is below
+  `threshold` (0.15 by default). `Voiced` when that dip's period lies in the
+  range: the pitch from `min_hz` to `max_hz`, the ends included. A tone outside
+  the range has no pitch, rather than the nearest one in it or one of its
+  period's multiples. So a weak fundamental in the range under a strong harmonic
+  above `max_hz` has no pitch either: a ceiling above the harmonic gives the
+  harmonic as the pitch, and, when the harmonic is the second, the fundamental as
+  the alternative (only the octave is offered, so a dominant third harmonic gives
+  its own pitch and no alternative). `Unvoiced`
+  otherwise, as noise, a chord or a transition. Only voiced frames have a pitch;
+  nothing is guessed for the others.
+- **Pitch.** That dip's period, refined between samples. Dips are measured from
+  a table of the window's correlations at whole lags, with the window's mean
+  removed (missing context takes that mean): the difference over the whole
+  window at a fractional lag is its correlation term interpolated from the
+  table by a 32-tap Kaiser-windowed sinc whose taps sum to 1 (the correlation
+  of the window with a band-limited sound is band-limited too, and a DC offset
+  cancels), and its energy term linearly, which errs by about 1 / window of it.
+  - A period of 48 samples or more (up to 1 kHz at 48 kHz) keeps the bottom of
+    the parabola through the raw difference function, which is symmetric about
+    a whole period, unlike the normalized one; when the parabola puts it within
+    0.3 of the threshold, its depth is read from the table, over the whole
+    window, so a sound that changes within the window, as an attack, is judged
+    by all of it.
+  - A parabola misjudges shorter periods, in place and in depth, so every dip of
+    one (from 2 samples), in the range or above it, is moved to the table's
+    minimum and measured there.
+  - The first four dips, of any period, in order from the shortest lag, whose table or parabola depth is below
+    the threshold plus 0.03 (well below it included) are then measured exactly,
+    and the threshold decides on that: the difference over the whole window,
+    its first samples included, with the signal itself interpolated by the same
+    sinc. A short one, and a longer one whose parabola puts it within 20 cents of
+    an end of the range, where a cent can decide, is first located exactly too,
+    the same way over four periods (64 to 384 samples) mid-window; another longer
+    one is measured at its parabola's place, which a short search would bias for
+    a dip that is no exact period, and located exactly only when it fails there:
+    the parabola can misplace a dip so narrow (a pulse's) that a fraction of a
+    sample decides a strict threshold. A dip that then fails the threshold keeps
+    its own place.
+    The table's depth is too coarse for a strict threshold.
+  The first dip whose depth passes the threshold is YIN's choice, unless the
+  deepest dip by the table within a semitone of half its period, located and
+  measured exactly, passes too: the table can put a narrow pulse's period so far
+  above its exact depth that it is never measured, and its repeat would be
+  chosen an octave low. When no dip passes, the deepest by the table not yet
+  measured is located and measured exactly, and is the choice if it passes (then
+  half its period is tried as above), as for such a pulse whose repeat lies past
+  the search. If the chosen period is outside the range, the frame has
+  no pitch. In the tests, across 16, 44.1
+  and 48 kHz, sines err by 0.12 cents at most, tones of up to 10 harmonics by 2
+  cents (in the parabola's range, just above 48 samples), as long as the sound
+  has no strong content within a tenth of the Nyquist frequency, which no
+  interpolation follows. An estimate within 5 cents past an end of the range is
+  set to that end. `max_hz` is at most `sample_rate / MIN_PITCH_LAG`, so that a
+  pitch spans at least 8 samples (6 kHz at 48 kHz). **Confidence** is 1 minus
+  the normalized difference at the refined bottom, from 0 to 1: of the pitch's
+  dip for a voiced frame, of the deepest dip in the range for an unvoiced one (0
+  without one, as for a tone below the range); 0 when silent.
+- **Alternative.** For a voiced frame, the other octave: of the dips in the
+  range within a semitone of half or twice the pitch's period, refined as any
+  dip is, the deepest of each octave by the table is located exactly and
+  measured over the whole window with the signal interpolated, there and at its
+  own place, the deeper kept (one search and two exact depths an octave, however
+  many dips the bands hold), so that it compares with the pitch like with like;
+  one that its exact place puts outside the range is not offered. A
+  sound with a weak fundamental and a strong octave has both
+  octaves as dips, so the pitch and the alternative are the two candidates:
+  when their confidences are close, the octave is ambiguous, and the caller
+  decides. Half the period counts only with a confidence above 0.5. Any
+  periodic sound also repeats at twice its period, so that dip counts only when
+  deeper than the pitch by more than 0.01 and the parabola's uncertainty (how
+  much it lowered either depth): a clean tone has no rival.
+  Other periods, such as a fifth's, are not offered.
+- **Smoothing.** `median` (odd, 1 to 15) replaces each voiced pitch with the median
+  of the voiced pitches within that many frames; silent and unvoiced frames stay
+  without one. It reads up to `median / 2` frames ahead, which adds that many hops
+  to the latency, and it changes the pitch only: confidence and alternative still
+  describe the frame's own estimate. `PitchTrack::median_frequency` gives the
+  median pitch of a range.
+- **Channels.** One channel by index, or the mean of all channels.
+
+It is a tool for one voice, not melody extraction: in a chord it finds the period
+the notes repeat at together (a fifth on 220 and 330 Hz gives 110 Hz), or a lower
+confidence when they share none, and it does not choose a part in a mix. Note
+names and quantization are the caller's. Like any YIN tracker, it can take a
+period that only a sound's strongest harmonics repeat at when they outweigh a
+weak fundamental: with the 6th and 7th harmonics 4 to 5 dB above it, a low note
+can be read at 7/6 of its pitch, and a note whose 6th harmonic dominates at 6/5.
+
+Bad options, a missing channel, a range outside the input and non-finite samples
+return `InvalidArgument`. `min_hz` is at least `sample_rate / MAX_PITCH_LAG`
+(8192) and `max_hz` at most `sample_rate / MIN_PITCH_LAG` (8). The default
+`Limits` apply, plus at most `MAX_PITCH_FRAMES` (1,048,576) frames and
+`MAX_PITCH_WORK` (2³⁷, a work estimate of frames × (L × (log₂ L + 1) + 16 × 2¹⁶ +
+800 × W), with L the power of two at or above the frame's span, W the
+integration window, 16 × 2¹⁶ for eight exact searches and 800 × W
+for the correlation table, the exact depths and the refinement of dips),
+counted before any frame is measured, or `LimitExceeded`. Ten minutes at
+48 kHz from 60 Hz to 2 kHz every 10 ms is about 103 billion (about 16 s here for
+a high-pitched sound). Several channels
+are mixed once, into one buffer of the input's length. Silent frames skip the
+transforms. The FFT uses the platform's math, so pitches are for reports and
+not bit-identical across hosts; the tests' tolerances (5 cents for steady
+tones, 15 for glides and vibrato) leave room for that.
+
+Evaluation on the generated fixtures of `tests/pitch.rs`, free to share, at 48 kHz:
+
+| Fixture | Settings | Voiced frames | Largest error |
+| --- | --- | --- | --- |
+| Sines at 82.41, 440 and 1760 Hz, 1 s | 60 Hz–2 kHz, 10 ms hop | all | 0.001, 0.009 and 0.002 cents |
+| Sawtooth, 30 harmonics, at 147 and 523.25 Hz | 60 Hz–2 kHz, 10 ms hop | all | 0.04 and 0.7 cents |
+| Glide 220 → 440 Hz in 1 s | 100 Hz–1 kHz, 10 ms hop | all | 5.0 cents from the pitch at the frame's middle |
+| 440 Hz with ±50 cents of vibrato at 5 Hz | 100 Hz–1 kHz, 5 ms hop | all | 6.4 cents, likewise |
+| White noise, 0.5 s | 60 Hz–2 kHz, 10 ms hop | none of 47 | — |
+| Tritone (220 Hz and 220 × √2 Hz) | 60 Hz–2 kHz, 10 ms hop | mean confidence 0.90, against 1.00 for a sine | — |
+
+A wider range lengthens the frame, which averages more of a moving pitch: the
+same vibrato from 60 Hz to 2 kHz, every 10 ms, errs by up to 11.5 cents.
 
 [`Envelope`]: https://docs.rs/audiobox/latest/audiobox/analyze/struct.Envelope.html
 [`analyze::spectrum`]: https://docs.rs/audiobox/latest/audiobox/analyze/fn.spectrum.html

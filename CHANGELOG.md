@@ -15,6 +15,12 @@
   previous frame, 0 to 1) per analysis frame, over one channel or all, with silent
   frames left unmeasured and `SpectralTimeline::summary` over a range of input
   frames (#124).
+- `Audio::pitch_track` estimates the pitch of one voice by the YIN method: per
+  analysis frame a voiced, unvoiced or silent state, the pitch of voiced frames
+  only, a confidence, and the best other period (the other octave, when it is
+  ambiguous), with optional median smoothing and `PitchTrack::median_frequency`
+  (#77). The guide records its accuracy on generated fixtures and its limits on
+  chords and mixes.
 
 ## 0.6.2 — 2026-11-27
 
