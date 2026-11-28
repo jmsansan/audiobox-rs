@@ -338,9 +338,13 @@ fn inharmonicity(note: &Audio) -> Result<()> {
   measured (one, or all). Frame `i` starts at `range.start + i × hop`, and when
   the hops leave a tail, one more frame ends at the range's end, so that every
   sample of the range is measured; it weighs as much as the fraction of a hop it
-  adds, so that, for given frames, a range one sample longer changes the shares
-  by next to nothing, unless that sample is far louder than the rest (a splice
-  after a near-silent range). The window tapers toward a frame's ends, so sound within
+  adds, so that the shares do not jump when a range grows by a sample. They can
+  still move: the extra sample, if far louder than the rest (a splice after a
+  near-silent range), and the end frame, which moves with the range's end and
+  so weighs differently whatever sound it holds, as a short transient near the
+  end of a quiet tone (one sample more, even a silent one, took a 1 kHz tone
+  with such a transient from 43.5 % to 45.8 % inharmonic in one calculation).
+  Steady sound changes by next to nothing. The window tapers toward a frame's ends, so sound within
   one FFT frame of a range's start or end weighs less than sound in its middle
   (still only 30 % of the full weight 20,000 samples in, for a 65,536-point
   frame), and a partial heard only there is undercounted: leave the range a
@@ -393,8 +397,8 @@ harmonic; a partial at 2.76 × the fundamental raises the inharmonic share by it
 power's share within 0.5 %, at 200, 110 and 55 Hz; a naively generated sawtooth
 at 1234.5 Hz shows its aliases as inharmonic energy, ten times and more that of
 the same sawtooth limited to the harmonics below half the sample rate; and one
-at 23 kHz, whose aliases fold below it (a few, such as the 47th harmonic, onto
-the fundamental's own band), is inharmonic by about 1 − 6/π² (39 %), within 2 %.
+at 23 kHz, whose aliases fold back below half the sample rate (the 24th onto
+it, a few, such as the 47th, onto the fundamental's own band), is inharmonic by about 1 − 6/π² (39 %), within 2 %.
 
 Bad options, a fundamental out of range, a range outside the input, a missing
 channel and non-finite samples return `InvalidArgument`. The default `Limits`
