@@ -444,7 +444,7 @@ fn frames_cover_the_range_and_the_shares_grow_smoothly() {
 
 #[test]
 fn a_burst_weighs_the_same_wherever_it_falls() {
-    // A 25 ms partial over a steady 220 Hz tone, moved by a half frame: the
+    // A 25 ms partial over a steady 220 Hz tone, moved by a quarter frame: the
     // quarter-frame hop's squared windows sum to a constant.
     let share = |at: usize| {
         let mut samples = partials(&[(220.0, 0.3)], 96_000);
@@ -456,6 +456,6 @@ fn a_burst_weighs_the_same_wherever_it_falls() {
         }
         energy(samples, 220.0).inharmonic_share.unwrap()
     };
-    let (a, b) = (share(40_000), share(40_000 + 4096));
+    let (a, b) = (share(40_000), share(40_000 + 2048));
     assert!((a - b).abs() < 0.1 * a, "{a} vs {b}");
 }

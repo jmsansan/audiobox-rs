@@ -28,7 +28,8 @@ pub struct HarmonicOptions {
     pub fft_size: usize,
     /// Frames between the starts of analysis frames: a quarter frame or a whole
     /// fraction of one (`fft_size / hop` a multiple of 4), at which the squared
-    /// Hann windows sum to a constant, so that a sound weighs the same wherever it
+    /// Hann windows sum to a nearly constant weight (within 0.3 % at 32 points, far
+    /// less for longer frames), so that a sound weighs the same wherever it
     /// falls between the range's margins.
     pub hop: usize,
     /// How far from each harmonic its band reaches, in cents below and above it
@@ -106,8 +107,10 @@ pub struct HarmonicEnergy {
     /// The bins the fundamental spans, `fundamental_hz / (sample_rate / fft_size)`:
     /// how finely the window separates frequencies. At the default 25 cents,
     /// [`HARMONIC_BINS`] (24) or more keep a partial a sixth of the fundamental from
-    /// a low harmonic out of its
-    /// band; fewer resolve less (a short range gets fewer), and wider bands hold
+    /// a low harmonic mostly out of its
+    /// band (its window lobe can still put up to a sixth of its power there, as
+    /// near the tenth harmonic); fewer resolve less (a short range gets fewer), and
+    /// wider bands hold
     /// more of it, as far as its strongest bins fall inside them. The bands
     /// widen with the harmonic: at 25 cents, from the 12th harmonic on, a band is
     /// wider than a sixth of the fundamental.

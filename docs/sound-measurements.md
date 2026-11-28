@@ -314,7 +314,8 @@ fn inharmonicity(note: &Audio) -> Result<()> {
   than the sound (a clean quarter second of 41.2 Hz is padded at 48 kHz). The
   fields can be set by hand; the fundamental must then be at least 8 bins, and
   the hop a quarter frame or a whole fraction of one (`fft_size / hop` a multiple
-  of 4), at which the squared windows sum to a constant, so that a sound weighs
+  of 4), at which the squared windows sum to a nearly constant weight (within
+  0.3 % at 32 points, far less for longer frames), so that a sound weighs
   the same wherever it falls between the range's margins.
 - **Energy.** The Hann-windowed one-sided power spectrum, from the magnitudes of
   `analyze::spectrum` (half an interior bin's magnitude squared, all of it at
