@@ -284,13 +284,23 @@ fn inharmonicity(note: &Audio) -> Result<()> {
     let all = 0..note.frames();
     // A fundamental from the pitch track, from a bass guitar's low E (41 Hz)
     // to 2 kHz, within what the sample rate allows, or one the caller knows.
+    // Both measure the first channel: the pitch track mixes the channels it
+    // reads, and a delay between them can cancel the fundamental in the mix
+    // (half a period of 220 Hz is 2.3 ms), while the energy adds their spectra.
     let rate = f64::from(note.sample_rate());
     let low = 40f64.max(rate / MAX_PITCH_LAG as f64);
     let high = 2000f64.min(rate / MIN_PITCH_LAG as f64);
-    let track = note.pitch_track(&PitchOptions::new(low, high, 480))?;
+    let pitch = PitchOptions {
+        channel: Some(0),
+        ..PitchOptions::new(low, high, 480)
+    };
+    let track = note.pitch_track(&pitch)?;
     if let Some(f0) = track.median_frequency(all.clone())? {
         // Frames sized for the fundamental, the sample rate and the range.
-        let options = HarmonicOptions::new(f0, note.sample_rate(), all);
+        let options = HarmonicOptions {
+            channel: Some(0),
+            ..HarmonicOptions::new(f0, note.sample_rate(), all)
+        };
         let energy = note.harmonic_energy(&options)?;
         if !energy.padded {
             println!("inharmonic share {:?}", energy.inharmonic_share);
