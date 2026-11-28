@@ -26,8 +26,10 @@ pub struct HarmonicOptions {
     /// Samples per analysis frame: a power of two from 16 to 1048576,
     /// Hann-windowed as [`super::spectrum`] does.
     pub fft_size: usize,
-    /// Frames between the starts of analysis frames, from 1 to `fft_size / 2`, so
-    /// that the Hann windows overlap by half or more and leave no blind spot.
+    /// Frames between the starts of analysis frames: a quarter frame or a whole
+    /// fraction of one (`fft_size / hop` a multiple of 4), at which the squared
+    /// Hann windows sum to a constant, so that a sound weighs the same wherever it
+    /// falls between the range's margins.
     pub hop: usize,
     /// How far from each harmonic its band reaches, in cents below and above it
     /// (finite, at least 0). Each side of the band is at least 2 bins wide, the
@@ -45,7 +47,7 @@ impl HarmonicOptions {
     /// with bands of 25 cents and all channels. Frames are long enough for the
     /// fundamental to span [`HARMONIC_BINS`] bins: the shortest power of two of at
     /// least 4096 samples that does (8192 at 220 Hz and 48 kHz, 32768 at 55 Hz),
-    /// at most 1048576, with a hop of half a frame. A range shorter than that
+    /// at most 1048576, with a hop of a quarter frame. A range shorter than that
     /// gets the longest power of two within it, down to the length at which the
     /// fundamental spans [`MIN_HARMONIC_BINS`] bins; shorter still, it is one
     /// padded frame (see [`HarmonicEnergy::padded`]).
@@ -74,7 +76,7 @@ impl HarmonicOptions {
         Self {
             fundamental_hz,
             fft_size,
-            hop: fft_size / 2,
+            hop: fft_size / 4,
             tolerance_cents: 25.0,
             range,
             channel: None,
@@ -106,7 +108,7 @@ pub struct HarmonicEnergy {
     /// [`HARMONIC_BINS`] (24) or more keep a partial a sixth of the fundamental from
     /// a low harmonic out of its
     /// band; fewer resolve less (a short range gets fewer), and wider bands hold
-    /// more of it (at 100 cents, most of it near the third harmonic). The bands
+    /// more of it, as far as its strongest bins fall inside them. The bands
     /// widen with the harmonic: at 25 cents, from the 12th harmonic on, a band is
     /// wider than a sixth of the fundamental.
     pub fundamental_bins: f64,
@@ -183,9 +185,9 @@ impl Audio {
                 "Fundamental must be at least 8 FFT bins and below half the sample rate",
             ));
         }
-        if o.hop == 0 || o.hop > o.fft_size / 2 {
+        if o.hop == 0 || o.fft_size % o.hop != 0 || (o.fft_size / o.hop) % 4 != 0 {
             return Err(Error::invalid(
-                "Harmonic hop must be from 1 to half the FFT size, so that windows overlap",
+                "Harmonic hop must divide a quarter of the FFT size, so that windows overlap evenly",
             ));
         }
         if !(o.tolerance_cents.is_finite() && o.tolerance_cents >= 0.0) {

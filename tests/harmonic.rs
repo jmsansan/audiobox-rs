@@ -122,10 +122,10 @@ fn settings_are_echoed_and_bands_are_bounded() {
     let e = energy(partials(&[(300.0, 0.5)], 20_000), 300.0);
     assert_eq!(e.options, HarmonicOptions::new(300.0, RATE, 0..20_000));
     assert_eq!(e.sample_rate, RATE);
-    // 300 Hz spans 24 bins with 4096-sample frames, every 2048.
-    assert_eq!((e.options.fft_size, e.options.hop), (4096, 2048));
-    // Eight frames every hop end at 18432; a ninth ends at the range's end.
-    assert_eq!(e.frames, (20_000 - 4096) / 2048 + 2);
+    // 300 Hz spans 24 bins with 4096-sample frames, every 1024.
+    assert_eq!((e.options.fft_size, e.options.hop), (4096, 1024));
+    // Sixteen frames every hop end at 19456; a seventeenth ends at the end.
+    assert_eq!(e.frames, (20_000 - 4096) / 1024 + 2);
     assert_eq!(e.fundamental_bins, 300.0 / (RATE as f64 / 4096.0));
     assert_eq!(e.harmonics, 80);
     assert_eq!(e.bands_hz.len(), 80);
@@ -359,7 +359,7 @@ fn frames_fit_the_fundamental() {
     assert_eq!(size(41.2, 96_000), 65_536);
     assert_eq!(size(1234.5, 48_000), 4096);
     assert_eq!(size(0.5, 48_000), 1 << 20);
-    assert_eq!(HarmonicOptions::new(55.0, 48_000, 0..1 << 21).hop, 16_384);
+    assert_eq!(HarmonicOptions::new(55.0, 48_000, 0..1 << 21).hop, 8192);
     // The 2.76 × partial of a 55 Hz bass note, 2.25 bins from the third harmonic
     // with 8192-sample frames, is clear of it with the frames chosen.
     let f0 = 55.0;
@@ -383,9 +383,9 @@ fn short_ranges_get_short_frames_or_say_they_are_padded() {
     assert_eq!(low.fft_size, 16_384);
     let e = energy(partials(&[(41.2, 0.5)], 12_000), 41.2);
     assert!(e.padded, "{e:?}");
-    // A second of it: a whole frame of 32768 and one ending at the end, clean.
+    // A second of it: two frames of 32768 and one ending at the end, clean.
     let e = energy(partials(&[(41.2, 0.5)], 48_000), 41.2);
-    assert!(!e.padded && e.frames == 2, "{e:?}");
+    assert!(!e.padded && e.frames == 3, "{e:?}");
     assert!(e.inharmonic_share.unwrap() < 0.001, "{e:?}");
     // A quarter second of 220 Hz: frames of 8192 within it, not padded.
     let options = HarmonicOptions::new(220.0, RATE, 0..12_000);
@@ -440,4 +440,22 @@ fn frames_cover_the_range_and_the_shares_grow_smoothly() {
     };
     let (a, b) = (share(12_288), share(12_289));
     assert!((a - b).abs() < 0.005, "{a} vs {b}");
+}
+
+#[test]
+fn a_burst_weighs_the_same_wherever_it_falls() {
+    // A 25 ms partial over a steady 220 Hz tone, moved by a half frame: the
+    // quarter-frame hop's squared windows sum to a constant.
+    let share = |at: usize| {
+        let mut samples = partials(&[(220.0, 0.3)], 96_000);
+        for (s, p) in samples[at..at + 1200]
+            .iter_mut()
+            .zip(partials(&[(2.76 * 220.0, 0.3)], 1200))
+        {
+            *s += p;
+        }
+        energy(samples, 220.0).inharmonic_share.unwrap()
+    };
+    let (a, b) = (share(40_000), share(40_000 + 4096));
+    assert!((a - b).abs() < 0.1 * a, "{a} vs {b}");
 }

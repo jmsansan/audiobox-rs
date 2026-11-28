@@ -302,7 +302,7 @@ fn inharmonicity(note: &Audio) -> Result<()> {
 
 - **Frames.** `HarmonicOptions::new` takes the shortest power of two of at least
   4096 samples in which the fundamental spans `HARMONIC_BINS` (24) bins, at most
-  1,048,576, every half frame: 8192 samples at 220 Hz and 48 kHz, 32768 at 55
+  1,048,576, every quarter frame: 8192 samples at 220 Hz and 48 kHz, 32768 at 55
   Hz, 65536 for a 41 Hz low E at 96 kHz. The length changes in steps of a
   power of two, so ranges either side of a step, or fundamentals either side of
   one, can give shares a few points apart on sounds with partials near a band's
@@ -313,8 +313,9 @@ fn inharmonicity(note: &Audio) -> Result<()> {
   then spread its energy over other bins, so the shares say more about the cut
   than the sound (a clean quarter second of 41.2 Hz is padded at 48 kHz). The
   fields can be set by hand; the fundamental must then be at least 8 bins, and
-  the hop at most half a frame, so that the windows overlap by half or more and
-  leave no blind spot between them.
+  the hop a quarter frame or a whole fraction of one (`fft_size / hop` a multiple
+  of 4), at which the squared windows sum to a constant, so that a sound weighs
+  the same wherever it falls between the range's margins.
 - **Energy.** The Hann-windowed one-sided power spectrum, from the magnitudes of
   `analyze::spectrum` (half an interior bin's magnitude squared, all of it at
   Nyquist, so that a sine and a Nyquist component of the same RMS weigh the
