@@ -408,3 +408,36 @@ fn the_tail_of_a_range_is_measured() {
     let e = energy(partials(&[(55.0, 0.5)], 12_000), 55.0);
     assert!(!e.padded && e.fundamental_bins < 24.0, "{e:?}");
 }
+
+#[test]
+fn frames_cover_the_range_and_the_shares_grow_smoothly() {
+    // A hop longer than a frame would leave gaps.
+    let audio = mono(partials(&[(220.0, 0.5)], 20_000));
+    let gappy = HarmonicOptions {
+        hop: 8193,
+        ..HarmonicOptions::new(220.0, RATE, 0..20_000)
+    };
+    assert_eq!(
+        audio.harmonic_energy(&gappy).unwrap_err().code,
+        ErrorCode::InvalidArgument
+    );
+    // A sustained 220 Hz tone with a late 2.76 × partial: one more sample in the
+    // range adds a frame that weighs next to nothing.
+    let mut samples = partials(&[(220.0, 0.3)], 12_289);
+    for (s, p) in samples[8192..]
+        .iter_mut()
+        .zip(partials(&[(2.76 * 220.0, 0.3)], 4097))
+    {
+        *s += p;
+    }
+    let audio = mono(samples);
+    let share = |end: usize| {
+        audio
+            .harmonic_energy(&HarmonicOptions::new(220.0, RATE, 0..end))
+            .unwrap()
+            .inharmonic_share
+            .unwrap()
+    };
+    let (a, b) = (share(12_288), share(12_289));
+    assert!((a - b).abs() < 0.005, "{a} vs {b}");
+}

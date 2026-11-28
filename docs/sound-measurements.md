@@ -309,14 +309,17 @@ fn inharmonicity(note: &Audio) -> Result<()> {
   zero-padded, and the result says so (`padded`): the sound's cut-off edges
   then spread its energy over other bins, so the shares say more about the cut
   than the sound (a clean quarter second of 41.2 Hz is padded at 48 kHz). The
-  fields can be set by hand; the fundamental must then be at least 8 bins.
+  fields can be set by hand; the fundamental must then be at least 8 bins, and
+  the hop at most a frame, so that frames leave no gap.
 - **Energy.** The Hann-windowed one-sided power spectrum, from the magnitudes of
   `analyze::spectrum` (half an interior bin's magnitude squared, all of it at
   Nyquist, so that a sine and a Nyquist component of the same RMS weigh the
   same), summed over whole analysis frames of the range and over the channels
   measured (one, or all). Frame `i` starts at `range.start + i × hop`, and when
   the hops leave a tail, one more frame ends at the range's end, so that every
-  sample of the range is measured. Each
+  sample of the range is measured; it weighs as much as the fraction of a hop it
+  adds, so that a range one sample longer changes the shares by next to nothing.
+  Each
   frame's mean is removed before the window, so a DC offset adds nothing, and
   every bin but DC counts: rumble and aliases away from the harmonics are
   inharmonic, while an alias that folds into a harmonic's band counts as
@@ -335,7 +338,10 @@ fn inharmonicity(note: &Audio) -> Result<()> {
   shorter range, or frames set shorter by hand, give fewer bins and resolve less
   (a quarter second of 55 Hz at 48 kHz gets 8192-sample frames, 9.4 bins: such a
   partial is then partly counted as the third harmonic). The result reports the
-  bins the fundamental spans (`fundamental_bins`).
+  bins the fundamental spans (`fundamental_bins`). The bands widen with the
+  harmonic, too: at 25 cents, from the 12th harmonic on, a band is wider than a
+  sixth of the fundamental, so a partial that close to a high harmonic counts as
+  it whatever the frames; a smaller `tolerance_cents` narrows the bands.
 - **Shares.** `harmonic_shares` per harmonic, `harmonic_share` for all bands and
   `inharmonic_share` for the rest, each from 0 to 1. When there is no energy to
   share, as for silence, a DC offset alone or an empty range, the two totals are

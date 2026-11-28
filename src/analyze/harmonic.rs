@@ -26,7 +26,8 @@ pub struct HarmonicOptions {
     /// Samples per analysis frame: a power of two from 16 to 1048576,
     /// Hann-windowed as [`super::spectrum`] does.
     pub fft_size: usize,
-    /// Frames between the starts of analysis frames, at least 1.
+    /// Frames between the starts of analysis frames, from 1 to `fft_size`, so that
+    /// the frames leave no gap.
     pub hop: usize,
     /// How far from each harmonic its band reaches, in cents below and above it
     /// (finite, at least 0). Each side of the band is at least 2 bins wide, the
@@ -101,8 +102,11 @@ pub struct HarmonicEnergy {
     /// other bins, and the shares say more about the cut than the sound.
     pub padded: bool,
     /// The bins the fundamental spans, `fundamental_hz / (sample_rate / fft_size)`:
-    /// [`HARMONIC_BINS`] (24) or more resolve a partial a sixth of the fundamental
-    /// from a harmonic, fewer resolve less (a short range gets fewer).
+    /// how finely the window separates frequencies. [`HARMONIC_BINS`] (24) or more
+    /// keep a partial a sixth of the fundamental from a low harmonic out of its
+    /// band; fewer resolve less (a short range gets fewer). The bands themselves
+    /// widen with the harmonic: at 25 cents, from the 12th harmonic on, a band is
+    /// wider than a sixth of the fundamental.
     pub fundamental_bins: f64,
     /// The harmonics counted: every multiple of the fundamental up to half the
     /// sample rate.
@@ -131,7 +135,9 @@ impl Audio {
     /// not which, nor whether it sounds wrong.
     ///
     /// Frame `i` starts at `range.start + i * hop` and reads `fft_size` samples
-    /// within the range. Only whole frames are measured; a range shorter than one
+    /// within the range; when the hops leave a tail, one more frame ends at the
+    /// range's end, weighed by the fraction of a hop it adds. Only whole frames are
+    /// measured; a range shorter than one
     /// frame is a single frame, zero-padded. Bad options, a range outside the
     /// input, a missing channel and non-finite samples return `InvalidArgument`.
     /// Default [`Limits`] apply, plus at most [`MAX_HARMONIC_FRAMES`] frames and
@@ -175,8 +181,10 @@ impl Audio {
                 "Fundamental must be at least 8 FFT bins and below half the sample rate",
             ));
         }
-        if o.hop == 0 {
-            return Err(Error::invalid("Harmonic hop must be at least one frame"));
+        if o.hop == 0 || o.hop > o.fft_size {
+            return Err(Error::invalid(
+                "Harmonic hop must be from 1 to the FFT size, so that frames cover the range",
+            ));
         }
         if !(o.tolerance_cents.is_finite() && o.tolerance_cents >= 0.0) {
             return Err(Error::invalid(
@@ -203,14 +211,20 @@ impl Audio {
         }
         let length = o.range.len();
         // Whole frames every hop, and one more ending at the range's end when the
-        // hops leave a tail, so that every sample is measured.
-        let (count, tail) = match length {
-            0 => (0, false),
-            n if n < o.fft_size => (1, false),
+        // hops leave a tail, so that every sample is measured. The last frame
+        // weighs as much as the fraction of a hop it adds, so that the shares do
+        // not jump as a range grows by a sample.
+        let (count, tail, tail_weight) = match length {
+            0 => (0, false, 0.0),
+            n if n < o.fft_size => (1, false, 0.0),
             n => {
                 let whole = (n - o.fft_size) / o.hop + 1;
-                let tail = (whole - 1) * o.hop + o.fft_size < n;
-                (whole + usize::from(tail), tail)
+                let left = n - ((whole - 1) * o.hop + o.fft_size);
+                (
+                    whole + usize::from(left > 0),
+                    left > 0,
+                    left as f64 / o.hop as f64,
+                )
             }
         };
         if count > MAX_HARMONIC_FRAMES {
@@ -270,7 +284,9 @@ impl Audio {
         let mut power = vec![0.0; bins];
         let mut frame = vec![0.0f32; o.fft_size];
         for i in 0..count {
-            let start = if tail && i == count - 1 {
+            let last = tail && i == count - 1;
+            let share = if last { tail_weight } else { 1.0 };
+            let start = if last {
                 o.range.end - o.fft_size
             } else {
                 o.range.start + i * o.hop
@@ -289,7 +305,7 @@ impl Audio {
                 frame.extend(c.iter().map(|&s| (f64::from(s) - mean) as f32));
                 let m = super::transform(&frame, &window, sum, &mut real, &mut imag);
                 for (k, (p, v)) in power.iter_mut().zip(m).enumerate() {
-                    *p += weight(k) * v * v;
+                    *p += share * weight(k) * v * v;
                 }
             }
         }
