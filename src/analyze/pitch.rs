@@ -19,16 +19,15 @@ const MIN_PITCH_WINDOW: usize = 96;
 /// difference between samples; longer ones by a parabola.
 const EXACT_LAG: f64 = 48.0;
 /// The work, per frame, of the exact searches in the units of
-/// [`MAX_PITCH_WORK`]: up to [`MAX_EXACT`] in YIN's order and three for the
-/// octaves (the half period, then the alternatives), each 10 evaluations of at
-/// most 384 terms of 32 taps, within 14 × 2^16, plus `WINDOW_WORK` per frame of
-/// the window.
-const EXACT_WORK: u64 = 14 << 16;
+/// [`MAX_PITCH_WORK`]: up to [`MAX_EXACT`] in YIN's order and four more (the
+/// deepest dip when none passed, the half period, then the two alternatives),
+/// each 10 evaluations of at most 384 terms of 32 taps, within 16 × 2^16.
+const EXACT_WORK: u64 = 16 << 16;
 /// The work per frame of the window of the rest: the correlation table's lags
-/// beyond the transforms' (2 × `CONTEXT`), up to fourteen exact depths over the
-/// window (14 × 32) and the refinement of the dips from the table, at most one every two
-/// lags, a few hundred operations each; rounded up.
-const WINDOW_WORK: u64 = 750;
+/// beyond the transforms' (2 × `CONTEXT`), up to sixteen exact depths over the
+/// window (16 × 32) and the refinement of the dips from the table, at most one
+/// every two lags, a few hundred operations each; rounded up.
+const WINDOW_WORK: u64 = 800;
 /// The most exact searches of a short period in one frame, within `EXACT_WORK`.
 const MAX_EXACT: usize = 4;
 /// How far above the threshold a short dip's table depth may be and still have
@@ -45,9 +44,9 @@ const CONTEXT: usize = HALF + 1;
 /// The widest median smoothing, in frames.
 pub const MAX_PITCH_MEDIAN: usize = 15;
 /// The most work one [`Audio::pitch_track`] is allowed, as an estimate: analysis
-/// frames × (L × (log₂ L + 1) + 14 × 2^16 + 750 × W), with L the transform size, the
+/// frames × (L × (log₂ L + 1) + 16 × 2^16 + 800 × W), with L the transform size, the
 /// power of two at or above [`PitchTrack::span_frames`], W the integration
-/// window, 14 × 2^16 for seven exact searches and 750 × W for the
+/// window, 16 × 2^16 for eight exact searches and 800 × W for the
 /// correlation table, the exact depths and the refinement of dips. Every frame
 /// counts, silent or not.
 pub const MAX_PITCH_WORK: u64 = 1 << 37;
@@ -559,7 +558,8 @@ impl Audio {
     /// holds and with their mean removed, is at or below `silence_db`: a DC offset
     /// or a level stuck at one value is silence. Otherwise YIN takes the first dip
     /// of its normalized difference, from the shortest period, whose bottom,
-    /// refined between samples, is below `threshold`, or half its period when
+    /// refined between samples, is below `threshold` (the deepest by the table, measured exactly, when
+    /// none is), or half its period when
     /// that, measured exactly, is below it too. The frame is voiced when
     /// that dip's period lies in the range (within 5 cents of an end, and then set
     /// to it): a tone outside the range has no pitch rather than one of its
@@ -813,8 +813,10 @@ impl Audio {
                 // some for a deeper one.
                 let mut searches = 0;
                 let mut first = None;
+                let mut measured = [usize::MAX; MAX_EXACT];
                 for b in all.iter_mut() {
                     if b.depth < o.threshold + EXACT_MARGIN && searches < MAX_EXACT {
+                        measured[searches] = b.at;
                         searches += 1;
                         measure(b);
                     }
@@ -829,14 +831,9 @@ impl Audio {
                     let r = b.lag / (lag * k);
                     r.max(1.0 / r) < semitone
                 };
-                // The deepest dip by the table within a semitone of `k` times the
-                // period `lag`, in the range or not, located exactly and measured
-                // there and at its own place, the deeper kept: one search and two
-                // exact depths, however many dips the band holds.
-                let octave_dip = |lag: f64, k: f64, range: bool| {
-                    let mut b = dips(0)
-                        .filter(|b| (!range || in_range(b.lag)) && octave_of(b, lag, k))
-                        .min_by(|a, b| a.depth.total_cmp(&b.depth))?;
+                // A dip located exactly and measured there and at its own place,
+                // the deeper kept: one search and two exact depths.
+                let place = |mut b: Bottom| {
                     let at = yin.exact(x, b.lag);
                     let here = yin.exact_depth(&context, at);
                     let own = yin.exact_depth(&context, b.lag);
@@ -852,12 +849,30 @@ impl Audio {
                         }
                         _ => {}
                     }
-                    Some(b)
+                    b
+                };
+                // The deepest dip by the table within a semitone of `k` times the
+                // period `lag`, placed; in the range, before and after, when
+                // `range`. One search, however many dips the band holds.
+                let octave_dip = |lag: f64, k: f64, range: bool| {
+                    let b = dips(0)
+                        .filter(|b| (!range || in_range(b.lag)) && octave_of(b, lag, k))
+                        .min_by(|a, b| a.depth.total_cmp(&b.depth))?;
+                    Some(place(b)).filter(|b| !range || in_range(b.lag))
                 };
                 // The table can put the dip of a narrow pulse's period far above
-                // its exact depth, past the margin that has it measured, so that
-                // YIN's first dip is its repeat: half the chosen period, measured
-                // exactly, is YIN's choice when it passes the threshold.
+                // its exact depth, past the margin that has it measured. When no
+                // dip passed, the deepest by the table not yet measured is placed,
+                // and is YIN's choice when it passes the threshold.
+                if first.is_none() {
+                    first = dips(0)
+                        .filter(|b| !measured.contains(&b.at))
+                        .min_by(|a, b| a.depth.total_cmp(&b.depth))
+                        .map(place)
+                        .filter(|b| b.depth < o.threshold);
+                }
+                // And YIN's first dip can be the period's repeat: half the chosen
+                // period, placed, is YIN's choice when it passes the threshold.
                 let mut half = None;
                 let mut promoted = false;
                 if let Some(chosen) = first {

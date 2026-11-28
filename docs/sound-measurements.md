@@ -200,7 +200,10 @@ fn melody(voice: &Audio) -> Result<()> {
   deepest dip by the table within a semitone of half its period, located and
   measured exactly, passes too: the table can put a narrow pulse's period so far
   above its exact depth that it is never measured, and its repeat would be
-  chosen an octave low. If the chosen period is outside the range, the frame has
+  chosen an octave low. When no dip passes, the deepest by the table not yet
+  measured is located and measured exactly, and is the choice if it passes (then
+  half its period is tried as above), as for such a pulse whose repeat lies past
+  the search. If the chosen period is outside the range, the frame has
   no pitch. In the tests, across 16, 44.1
   and 48 kHz, sines err by 0.12 cents at most, tones of up to 10 harmonics by 2
   cents (in the parabola's range, just above 48 samples), as long as the sound
@@ -216,7 +219,8 @@ fn melody(voice: &Audio) -> Result<()> {
   dip is, the deepest of each octave by the table is located exactly and
   measured over the whole window with the signal interpolated, there and at its
   own place, the deeper kept (one search and two exact depths an octave, however
-  many dips the bands hold), so that it compares with the pitch like with like. A
+  many dips the bands hold), so that it compares with the pitch like with like;
+  one that its exact place puts outside the range is not offered. A
   sound with a weak fundamental and a strong octave has both
   octaves as dips, so the pitch and the alternative are the two candidates:
   when their confidences are close, the octave is ambiguous, and the caller
@@ -245,12 +249,12 @@ Bad options, a missing channel, a range outside the input and non-finite samples
 return `InvalidArgument`. `min_hz` is at least `sample_rate / MAX_PITCH_LAG`
 (8192) and `max_hz` at most `sample_rate / MIN_PITCH_LAG` (8). The default
 `Limits` apply, plus at most `MAX_PITCH_FRAMES` (1,048,576) frames and
-`MAX_PITCH_WORK` (2³⁷, a work estimate of frames × (L × (log₂ L + 1) + 14 × 2¹⁶ +
-750 × W), with L the power of two at or above the frame's span, W the
-integration window, 14 × 2¹⁶ for seven exact searches and 750 × W
+`MAX_PITCH_WORK` (2³⁷, a work estimate of frames × (L × (log₂ L + 1) + 16 × 2¹⁶ +
+800 × W), with L the power of two at or above the frame's span, W the
+integration window, 16 × 2¹⁶ for eight exact searches and 800 × W
 for the correlation table, the exact depths and the refinement of dips),
 counted before any frame is measured, or `LimitExceeded`. Ten minutes at
-48 kHz from 60 Hz to 2 kHz every 10 ms is about 92 billion (about 16 s here for
+48 kHz from 60 Hz to 2 kHz every 10 ms is about 103 billion (about 16 s here for
 a high-pitched sound). Several channels
 are mixed once, into one buffer of the input's length. Silent frames skip the
 transforms. The FFT uses the platform's math, so pitches are for reports and
