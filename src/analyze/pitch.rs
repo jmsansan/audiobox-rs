@@ -140,7 +140,7 @@ pub struct PitchTrack {
     /// Frames in the input.
     pub input_frames: usize,
     /// Frames each analysis frame reads: two periods of `min_hz`, and a few samples
-    /// for the margin below it. Short periods also read 17 samples of the input on
+    /// for the margin below it. Every frame also reads 17 samples of the input on
     /// each side of it, for interpolating them. A pitch describes
     /// that span, so it lags the sound by up to that much and 17 samples.
     pub span_frames: usize,
@@ -454,12 +454,12 @@ impl Yin {
     /// periods (64 samples or more) in the middle of the window, as far as it
     /// allows. The correlation table's linear energy term can shift a short
     /// period by a few cents; this does not.
-    fn exact(&self, x: &[f64], lag: f64) -> (f64, Option<f64>) {
+    fn exact(&self, x: &[f64], lag: f64) -> f64 {
         let last = (lag + 1.0).ceil() as usize + HALF;
         let available = self.window.min(x.len().saturating_sub(last + 1 + HALF));
         let terms = available.min(((4.0 * lag) as usize).max(64));
         if terms < 4 {
-            return (lag, None);
+            return lag;
         }
         let first = HALF + (available - terms) / 2;
         let difference = |tau: f64, samples: std::ops::Range<usize>| {
@@ -494,23 +494,43 @@ impl Yin {
             tau += step * ((a - c) / (2.0 * curve)).clamp(-1.0, 1.0);
             step *= 0.25;
         }
-        let tau = tau.clamp((lag - 0.5).max(1.5), lag + 0.5);
-        // The depth there over nearly the whole window, scaled to the window, over
-        // the difference's running mean: free of the table's linear energy term.
+        tau.clamp((lag - 0.5).max(1.5), lag + 0.5)
+    }
+
+    /// The normalized difference at a fractional lag over the whole window, with
+    /// the signal interpolated by the windowed sinc: `context` is the frame with
+    /// `CONTEXT` samples of input on each side, so the window's first samples
+    /// count too. Free of the table's linear energy term.
+    fn exact_depth(&self, context: &[f64], tau: f64) -> Option<f64> {
+        let w = self.window;
         let whole = tau.floor() as usize;
         let frac = tau - whole as f64;
+        let weights = kernel(frac);
+        // Sample j of the frame is context[CONTEXT + j]; its shifted value reads
+        // the taps from context[CONTEXT + j + whole + 1 - HALF].
+        if CONTEXT + w + whole + HALF > context.len() {
+            return None;
+        }
+        let d: f64 = (0..w)
+            .map(|j| {
+                let base = CONTEXT + j + whole + 1 - HALF;
+                let value: f64 = weights
+                    .iter()
+                    .zip(&context[base..base + 2 * HALF])
+                    .map(|(a, b)| a * b)
+                    .sum();
+                let e = context[CONTEXT + j] - value;
+                e * e
+            })
+            .sum();
         let next = if whole < self.max_lag {
             self.difference[whole + 1]
         } else {
             0.0
         };
         let mean = (self.cumulative[whole] + frac * next) / tau;
-        let d = difference(tau, HALF..HALF + available) * self.window as f64 / available as f64;
         let depth = d / mean;
-        (
-            tau,
-            (mean > 0.0 && depth.is_finite()).then(|| depth.clamp(0.0, 1.0)),
-        )
+        (mean > 0.0 && depth.is_finite()).then(|| depth.clamp(0.0, 1.0))
     }
 
     /// Whether `tau` is a local minimum with both neighbours computed.
@@ -748,10 +768,16 @@ impl Audio {
                 let first = dips(2)
                     .filter(|b| b.depth < o.threshold + EXACT_MARGIN)
                     .find_map(|mut b| {
-                        if b.lag < EXACT_LAG && searches < MAX_EXACT {
+                        if searches < MAX_EXACT {
                             searches += 1;
-                            let (lag, depth) = yin.exact(x, b.lag);
-                            if let Some(depth) = depth {
+                            // A short period's place is found exactly too; a
+                            // longer one keeps its parabola's, within a cent.
+                            let lag = if b.lag < EXACT_LAG {
+                                yin.exact(x, b.lag)
+                            } else {
+                                b.lag
+                            };
+                            if let Some(depth) = yin.exact_depth(&context, lag) {
                                 b.lag = lag;
                                 b.depth = depth;
                             }

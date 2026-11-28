@@ -1044,3 +1044,56 @@ fn strict_thresholds_bright_tones_and_offsets_at_the_end() {
         "{last:?}"
     );
 }
+
+#[test]
+fn an_onset_counts_and_a_bright_note_in_a_narrow_range() {
+    let rate = 16_000u32;
+    // D6 with a loud decaying 1.9 kHz onset in its first samples: the whole
+    // window, onset included, decides.
+    let f = 1174.66;
+    let samples: Vec<f32> = (0..4800)
+        .map(|i| {
+            let t = i as f64 / rate as f64;
+            (0.3 * (2.0 * PI * f * t).sin()
+                + 0.8 * (-t / 0.0006).exp() * (2.0 * PI * 1900.0 * t).sin()) as f32
+        })
+        .collect();
+    let first = Audio::new(vec![samples], rate)
+        .unwrap()
+        .pitch_track(&PitchOptions::new(100.0, 2000.0, 160))
+        .unwrap()
+        .frames[0];
+    assert!(
+        first.state != PitchState::Voiced || first.confidence < 0.9,
+        "{first:?}"
+    );
+    // A bright E4 pulse, 21 harmonics, in 220–600 Hz at threshold 0.02: every
+    // whole frame keeps its pitch.
+    let e4 = 329.628;
+    let samples: Vec<f32> = (0..4800)
+        .map(|i| {
+            (1..=21)
+                .map(|k| {
+                    (PI * k as f64 * 0.05).sin() / k as f64
+                        * 0.3
+                        * (2.0 * PI * k as f64 * e4 * i as f64 / rate as f64).sin()
+                })
+                .sum::<f64>() as f32
+        })
+        .collect();
+    let strict = PitchOptions {
+        threshold: 0.02,
+        ..PitchOptions::new(220.0, 600.0, 160)
+    };
+    let t = Audio::new(vec![samples], rate)
+        .unwrap()
+        .pitch_track(&strict)
+        .unwrap();
+    for frame in &t.frames {
+        assert_eq!(frame.state, PitchState::Voiced, "{frame:?}");
+        assert!(
+            cents(frame.frequency_hz.unwrap(), e4).abs() < 5.0,
+            "{frame:?}"
+        );
+    }
+}

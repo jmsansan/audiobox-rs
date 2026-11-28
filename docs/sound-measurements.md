@@ -148,10 +148,11 @@ fn melody(voice: &Audio) -> Result<()> {
   `PitchTrack::span_frames`: an integration window of one period of `min_hz`
   (at least 96 samples, so that a narrow range of high pitches still integrates
   over several periods), compared with the samples up to one period later and a
-  few more, for the margin below `min_hz`. Short periods also read 17 samples of
-  the input on each side of the span, for interpolating them. A pitch describes
+  few more, for the margin below `min_hz`. Every frame also reads 17 samples of
+  the input on each side of the span, for interpolating between samples. A pitch
+  describes that span and those samples, so it
   that span, so it
-  lags the sound by up to that much: at 60 Hz, 33 ms. Only whole frames are
+  lags the sound by up to that much: at 60 Hz, 33 ms and 17 samples. Only whole frames are
   measured; an input shorter than one frame is a single frame, zero-padded.
 - **States.** `Silent` when the RMS of the frame's integration window, with its
   mean removed, is at or below `silence_db` (−60 dBFS by default): a DC offset or
@@ -180,12 +181,14 @@ fn melody(voice: &Audio) -> Result<()> {
     by all of it.
   - A parabola misjudges shorter periods, in place and in depth, so every dip of
     one (from 2 samples), in the range or above it, is moved to the table's
-    minimum and measured there. One whose table depth is within 0.03 of the
-    threshold is then located and measured exactly, with the signal itself
-    interpolated by the same sinc (over four periods, or 64 samples if longer,
-    mid-window, for its place; over nearly the whole window for its depth), and
-    the threshold decides on that, up to two such searches a frame: the table's
-    depth is too coarse for a strict threshold.
+    minimum and measured there.
+  - The first two dips, of any period, whose table or parabola depth is below
+    the threshold plus 0.03 (well below it included) are then measured exactly,
+    and the threshold decides on that: the difference over the whole window,
+    its first samples included, with the signal itself interpolated by the same
+    sinc. A short one is first located exactly too, the same way over four
+    periods, or 64 samples if longer, mid-window; a longer one keeps its
+    parabola's place. The table's depth is too coarse for a strict threshold.
   The first dip whose depth passes the threshold is YIN's choice; if its period
   is outside the range, the frame has no pitch. In the tests, across 16, 44.1
   and 48 kHz, sines err by 0.12 cents at most, tones of up to 10 harmonics by 2
