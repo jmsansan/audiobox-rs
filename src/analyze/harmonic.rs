@@ -30,7 +30,8 @@ pub struct HarmonicOptions {
     /// fraction of one (`fft_size / hop` a multiple of 4), at which the squared
     /// Hann windows sum to a nearly constant weight (within 0.3 % at 32 points, far
     /// less for longer frames), so that a sound weighs the same wherever it
-    /// falls between the range's margins; content below a few bins, which each
+    /// falls between the range's margins (a whole frame at each end, where the
+    /// windows taper; see the guide); content below a few bins, which each
     /// frame's mean removal and the skipped DC bin treat by frame, can still vary
     /// by a few percent with its alignment (3 % for a two-cycle 11.7 Hz burst).
     pub hop: usize,
@@ -215,13 +216,6 @@ impl Audio {
                 .ok_or_else(|| Error::invalid("Harmonic channel does not exist"))?,
             None => &self.data,
         };
-        if channels
-            .iter()
-            .flat_map(|c| &c[o.range.clone()])
-            .any(|s| !s.is_finite())
-        {
-            return Err(Error::invalid("Harmonic samples must be finite"));
-        }
         let length = o.range.len();
         // Whole frames every hop, and one more ending at the range's end when the
         // hops leave a tail, so that every sample is measured. The last frame
@@ -250,6 +244,15 @@ impl Audio {
             .is_none_or(|n| n > MAX_HARMONIC_WORK)
         {
             return Err(Error::limit("Harmonic analysis exceeds its work limit"));
+        }
+        // Checked after the limits, so that a request too big is turned down
+        // before its samples are read.
+        if channels
+            .iter()
+            .flat_map(|c| &c[o.range.clone()])
+            .any(|s| !s.is_finite())
+        {
+            return Err(Error::invalid("Harmonic samples must be finite"));
         }
         // The bands: from `tolerance_cents` below each harmonic to as far above it,
         // each side at least 2 bins and at most a quarter of the fundamental.

@@ -330,10 +330,12 @@ fn inharmonicity(note: &Audio) -> Result<()> {
   sample of the range is measured; it weighs as much as the fraction of a hop it
   adds, so that, for given frames, a range one sample longer changes the shares
   by next to nothing, unless that sample is far louder than the rest (a splice
-  after a near-silent range). The window tapers toward a frame's ends, so sound in the
-  first and last few thousand samples of a range weighs less than sound in its
-  middle, and a partial heard only there is undercounted: leave the range some
-  margin around what is to be measured.
+  after a near-silent range). The window tapers toward a frame's ends, so sound within
+  one FFT frame of a range's start or end weighs less than sound in its middle
+  (still only 30 % of the full weight 20,000 samples in, for a 65,536-point
+  frame), and a partial heard only there is undercounted: leave the range a
+  margin of a whole FFT frame (`fft_size` samples, 0.68 s for a 41 Hz note at
+  96 kHz) around what is to be measured.
   Each
   frame's mean is removed before the window, so a DC offset adds nothing, and
   every bin but DC counts: rumble and aliases away from the harmonics are
