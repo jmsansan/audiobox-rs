@@ -330,10 +330,10 @@ fn bad_arguments_are_refused() {
     assert_eq!(error.code, ErrorCode::LimitExceeded);
     assert_eq!(error.message, "Too many pitch analysis frames");
     // The work limit, 2^35, at its edge: at 20 Hz a frame spans 4807 frames,
-    // integrates over 2399 and transforms 8192, so 87460 frames ×
-    // (8192 × (13 + 1) + 3 × 2^16 + 34 × 2399) fit and one more does not. The input
+    // integrates over 2399 and transforms 8192, so 33326 frames ×
+    // (8192 × (13 + 1) + 3 × 2^16 + 300 × 2399) fit and one more does not. The input
     // is silent, so nothing is transformed.
-    for (frames, fits) in [(87460, true), (87461, false)] {
+    for (frames, fits) in [(33326, true), (33327, false)] {
         let long = Audio::new(vec![vec![0.0; frames + 4806]], RATE).unwrap();
         let result = long.pitch_track(&PitchOptions::new(20.0, 1000.0, 1));
         match fits {
@@ -342,9 +342,9 @@ fn bad_arguments_are_refused() {
         }
     }
     // A shorter frame: 100 Hz to 2 kHz spans 962 frames, integrates over 479 and
-    // transforms 1024, so 153283 frames × (1024 × (10 + 1) + 3 × 2^16 + 34 ×
+    // transforms 1024, so 97731 frames × (1024 × (10 + 1) + 3 × 2^16 + 300 ×
     // 479) fit and one more does not.
-    for (frames, fits) in [(153283, true), (153284, false)] {
+    for (frames, fits) in [(97731, true), (97732, false)] {
         let long = Audio::new(vec![vec![0.0; frames + 961]], RATE).unwrap();
         let result = long.pitch_track(&PitchOptions::new(100.0, 2000.0, 1));
         match fits {
@@ -988,4 +988,59 @@ fn a_tiny_tone_on_an_offset_with_a_strict_threshold() {
         );
     }
     assert!(t.frames.iter().any(|f| f.state == PitchState::Voiced));
+}
+
+#[test]
+fn strict_thresholds_bright_tones_and_offsets_at_the_end() {
+    let rate = 16_000u32;
+    let at = |parts: &[(f64, f64)], n: usize, dc: f64| -> Audio {
+        let samples = (0..n)
+            .map(|i| {
+                (dc + parts
+                    .iter()
+                    .map(|&(f, a)| a * (2.0 * PI * f * i as f64 / rate as f64).sin())
+                    .sum::<f64>()) as f32
+            })
+            .collect();
+        Audio::new(vec![samples], rate).unwrap()
+    };
+    let strict = |threshold: f64, min: f64, max: f64| PitchOptions {
+        threshold,
+        ..PitchOptions::new(min, max, 160)
+    };
+    // F6 with a strong fifth harmonic at threshold 0.01: never the octave below.
+    let f = 1396.913;
+    let note = at(&[(f, 0.4), (5.0 * f, 0.5)], 4800, 0.0);
+    for frame in &note
+        .pitch_track(&strict(0.01, 60.0, 2000.0))
+        .unwrap()
+        .frames
+    {
+        if let Some(p) = frame.frequency_hz {
+            assert!(cents(p, f).abs() < 1.0, "{frame:?}");
+        }
+    }
+    // A bright E4 pulse, 21 harmonics, period just over 48 samples, at 0.02.
+    let e4 = 329.628;
+    let pulse: Vec<(f64, f64)> = (1..=21)
+        .map(|k| (k as f64 * e4, (PI * k as f64 * 0.05).sin() / k as f64 * 0.3))
+        .collect();
+    let t = at(&pulse, 4800, 0.0)
+        .pitch_track(&strict(0.02, 60.0, 2000.0))
+        .unwrap();
+    for frame in &t.frames {
+        if let Some(p) = frame.frequency_hz {
+            assert!(cents(p, e4).abs() < 5.0, "{frame:?}");
+        }
+    }
+    // An offset tone up to the input's end: the last whole frame keeps its pitch.
+    let c6 = 1046.502;
+    let t = at(&[(c6, 0.002)], 4754, 0.1)
+        .pitch_track(&strict(0.02, 1000.0, 2000.0))
+        .unwrap();
+    let last = t.frames.last().unwrap();
+    assert!(
+        cents(last.frequency_hz.unwrap(), c6).abs() < 5.0,
+        "{last:?}"
+    );
 }

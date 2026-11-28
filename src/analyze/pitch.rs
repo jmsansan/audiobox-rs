@@ -18,17 +18,23 @@ const MIN_PITCH_WINDOW: usize = 96;
 /// Periods shorter than this, in frames, are refined by evaluating the
 /// difference between samples; longer ones by a parabola.
 const EXACT_LAG: f64 = 48.0;
-/// The work, per frame, of the refinements between samples in the units of
-/// [`MAX_PITCH_WORK`]: at most 24 dips of short periods, a few hundred
-/// operations each, and two searches of 10 evaluations of at most 192 terms of 32
-/// taps, within 3 × 2^16; plus `TABLE_WORK` per frame of the window for the
-/// correlation table.
+/// The work, per frame, of the two exact searches of a short period in the
+/// units of [`MAX_PITCH_WORK`]: 10 evaluations of at most 192 terms of 32 taps
+/// each, within 3 × 2^16, plus `WINDOW_WORK` per frame of the window.
 const EXACT_WORK: u64 = 3 << 16;
-/// The correlation table's lags not given by the transforms, rounded up:
-/// `CONTEXT` before the frame and as many past its last lag.
-const TABLE_WORK: u64 = 2 * CONTEXT as u64;
+/// The work per frame of the window of the rest: the correlation table's lags
+/// beyond the transforms' (2 × `CONTEXT`), the two exact depths over the window
+/// (2 × 32) and the refinement of the dips from the table, at most one every two
+/// lags, a few hundred operations each; rounded up.
+const WINDOW_WORK: u64 = 300;
 /// The most exact searches of a short period in one frame, within `EXACT_WORK`.
 const MAX_EXACT: usize = 2;
+/// How far above the threshold a short dip's table depth may be and still have
+/// its exact depth decide.
+const EXACT_MARGIN: f64 = 0.03;
+/// How far above the threshold a longer dip's parabola may put it and still be
+/// refined from the table.
+const REFINE_MARGIN: f64 = 0.3;
 /// Half the taps of the interpolating sinc.
 const HALF: usize = 16;
 /// Samples of the input read before and after each frame, for interpolating
@@ -37,10 +43,10 @@ const CONTEXT: usize = HALF + 1;
 /// The widest median smoothing, in frames.
 pub const MAX_PITCH_MEDIAN: usize = 15;
 /// The most work one [`Audio::pitch_track`] is allowed, as an estimate: analysis
-/// frames × (L × (log₂ L + 1) + 3 × 2^16 + 34 × W), with L the transform size, the
+/// frames × (L × (log₂ L + 1) + 3 × 2^16 + 300 × W), with L the transform size, the
 /// power of two at or above [`PitchTrack::span_frames`], W the integration
-/// window, 3 × 2^16 for the refinements of short periods between samples and 34 × W
-/// for the correlations their table needs beyond the transforms'. Every frame
+/// window, 3 × 2^16 for two exact searches of short periods and 300 × W for the
+/// correlation table, the exact depths and the refinement of dips. Every frame
 /// counts, silent or not.
 pub const MAX_PITCH_WORK: u64 = 1 << 35;
 
@@ -249,7 +255,7 @@ impl Yin {
             normalized: vec![1.0; max_lag + 1],
             difference: vec![0.0; max_lag + 1],
             cumulative: vec![0.0; max_lag + 1],
-            correlation: vec![0.0; max_lag.min(EXACT_LAG as usize + 1) + 2 * CONTEXT + 1],
+            correlation: vec![0.0; max_lag + 2 * CONTEXT + 1],
             sums: vec![0.0; window + max_lag + 1],
             mean: 0.0,
         }
@@ -448,18 +454,18 @@ impl Yin {
     /// periods (64 samples or more) in the middle of the window, as far as it
     /// allows. The correlation table's linear energy term can shift a short
     /// period by a few cents; this does not.
-    fn exact(&self, x: &[f64], lag: f64) -> f64 {
+    fn exact(&self, x: &[f64], lag: f64) -> (f64, Option<f64>) {
         let last = (lag + 1.0).ceil() as usize + HALF;
         let available = self.window.min(x.len().saturating_sub(last + 1 + HALF));
         let terms = available.min(((4.0 * lag) as usize).max(64));
         if terms < 4 {
-            return lag;
+            return (lag, None);
         }
         let first = HALF + (available - terms) / 2;
-        let difference = |tau: f64| {
+        let difference = |tau: f64, samples: std::ops::Range<usize>| {
             let whole = tau.floor() as usize;
             let weights = kernel(tau - whole as f64);
-            (first..first + terms)
+            samples
                 .map(|j| {
                     let base = j + whole + 1 - HALF;
                     let value: f64 = weights
@@ -472,13 +478,14 @@ impl Yin {
                 })
                 .sum::<f64>()
         };
+        let search = first..first + terms;
         let mut tau = lag;
         let mut step = 0.5;
         for _ in 0..3 {
             let (a, b, c) = (
-                difference(tau - step),
-                difference(tau),
-                difference(tau + step),
+                difference(tau - step, search.clone()),
+                difference(tau, search.clone()),
+                difference(tau + step, search.clone()),
             );
             let curve = a - 2.0 * b + c;
             if curve <= 0.0 {
@@ -487,7 +494,23 @@ impl Yin {
             tau += step * ((a - c) / (2.0 * curve)).clamp(-1.0, 1.0);
             step *= 0.25;
         }
-        tau.clamp((lag - 0.5).max(1.5), lag + 0.5)
+        let tau = tau.clamp((lag - 0.5).max(1.5), lag + 0.5);
+        // The depth there over nearly the whole window, scaled to the window, over
+        // the difference's running mean: free of the table's linear energy term.
+        let whole = tau.floor() as usize;
+        let frac = tau - whole as f64;
+        let next = if whole < self.max_lag {
+            self.difference[whole + 1]
+        } else {
+            0.0
+        };
+        let mean = (self.cumulative[whole] + frac * next) / tau;
+        let d = difference(tau, HALF..HALF + available) * self.window as f64 / available as f64;
+        let depth = d / mean;
+        (
+            tau,
+            (mean > 0.0 && depth.is_finite()).then(|| depth.clamp(0.0, 1.0)),
+        )
     }
 
     /// Whether `tau` is a local minimum with both neighbours computed.
@@ -614,7 +637,7 @@ impl Audio {
         // In u64, so that the limit is exact on 32-bit targets too. Each frame
         // reads its span, runs three transforms of `size`, fills the correlation
         // table and refines its short periods between samples.
-        let refine = EXACT_WORK + TABLE_WORK * window as u64;
+        let refine = EXACT_WORK + WINDOW_WORK * window as u64;
         if (count as u64)
             .checked_mul(size as u64 * (u64::from(size.trailing_zeros()) + 1) + refine)
             .is_none_or(|n| n > MAX_PITCH_WORK)
@@ -658,6 +681,18 @@ impl Audio {
                     _ => 0.0,
                 };
             }
+            // Context the input does not have, before its start or past its end,
+            // takes the window's mean, which the correlation table removes: zeros
+            // would read as a step from any offset.
+            let held = window.min(end - start);
+            let level = context[CONTEXT..CONTEXT + held].iter().sum::<f64>() / held as f64;
+            for (j, v) in context.iter_mut().enumerate() {
+                let outside = j < CONTEXT && start + j < CONTEXT
+                    || j >= CONTEXT + span && start + j - CONTEXT >= input_frames;
+                if outside {
+                    *v = level;
+                }
+            }
             let x = &context[CONTEXT..CONTEXT + span];
             // The silence gate reads the first period with its mean removed, so
             // that a DC offset or a level stuck at one value counts as silence.
@@ -685,28 +720,44 @@ impl Audio {
                     .filter(|&t| yin.is_dip(t))
                     .map(|t| {
                         let b = yin.bottom(t);
-                        if b.lag < EXACT_LAG { yin.between(b) } else { b }
+                        if b.lag < EXACT_LAG {
+                            yin.between(b)
+                        } else if b.depth < o.threshold + REFINE_MARGIN {
+                            // A longer period keeps its parabola's place, within
+                            // about a cent, and takes its depth over the whole
+                            // window from the table.
+                            Bottom {
+                                depth: yin.depth_at(b.lag).unwrap_or(b.depth),
+                                lowered: 0.0,
+                                ..b
+                            }
+                        } else {
+                            b
+                        }
                     })
                     .collect();
                 let dips = |from: usize| all.iter().copied().filter(move |b| b.at >= from);
                 // YIN's choice: the first dip below the threshold, from the shortest
                 // lag. When its period lies outside the range, the frame has no
-                // pitch, rather than one of the period's multiples.
-                // A short period is then located once more exactly, before the
-                // range and the threshold decide on it: a dip that fails them there
-                // gives way to the next, up to `MAX_EXACT` such searches a frame.
+                // pitch, rather than one of the period's multiples. A short dip near
+                // the threshold is first located and measured exactly, with the
+                // signal itself interpolated, and decided on there: the table's
+                // depth is within about 1 / window, too coarse for a strict
+                // threshold. Up to `MAX_EXACT` such searches a frame.
                 let mut searches = 0;
-                let first = dips(2).filter(|b| b.depth < o.threshold).find_map(|mut b| {
-                    if b.lag < EXACT_LAG && searches < MAX_EXACT {
-                        searches += 1;
-                        let lag = yin.exact(x, b.lag);
-                        if let Some(depth) = yin.depth_at(lag) {
-                            b.lag = lag;
-                            b.depth = depth;
+                let first = dips(2)
+                    .filter(|b| b.depth < o.threshold + EXACT_MARGIN)
+                    .find_map(|mut b| {
+                        if b.lag < EXACT_LAG && searches < MAX_EXACT {
+                            searches += 1;
+                            let (lag, depth) = yin.exact(x, b.lag);
+                            if let Some(depth) = depth {
+                                b.lag = lag;
+                                b.depth = depth;
+                            }
                         }
-                    }
-                    (b.depth < o.threshold).then_some(b)
-                });
+                        (b.depth < o.threshold).then_some(b)
+                    });
                 if let Some(chosen) = first.filter(|b| in_range(b.lag)) {
                     frame.state = PitchState::Voiced;
                     frame.frequency_hz = Some(pitch(chosen.lag));

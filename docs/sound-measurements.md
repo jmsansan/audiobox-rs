@@ -165,27 +165,32 @@ fn melody(voice: &Audio) -> Result<()> {
   harmonic as the pitch and the fundamental as the alternative. `Unvoiced`
   otherwise, as noise, a chord or a transition. Only voiced frames have a pitch;
   nothing is guessed for the others.
-- **Pitch.** That dip's period, refined between samples. A period of 48 samples
-  or more (up to 1 kHz at 48 kHz) is refined by the parabola through the raw
-  difference function, which is symmetric about a whole period, unlike the
-  normalized one: within 0.1 cents for sines and about 1 cent for rich tones
-  there, 2 cents just above 48 samples at the most. A parabola misjudges shorter
-  periods, in place and in depth, so every dip of one (from 2 samples), in the
-  range or above it, is refined before the threshold decides: the difference
-  over the whole window is evaluated between samples, its correlation term
-  interpolated from the whole lags' by a 32-tap Kaiser-windowed sinc (the
-  correlation of the window with a band-limited sound is band-limited too) and
-  its energy term linearly, which errs by about 1 / window of it. The depth is
-  read there, normalized as at whole lags, so a sound that changes within the
-  window, as an attack, is judged by all of it. A short dip below the threshold
-  then has its period found once more exactly, with the signal itself
-  interpolated by the same
-  sinc over four periods, or 64 samples if longer, in the middle of the window
-  as far as it allows, before the range and the threshold decide on it, at the
-  exact period (up to two such searches a frame; a dip that fails gives way to
-  the next). The taps are scaled to sum to 1, so a DC offset cancels. That is
-  within 0.03 cents for sines and harmonic tones in the tests, as long as the
-  sound has no strong content within a tenth of the Nyquist frequency, which no
+- **Pitch.** That dip's period, refined between samples. Dips are measured from
+  a table of the window's correlations at whole lags, with the window's mean
+  removed (missing context takes that mean): the difference over the whole
+  window at a fractional lag is its correlation term interpolated from the
+  table by a 32-tap Kaiser-windowed sinc whose taps sum to 1 (the correlation
+  of the window with a band-limited sound is band-limited too, and a DC offset
+  cancels), and its energy term linearly, which errs by about 1 / window of it.
+  - A period of 48 samples or more (up to 1 kHz at 48 kHz) keeps the bottom of
+    the parabola through the raw difference function, which is symmetric about
+    a whole period, unlike the normalized one; when the parabola puts it within
+    0.3 of the threshold, its depth is read from the table, over the whole
+    window, so a sound that changes within the window, as an attack, is judged
+    by all of it.
+  - A parabola misjudges shorter periods, in place and in depth, so every dip of
+    one (from 2 samples), in the range or above it, is moved to the table's
+    minimum and measured there. One whose table depth is within 0.03 of the
+    threshold is then located and measured exactly, with the signal itself
+    interpolated by the same sinc (over four periods, or 64 samples if longer,
+    mid-window, for its place; over nearly the whole window for its depth), and
+    the threshold decides on that, up to two such searches a frame: the table's
+    depth is too coarse for a strict threshold.
+  The first dip whose depth passes the threshold is YIN's choice; if its period
+  is outside the range, the frame has no pitch. In the tests, across 16, 44.1
+  and 48 kHz, sines err by 0.12 cents at most, tones of up to 10 harmonics by 2
+  cents (in the parabola's range, just above 48 samples), as long as the sound
+  has no strong content within a tenth of the Nyquist frequency, which no
   interpolation follows. An estimate within 5 cents past an end of the range is
   set to that end. `max_hz` is at most `sample_rate / MIN_PITCH_LAG`, so that a
   pitch spans at least 8 samples (6 kHz at 48 kHz). **Confidence** is 1 minus
@@ -223,11 +228,11 @@ return `InvalidArgument`. `min_hz` is at least `sample_rate / MAX_PITCH_LAG`
 (8192) and `max_hz` at most `sample_rate / MIN_PITCH_LAG` (8). The default
 `Limits` apply, plus at most `MAX_PITCH_FRAMES` (1,048,576) frames and
 `MAX_PITCH_WORK` (2³⁵, a work estimate of frames × (L × (log₂ L + 1) + 3 × 2¹⁶ +
-34 × W), with L the power of two at or above the frame's span, W the
-integration window, 3 × 2¹⁶ for refining short periods between samples and 34 × W
-for the correlations that needs beyond the transforms'),
+300 × W), with L the power of two at or above the frame's span, W the
+integration window, 3 × 2¹⁶ for two exact searches of short periods and 300 × W
+for the correlation table, the exact depths and the refinement of dips),
 counted before any frame is measured, or `LimitExceeded`. Ten minutes at
-48 kHz from 60 Hz to 2 kHz every 10 ms is about 15 billion (about 11 s here for
+48 kHz from 60 Hz to 2 kHz every 10 ms is about 28 billion (about 13 s here for
 a high-pitched sound). Several channels
 are mixed once, into one buffer of the input's length. Silent frames skip the
 transforms. The FFT uses the platform's math, so pitches are for reports and
