@@ -20,13 +20,15 @@ const MIN_PITCH_WINDOW: usize = 96;
 const EXACT_LAG: f64 = 48.0;
 /// The work, per frame, of the refinements between samples in the units of
 /// [`MAX_PITCH_WORK`]: at most 24 dips of short periods, a few hundred
-/// operations each, and one search of 10 evaluations of at most 192 terms of 32
-/// taps, within 2^17; plus `TABLE_WORK` per frame of the window for the
+/// operations each, and two searches of 10 evaluations of at most 192 terms of 32
+/// taps, within 3 × 2^16; plus `TABLE_WORK` per frame of the window for the
 /// correlation table.
-const EXACT_WORK: u64 = 1 << 17;
+const EXACT_WORK: u64 = 3 << 16;
 /// The correlation table's lags not given by the transforms, rounded up:
 /// `CONTEXT` before the frame and as many past its last lag.
 const TABLE_WORK: u64 = 2 * CONTEXT as u64;
+/// The most exact searches of a short period in one frame, within `EXACT_WORK`.
+const MAX_EXACT: usize = 2;
 /// Half the taps of the interpolating sinc.
 const HALF: usize = 16;
 /// Samples of the input read before and after each frame, for interpolating
@@ -35,9 +37,9 @@ const CONTEXT: usize = HALF + 1;
 /// The widest median smoothing, in frames.
 pub const MAX_PITCH_MEDIAN: usize = 15;
 /// The most work one [`Audio::pitch_track`] is allowed, as an estimate: analysis
-/// frames × (L × (log₂ L + 1) + 2^17 + 34 × W), with L the transform size, the
+/// frames × (L × (log₂ L + 1) + 3 × 2^16 + 34 × W), with L the transform size, the
 /// power of two at or above [`PitchTrack::span_frames`], W the integration
-/// window, 2^17 for the refinements of short periods between samples and 34 × W
+/// window, 3 × 2^16 for the refinements of short periods between samples and 34 × W
 /// for the correlations their table needs beyond the transforms'. Every frame
 /// counts, silent or not.
 pub const MAX_PITCH_WORK: u64 = 1 << 35;
@@ -132,8 +134,9 @@ pub struct PitchTrack {
     /// Frames in the input.
     pub input_frames: usize,
     /// Frames each analysis frame reads: two periods of `min_hz`, and a few samples
-    /// for the margin below it. A pitch describes
-    /// that span, so it lags the sound by up to that much.
+    /// for the margin below it. Short periods also read 17 samples of the input on
+    /// each side of it, for interpolating them. A pitch describes
+    /// that span, so it lags the sound by up to that much and 17 samples.
     pub span_frames: usize,
     pub frames: Vec<PitchFrame>,
 }
@@ -667,16 +670,22 @@ impl Audio {
                 // YIN's choice: the first dip below the threshold, from the shortest
                 // lag. When its period lies outside the range, the frame has no
                 // pitch, rather than one of the period's multiples.
-                let first = dips(2).find(|b| b.depth < o.threshold);
-                if let Some(mut chosen) = first.filter(|b| in_range(b.lag)) {
-                    // A short period's place, found more exactly once.
-                    if chosen.lag < EXACT_LAG {
-                        let lag = yin.exact(x, chosen.lag);
+                // A short period is then located once more exactly, before the
+                // range and the threshold decide on it: a dip that fails them there
+                // gives way to the next, up to `MAX_EXACT` such searches a frame.
+                let mut searches = 0;
+                let first = dips(2).filter(|b| b.depth < o.threshold).find_map(|mut b| {
+                    if b.lag < EXACT_LAG && searches < MAX_EXACT {
+                        searches += 1;
+                        let lag = yin.exact(x, b.lag);
                         if let Some(depth) = yin.depth_at(lag) {
-                            chosen.lag = lag;
-                            chosen.depth = depth;
+                            b.lag = lag;
+                            b.depth = depth;
                         }
                     }
+                    (b.depth < o.threshold).then_some(b)
+                });
+                if let Some(chosen) = first.filter(|b| in_range(b.lag)) {
                     frame.state = PitchState::Voiced;
                     frame.frequency_hz = Some(pitch(chosen.lag));
                     frame.confidence = (1.0 - chosen.depth).clamp(0.0, 1.0);
@@ -777,7 +786,10 @@ fn exact_kernel(frac: f64) -> [f64; 2 * HALF] {
         let r = t / HALF as f64;
         *w = sinc * kaiser(1.0 - r * r);
     }
-    weights
+    // Scaled to sum to 1, so that a constant, as a DC offset, is interpolated
+    // exactly and cancels in the difference.
+    let sum: f64 = weights.iter().sum();
+    weights.map(|w| w / sum)
 }
 
 /// A Kaiser window (β = 8) at `u` = 1 − r², with r the distance from its middle

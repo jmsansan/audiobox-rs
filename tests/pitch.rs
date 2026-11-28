@@ -330,10 +330,10 @@ fn bad_arguments_are_refused() {
     assert_eq!(error.code, ErrorCode::LimitExceeded);
     assert_eq!(error.message, "Too many pitch analysis frames");
     // The work limit, 2^35, at its edge: at 20 Hz a frame spans 4807 frames,
-    // integrates over 2399 and transforms 8192, so 104971 frames ×
-    // (8192 × (13 + 1) + 2^17 + 34 × 2399) fit and one more does not. The input
+    // integrates over 2399 and transforms 8192, so 87460 frames ×
+    // (8192 × (13 + 1) + 3 × 2^16 + 34 × 2399) fit and one more does not. The input
     // is silent, so nothing is transformed.
-    for (frames, fits) in [(104971, true), (104972, false)] {
+    for (frames, fits) in [(87460, true), (87461, false)] {
         let long = Audio::new(vec![vec![0.0; frames + 4806]], RATE).unwrap();
         let result = long.pitch_track(&PitchOptions::new(20.0, 1000.0, 1));
         match fits {
@@ -342,9 +342,9 @@ fn bad_arguments_are_refused() {
         }
     }
     // A shorter frame: 100 Hz to 2 kHz spans 962 frames, integrates over 479 and
-    // transforms 1024, so 216613 frames × (1024 × (10 + 1) + 2^17 + 34 ×
+    // transforms 1024, so 153283 frames × (1024 × (10 + 1) + 3 × 2^16 + 34 ×
     // 479) fit and one more does not.
-    for (frames, fits) in [(216613, true), (216614, false)] {
+    for (frames, fits) in [(153283, true), (153284, false)] {
         let long = Audio::new(vec![vec![0.0; frames + 961]], RATE).unwrap();
         let result = long.pitch_track(&PitchOptions::new(100.0, 2000.0, 1));
         match fits {
@@ -909,4 +909,58 @@ fn many_short_dips_and_a_loud_onset() {
         first.state != PitchState::Voiced || first.confidence < 0.9,
         "{first:?}"
     );
+}
+
+#[test]
+fn exact_search_decides_dc_offsets_cancel() {
+    let rate = 16_000u32;
+    let sine = |f: f64, rate: u32| -> Vec<f32> {
+        (0..(0.3 * rate as f64) as usize)
+            .map(|i| (0.5 * (2.0 * PI * f * i as f64 / rate as f64).sin()) as f32)
+            .collect()
+    };
+    // G5 at the floor of a narrow range: the exact period, not the table's
+    // estimate, decides the range.
+    let f = 783.991;
+    let t = Audio::new(vec![sine(f, rate)], rate)
+        .unwrap()
+        .pitch_track(&PitchOptions::new(f, 980.0, 160))
+        .unwrap();
+    for frame in &t.frames {
+        assert_eq!(frame.state, PitchState::Voiced, "{frame:?}");
+        assert!(
+            cents(frame.frequency_hz.unwrap(), f).abs() < 1.0,
+            "{frame:?}"
+        );
+    }
+    // A quiet 1760 Hz tone on a DC offset keeps its pitch.
+    let shifted: Vec<f32> = tone(0.3, &[(1, 0.002)], |_| 1760.0)
+        .iter()
+        .map(|s| s + 0.1)
+        .collect();
+    for frame in &track(shifted, PitchOptions::new(60.0, 2000.0, 480)).frames {
+        assert!(
+            cents(frame.frequency_hz.unwrap(), 1760.0).abs() < 5.0,
+            "{frame:?}"
+        );
+    }
+    // A voiced frame's reported depth passes the threshold: an F6 attack whose
+    // pitch and level fall in its first milliseconds.
+    let f6 = 1396.913;
+    let mut phase = 0.0;
+    let attack: Vec<f32> = (0..4800)
+        .map(|i| {
+            let t = i as f64 / rate as f64;
+            let decay = (-t / 0.0015).exp();
+            phase += 2.0 * PI * f6 * (1.0 + 0.5 * decay) / rate as f64;
+            ((0.15 + 0.09 * decay) * phase.sin()) as f32
+        })
+        .collect();
+    let t = Audio::new(vec![attack], rate)
+        .unwrap()
+        .pitch_track(&PitchOptions::new(60.0, 2000.0, 160))
+        .unwrap();
+    for frame in t.frames.iter().filter(|f| f.state == PitchState::Voiced) {
+        assert!(frame.confidence > 0.85, "{frame:?}");
+    }
 }

@@ -148,7 +148,9 @@ fn melody(voice: &Audio) -> Result<()> {
   `PitchTrack::span_frames`: an integration window of one period of `min_hz`
   (at least 96 samples, so that a narrow range of high pitches still integrates
   over several periods), compared with the samples up to one period later and a
-  few more, for the margin below `min_hz`. A pitch describes that span, so it
+  few more, for the margin below `min_hz`. Short periods also read 17 samples of
+  the input on each side of the span, for interpolating them. A pitch describes
+  that span, so it
   lags the sound by up to that much: at 60 Hz, 33 ms. Only whole frames are
   measured; an input shorter than one frame is a single frame, zero-padded.
 - **States.** `Silent` when the RMS of the frame's integration window, with its
@@ -175,10 +177,13 @@ fn melody(voice: &Audio) -> Result<()> {
   correlation of the window with a band-limited sound is band-limited too) and
   its energy term linearly, which errs by about 1 / window of it. The depth is
   read there, normalized as at whole lags, so a sound that changes within the
-  window, as an attack, is judged by all of it. The chosen pitch's period is
-  then found once more exactly, with the signal itself interpolated by the same
+  window, as an attack, is judged by all of it. A short dip below the threshold
+  then has its period found once more exactly, with the signal itself
+  interpolated by the same
   sinc over four periods, or 64 samples if longer, in the middle of the window
-  as far as it allows. That is
+  as far as it allows, before the range and the threshold decide on it, at the
+  exact period (up to two such searches a frame; a dip that fails gives way to
+  the next). The taps are scaled to sum to 1, so a DC offset cancels. That is
   within 0.03 cents for sines and harmonic tones in the tests, as long as the
   sound has no strong content within a tenth of the Nyquist frequency, which no
   interpolation follows. An estimate within 5 cents past an end of the range is
@@ -188,8 +193,9 @@ fn melody(voice: &Audio) -> Result<()> {
   dip for a voiced frame, of the deepest dip in the range for an unvoiced one (0
   without one, as for a tone below the range); 0 when silent.
 - **Alternative.** For a voiced frame, the other octave: the deepest dip in the
-  range within a semitone of half or twice the pitch's period, refined by its
-  parabola. A sound with a weak fundamental and a strong octave has both
+  range within a semitone of half or twice the pitch's period, refined as any
+  dip is (by the correlation table when short, by its parabola otherwise). A
+  sound with a weak fundamental and a strong octave has both
   octaves as dips, so the pitch and the alternative are the two candidates:
   when their confidences are close, the octave is ambiguous, and the caller
   decides. Any periodic sound also repeats at twice its period, so that dip
@@ -216,9 +222,9 @@ Bad options, a missing channel, a range outside the input and non-finite samples
 return `InvalidArgument`. `min_hz` is at least `sample_rate / MAX_PITCH_LAG`
 (8192) and `max_hz` at most `sample_rate / MIN_PITCH_LAG` (8). The default
 `Limits` apply, plus at most `MAX_PITCH_FRAMES` (1,048,576) frames and
-`MAX_PITCH_WORK` (2³⁵, a work estimate of frames × (L × (log₂ L + 1) + 2¹⁷ +
+`MAX_PITCH_WORK` (2³⁵, a work estimate of frames × (L × (log₂ L + 1) + 3 × 2¹⁶ +
 34 × W), with L the power of two at or above the frame's span, W the
-integration window, 2¹⁷ for refining short periods between samples and 34 × W
+integration window, 3 × 2¹⁶ for refining short periods between samples and 34 × W
 for the correlations that needs beyond the transforms'),
 counted before any frame is measured, or `LimitExceeded`. Ten minutes at
 48 kHz from 60 Hz to 2 kHz every 10 ms is about 11 billion (about 11 s here for
