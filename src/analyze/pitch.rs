@@ -736,7 +736,7 @@ impl Audio {
                 // The dips from `from` on: a short period's refined between samples
                 // over the whole window, as a parabola misjudges it in place and
                 // depth; a longer one by its parabola.
-                let all: Vec<Bottom> = (2..=hi)
+                let mut all: Vec<Bottom> = (2..=hi)
                     .filter(|&t| yin.is_dip(t))
                     .map(|t| {
                         let b = yin.bottom(t);
@@ -756,34 +756,41 @@ impl Audio {
                         }
                     })
                     .collect();
-                let dips = |from: usize| all.iter().copied().filter(move |b| b.at >= from);
                 // YIN's choice: the first dip below the threshold, from the shortest
                 // lag. When its period lies outside the range, the frame has no
-                // pitch, rather than one of the period's multiples. A short dip near
-                // the threshold is first located and measured exactly, with the
-                // signal itself interpolated, and decided on there: the table's
-                // depth is within about 1 / window, too coarse for a strict
-                // threshold. Up to `MAX_EXACT` such searches a frame.
+                // pitch, rather than one of the period's multiples. A dip near the
+                // threshold is first measured exactly, with the signal itself
+                // interpolated, and decided on there: the table's depth is within
+                // about 1 / window, too coarse for a strict threshold. Up to
+                // `MAX_EXACT` such measurements a frame, kept for the confidence and
+                // the alternative too.
                 let mut searches = 0;
-                let first = dips(2)
-                    .filter(|b| b.depth < o.threshold + EXACT_MARGIN)
-                    .find_map(|mut b| {
-                        if searches < MAX_EXACT {
-                            searches += 1;
-                            // A short period's place is found exactly too; a
-                            // longer one keeps its parabola's, within a cent.
-                            let lag = if b.lag < EXACT_LAG {
-                                yin.exact(x, b.lag)
-                            } else {
-                                b.lag
-                            };
-                            if let Some(depth) = yin.exact_depth(&context, lag) {
-                                b.lag = lag;
-                                b.depth = depth;
-                            }
+                let mut first = None;
+                for b in all.iter_mut() {
+                    if b.depth >= o.threshold + EXACT_MARGIN {
+                        continue;
+                    }
+                    if searches < MAX_EXACT {
+                        searches += 1;
+                        // A short period's place is found exactly too; a longer
+                        // one keeps its parabola's, within a cent.
+                        let lag = if b.lag < EXACT_LAG {
+                            yin.exact(x, b.lag)
+                        } else {
+                            b.lag
+                        };
+                        if let Some(depth) = yin.exact_depth(&context, lag) {
+                            b.lag = lag;
+                            b.depth = depth;
+                            b.lowered = 0.0;
                         }
-                        (b.depth < o.threshold).then_some(b)
-                    });
+                    }
+                    if b.depth < o.threshold {
+                        first = Some(*b);
+                        break;
+                    }
+                }
+                let dips = |from: usize| all.iter().copied().filter(move |b| b.at >= from);
                 if let Some(chosen) = first.filter(|b| in_range(b.lag)) {
                     frame.state = PitchState::Voiced;
                     frame.frequency_hz = Some(pitch(chosen.lag));

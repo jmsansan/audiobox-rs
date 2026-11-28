@@ -151,7 +151,6 @@ fn melody(voice: &Audio) -> Result<()> {
   few more, for the margin below `min_hz`. Every frame also reads 17 samples of
   the input on each side of the span, for interpolating between samples. A pitch
   describes that span and those samples, so it
-  that span, so it
   lags the sound by up to that much: at 60 Hz, 33 ms and 17 samples. Only whole frames are
   measured; an input shorter than one frame is a single frame, zero-padded.
 - **States.** `Silent` when the RMS of the frame's integration window, with its
@@ -163,7 +162,9 @@ fn melody(voice: &Audio) -> Result<()> {
   the range has no pitch, rather than the nearest one in it or one of its
   period's multiples. So a weak fundamental in the range under a strong harmonic
   above `max_hz` has no pitch either: a ceiling above the harmonic gives the
-  harmonic as the pitch and the fundamental as the alternative. `Unvoiced`
+  harmonic as the pitch, and, when the harmonic is the second, the fundamental as
+  the alternative (only the octave is offered, so a dominant third harmonic gives
+  its own pitch and no alternative). `Unvoiced`
   otherwise, as noise, a chord or a transition. Only voiced frames have a pitch;
   nothing is guessed for the others.
 - **Pitch.** That dip's period, refined between samples. Dips are measured from
@@ -202,7 +203,8 @@ fn melody(voice: &Audio) -> Result<()> {
   without one, as for a tone below the range); 0 when silent.
 - **Alternative.** For a voiced frame, the other octave: the deepest dip in the
   range within a semitone of half or twice the pitch's period, refined as any
-  dip is (by the correlation table when short, by its parabola otherwise). A
+  dip is (a short one by the correlation table; a longer one keeps its
+  parabola's place, with its depth from the table when near the threshold). A
   sound with a weak fundamental and a strong octave has both
   octaves as dips, so the pitch and the alternative are the two candidates:
   when their confidences are close, the octave is ambiguous, and the caller
