@@ -18,15 +18,17 @@ const MIN_PITCH_WINDOW: usize = 96;
 /// Periods shorter than this, in frames, are refined by evaluating the
 /// difference between samples; longer ones by a parabola.
 const EXACT_LAG: f64 = 48.0;
-/// The work, per frame, of the four exact searches in the
-/// units of [`MAX_PITCH_WORK`]: 10 evaluations of at most 384 terms of 32 taps
-/// each, within 8 × 2^16, plus `WINDOW_WORK` per frame of the window.
-const EXACT_WORK: u64 = 8 << 16;
+/// The work, per frame, of the exact searches in the units of
+/// [`MAX_PITCH_WORK`]: up to [`MAX_EXACT`] in YIN's order and three for the
+/// octaves (the half period, then the alternatives), each 10 evaluations of at
+/// most 384 terms of 32 taps, within 14 × 2^16, plus `WINDOW_WORK` per frame of
+/// the window.
+const EXACT_WORK: u64 = 14 << 16;
 /// The work per frame of the window of the rest: the correlation table's lags
-/// beyond the transforms' (2 × `CONTEXT`), up to ten exact depths over the window
-/// (10 × 32) and the refinement of the dips from the table, at most one every two
+/// beyond the transforms' (2 × `CONTEXT`), up to fourteen exact depths over the
+/// window (14 × 32) and the refinement of the dips from the table, at most one every two
 /// lags, a few hundred operations each; rounded up.
-const WINDOW_WORK: u64 = 600;
+const WINDOW_WORK: u64 = 750;
 /// The most exact searches of a short period in one frame, within `EXACT_WORK`.
 const MAX_EXACT: usize = 4;
 /// How far above the threshold a short dip's table depth may be and still have
@@ -43,12 +45,12 @@ const CONTEXT: usize = HALF + 1;
 /// The widest median smoothing, in frames.
 pub const MAX_PITCH_MEDIAN: usize = 15;
 /// The most work one [`Audio::pitch_track`] is allowed, as an estimate: analysis
-/// frames × (L × (log₂ L + 1) + 8 × 2^16 + 600 × W), with L the transform size, the
+/// frames × (L × (log₂ L + 1) + 14 × 2^16 + 750 × W), with L the transform size, the
 /// power of two at or above [`PitchTrack::span_frames`], W the integration
-/// window, 8 × 2^16 for four exact searches and 600 × W for the
+/// window, 14 × 2^16 for seven exact searches and 750 × W for the
 /// correlation table, the exact depths and the refinement of dips. Every frame
 /// counts, silent or not.
-pub const MAX_PITCH_WORK: u64 = 1 << 36;
+pub const MAX_PITCH_WORK: u64 = 1 << 37;
 
 /// How [`Audio::pitch_track`] looks for a pitch.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -124,7 +126,7 @@ pub struct PitchFrame {
     pub confidence: f64,
     /// The other octave of a voiced frame: the deeper of the two dips, each the
     /// deepest by the table in the range within a semitone of half or twice the
-    /// pitch's period, measured exactly. When its confidence is close to the
+    /// pitch's period, located and measured exactly. When its confidence is close to the
     /// pitch's, the octave is ambiguous. Half the period counts only with a
     /// confidence above 0.5. Twice the period, which any
     /// periodic sound repeats at, counts only when deeper by more than 0.01 and the
@@ -557,7 +559,8 @@ impl Audio {
     /// holds and with their mean removed, is at or below `silence_db`: a DC offset
     /// or a level stuck at one value is silence. Otherwise YIN takes the first dip
     /// of its normalized difference, from the shortest period, whose bottom,
-    /// refined between samples, is below `threshold`. The frame is voiced when
+    /// refined between samples, is below `threshold`, or half its period when
+    /// that, measured exactly, is below it too. The frame is voiced when
     /// that dip's period lies in the range (within 5 cents of an end, and then set
     /// to it): a tone outside the range has no pitch rather than one of its
     /// period's multiples, and so has a weak fundamental under a strong harmonic
@@ -821,39 +824,70 @@ impl Audio {
                     }
                 }
                 let dips = |from: usize| all.iter().copied().filter(move |b| b.at >= from);
+                // Within a semitone of `k` times the period `lag`.
+                let octave_of = |b: &Bottom, lag: f64, k: f64| {
+                    let r = b.lag / (lag * k);
+                    r.max(1.0 / r) < semitone
+                };
+                // The deepest dip by the table within a semitone of `k` times the
+                // period `lag`, in the range or not, located exactly and measured
+                // there and at its own place, the deeper kept: one search and two
+                // exact depths, however many dips the band holds.
+                let octave_dip = |lag: f64, k: f64, range: bool| {
+                    let mut b = dips(0)
+                        .filter(|b| (!range || in_range(b.lag)) && octave_of(b, lag, k))
+                        .min_by(|a, b| a.depth.total_cmp(&b.depth))?;
+                    let at = yin.exact(x, b.lag);
+                    let here = yin.exact_depth(&context, at);
+                    let own = yin.exact_depth(&context, b.lag);
+                    match (here, own) {
+                        (Some(h), w) if w.is_none_or(|w| h <= w) => {
+                            b.lag = at;
+                            b.depth = h;
+                            b.lowered = 0.0;
+                        }
+                        (_, Some(w)) => {
+                            b.depth = w;
+                            b.lowered = 0.0;
+                        }
+                        _ => {}
+                    }
+                    Some(b)
+                };
+                // The table can put the dip of a narrow pulse's period far above
+                // its exact depth, past the margin that has it measured, so that
+                // YIN's first dip is its repeat: half the chosen period, measured
+                // exactly, is YIN's choice when it passes the threshold.
+                let mut half = None;
+                let mut promoted = false;
+                if let Some(chosen) = first {
+                    half = octave_dip(chosen.lag, 0.5, false);
+                    if let Some(h) = half.filter(|h| h.depth < o.threshold) {
+                        first = Some(h);
+                        promoted = true;
+                    }
+                }
                 if let Some(chosen) = first.filter(|b| in_range(b.lag)) {
                     frame.state = PitchState::Voiced;
                     frame.frequency_hz = Some(pitch(chosen.lag));
                     frame.confidence = (1.0 - chosen.depth).clamp(0.0, 1.0);
-                    // The other octave: the deepest dip in the range within a
-                    // semitone of half or twice the period. Twice the period, which
-                    // any periodic sound repeats at, counts only when deeper than the
-                    // pitch by more than 0.01 and the parabola's uncertainty.
-                    let octave = |b: &Bottom, k: f64| {
-                        let r = b.lag / (chosen.lag * k);
-                        r.max(1.0 / r) < semitone
+                    // The other octave: the deeper of the two dips in the range
+                    // nearest half and twice the period, each placed and measured
+                    // as the pitch is. Half the period counts only when its
+                    // confidence is above one half, so that a clean tone has no
+                    // rival there either. Twice the period, which any periodic
+                    // sound repeats at, counts only when deeper than the pitch by
+                    // more than 0.01 and the parabola's uncertainty.
+                    let octave = |b: &Bottom, k: f64| octave_of(b, chosen.lag, k);
+                    // The half period measured already, unless it became the
+                    // pitch: at most three searches after YIN's.
+                    let half = match promoted {
+                        true => octave_dip(chosen.lag, 0.5, true),
+                        false => half.filter(|h| in_range(h.lag)),
                     };
-                    // The deepest dip of each octave by the table, measured as the
-                    // pitch was, over the whole window with the signal interpolated,
-                    // at its own place: two exact depths, however many dips the
-                    // bands hold. Half the period counts only when its confidence
-                    // is above one half, so that a clean tone has no rival there
-                    // either.
-                    let deepest = |k: f64| {
-                        dips(lo)
-                            .filter(|b| in_range(b.lag) && octave(b, k))
-                            .min_by(|a, b| a.depth.total_cmp(&b.depth))
-                    };
-                    frame.alternative = [deepest(0.5), deepest(2.0)]
+                    frame.alternative = [half, octave_dip(chosen.lag, 2.0, true)]
                         .into_iter()
                         .flatten()
-                        .map(|mut b| {
-                            if let Some(depth) = yin.exact_depth(&context, b.lag) {
-                                b.depth = depth;
-                                b.lowered = 0.0;
-                            }
-                            b
-                        })
                         .filter(|b| {
                             octave(b, 0.5) && b.depth < 0.5
                                 || b.depth < chosen.depth - 0.01 - b.lowered.max(chosen.lowered)

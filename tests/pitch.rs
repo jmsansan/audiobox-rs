@@ -329,11 +329,11 @@ fn bad_arguments_are_refused() {
         .unwrap_err();
     assert_eq!(error.code, ErrorCode::LimitExceeded);
     assert_eq!(error.message, "Too many pitch analysis frames");
-    // The work limit, 2^36, at its edge: at 20 Hz a frame spans 4807 frames,
-    // integrates over 2399 and transforms 8192, so 33064 frames ×
-    // (8192 × (13 + 1) + 8 × 2^16 + 600 × 2399) fit and one more does not. The input
+    // The work limit, 2^37, at its edge: at 20 Hz a frame spans 4807 frames,
+    // integrates over 2399 and transforms 8192, so 48540 frames ×
+    // (8192 × (13 + 1) + 14 × 2^16 + 750 × 2399) fit and one more does not. The input
     // is silent, so nothing is transformed.
-    for (frames, fits) in [(33064, true), (33065, false)] {
+    for (frames, fits) in [(48540, true), (48541, false)] {
         let long = Audio::new(vec![vec![0.0; frames + 4806]], RATE).unwrap();
         let result = long.pitch_track(&PitchOptions::new(20.0, 1000.0, 1));
         match fits {
@@ -342,9 +342,9 @@ fn bad_arguments_are_refused() {
         }
     }
     // A shorter frame: 100 Hz to 2 kHz spans 962 frames, integrates over 479 and
-    // transforms 1024, so 83503 frames × (1024 × (10 + 1) + 8 × 2^16 + 600 ×
+    // transforms 1024, so 106705 frames × (1024 × (10 + 1) + 14 × 2^16 + 750 ×
     // 479) fit and one more does not.
-    for (frames, fits) in [(83503, true), (83504, false)] {
+    for (frames, fits) in [(106705, true), (106706, false)] {
         let long = Audio::new(vec![vec![0.0; frames + 961]], RATE).unwrap();
         let result = long.pitch_track(&PitchOptions::new(100.0, 2000.0, 1));
         match fits {
@@ -1230,4 +1230,71 @@ fn narrow_pulses_with_strict_thresholds_and_clean_octaves() {
             assert!(a.confidence > 0.5, "{frame:?}");
         }
     }
+}
+
+#[test]
+fn a_narrow_pulse_past_the_gate_and_placed_octave_rivals() {
+    let pulse = |rate: u32, f: f64, n: usize, len: usize| -> Vec<f32> {
+        (0..len)
+            .map(|i| {
+                (1..=n)
+                    .map(|k| {
+                        let k = k as f64;
+                        0.1 * (PI * k * 0.02).sin() / k
+                            * (2.0 * PI * k * f * i as f64 / rate as f64).cos()
+                    })
+                    .sum::<f64>() as f32
+            })
+            .collect()
+    };
+    // A 2 % B5 pulse at threshold 0.01: its period's table depth is above the
+    // gate, so its repeat is found first, and half of it is the pitch; with the
+    // ceiling below the note, the frame has none rather than the octave below.
+    let f = 987.77;
+    let samples = pulse(RATE, f, 20, 9600);
+    for (high, voiced) in [(1200.0, true), (950.0, false)] {
+        let strict = PitchOptions {
+            threshold: 0.01,
+            ..PitchOptions::new(475.0, high, 480)
+        };
+        for frame in &mono(samples.clone()).pitch_track(&strict).unwrap().frames {
+            match voiced {
+                true => {
+                    let p = frame.frequency_hz.expect("voiced");
+                    assert!(cents(p, f).abs() < 5.0, "{frame:?}");
+                }
+                false => assert_eq!(frame.frequency_hz, None, "{frame:?}"),
+            }
+        }
+    }
+    // An 8 % pulse over a weak sine an octave below, at 16 kHz: where the pulse
+    // is the pitch, the octave below is placed exactly and offered.
+    let rate = 16_000;
+    let g = 585.5;
+    let samples: Vec<f32> = (0..4800)
+        .map(|i| {
+            let t = i as f64 / rate as f64;
+            let pulse: f64 = (1..)
+                .map(|k| k as f64)
+                .take_while(|&k| k * g < 0.45 * rate as f64)
+                .map(|k| 0.4 * (PI * k * 0.08).sin() / k * (2.0 * PI * k * g * t).sin())
+                .sum();
+            (pulse + 0.05 * (PI * g * t).sin()) as f32
+        })
+        .collect();
+    let t = Audio::new(vec![samples], rate)
+        .unwrap()
+        .pitch_track(&PitchOptions::new(235.0, 760.0, 160))
+        .unwrap();
+    let mut offered = 0;
+    for frame in t
+        .frames
+        .iter()
+        .filter(|f| cents(f.frequency_hz.unwrap(), g).abs() < 5.0)
+    {
+        let a = frame.alternative.expect("the octave below");
+        assert!(cents(a.frequency_hz, g / 2.0).abs() < 5.0, "{frame:?}");
+        offered += 1;
+    }
+    assert!(offered > 0, "{:?}", t.frames);
 }

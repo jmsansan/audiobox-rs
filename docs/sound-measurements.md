@@ -196,8 +196,12 @@ fn melody(voice: &Audio) -> Result<()> {
     sample decides a strict threshold. A dip that then fails the threshold keeps
     its own place.
     The table's depth is too coarse for a strict threshold.
-  The first dip whose depth passes the threshold is YIN's choice; if its period
-  is outside the range, the frame has no pitch. In the tests, across 16, 44.1
+  The first dip whose depth passes the threshold is YIN's choice, unless the
+  deepest dip by the table within a semitone of half its period, located and
+  measured exactly, passes too: the table can put a narrow pulse's period so far
+  above its exact depth that it is never measured, and its repeat would be
+  chosen an octave low. If the chosen period is outside the range, the frame has
+  no pitch. In the tests, across 16, 44.1
   and 48 kHz, sines err by 0.12 cents at most, tones of up to 10 harmonics by 2
   cents (in the parabola's range, just above 48 samples), as long as the sound
   has no strong content within a tenth of the Nyquist frequency, which no
@@ -209,9 +213,10 @@ fn melody(voice: &Audio) -> Result<()> {
   without one, as for a tone below the range); 0 when silent.
 - **Alternative.** For a voiced frame, the other octave: of the dips in the
   range within a semitone of half or twice the pitch's period, refined as any
-  dip is, the deepest of each octave by the table is measured as the pitch is
-  (two exact depths a frame, however many dips the bands hold), over the whole window with the signal
-  interpolated, at its own place, so the two compare like with like. A
+  dip is, the deepest of each octave by the table is located exactly and
+  measured over the whole window with the signal interpolated, there and at its
+  own place, the deeper kept (one search and two exact depths an octave, however
+  many dips the bands hold), so that it compares with the pitch like with like. A
   sound with a weak fundamental and a strong octave has both
   octaves as dips, so the pitch and the alternative are the two candidates:
   when their confidences are close, the octave is ambiguous, and the caller
@@ -240,12 +245,12 @@ Bad options, a missing channel, a range outside the input and non-finite samples
 return `InvalidArgument`. `min_hz` is at least `sample_rate / MAX_PITCH_LAG`
 (8192) and `max_hz` at most `sample_rate / MIN_PITCH_LAG` (8). The default
 `Limits` apply, plus at most `MAX_PITCH_FRAMES` (1,048,576) frames and
-`MAX_PITCH_WORK` (2³⁶, a work estimate of frames × (L × (log₂ L + 1) + 8 × 2¹⁶ +
-600 × W), with L the power of two at or above the frame's span, W the
-integration window, 8 × 2¹⁶ for four exact searches and 600 × W
+`MAX_PITCH_WORK` (2³⁷, a work estimate of frames × (L × (log₂ L + 1) + 14 × 2¹⁶ +
+750 × W), with L the power of two at or above the frame's span, W the
+integration window, 14 × 2¹⁶ for seven exact searches and 750 × W
 for the correlation table, the exact depths and the refinement of dips),
 counted before any frame is measured, or `LimitExceeded`. Ten minutes at
-48 kHz from 60 Hz to 2 kHz every 10 ms is about 62 billion (about 13 s here for
+48 kHz from 60 Hz to 2 kHz every 10 ms is about 92 billion (about 16 s here for
 a high-pitched sound). Several channels
 are mixed once, into one buffer of the input's length. Silent frames skip the
 transforms. The FFT uses the platform's math, so pitches are for reports and
