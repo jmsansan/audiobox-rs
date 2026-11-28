@@ -110,9 +110,8 @@ pub struct HarmonicEnergy {
     /// fewer). There is no fixed bound: bins are assigned to a band by their centre
     /// frequencies, and a partial's window lobe spreads over neighbouring bins, so
     /// how much of a partial outside a band lands in it depends on where the band's
-    /// edge and the partial fall among the bins (with 24 bins and 25 cents, from
-    /// none to about half for a partial a sixth of the fundamental from the tenth
-    /// harmonic). Bands widen with the harmonic and with `tolerance_cents`: at 25
+    /// edge and the partial fall among the bins, and on the frame length.
+    /// Bands widen with the harmonic and with `tolerance_cents`: at 25
     /// cents, from the 12th harmonic on, a band is wider than a sixth of the
     /// fundamental.
     pub fundamental_bins: f64,

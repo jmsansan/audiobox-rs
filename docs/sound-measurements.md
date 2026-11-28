@@ -353,7 +353,8 @@ fn inharmonicity(note: &Audio) -> Result<()> {
   depends on where its edge and the partial fall among the bins. The bands widen with the
   harmonic, too: at 25 cents, from the 12th harmonic on, a band is wider than a
   sixth of the fundamental, so a partial that close to a high harmonic counts
-  largely as it, more so with longer frames; a smaller `tolerance_cents`
+  largely as it, by an amount that depends on where its bins fall; a smaller
+  `tolerance_cents`
   narrows the bands.
 - **Shares.** `harmonic_shares` per harmonic, `harmonic_share` for all bands and
   `inharmonic_share` for the rest, each from 0 to 1. When there is no energy to
