@@ -229,6 +229,9 @@ struct Yin {
     /// shortest periods' and `CONTEXT` beyond, for evaluating short periods
     /// between samples.
     correlation: Vec<f64>,
+    /// Running sums of the frame and its window's mean, for that table.
+    sums: Vec<f64>,
+    mean: f64,
 }
 
 impl Yin {
@@ -247,6 +250,8 @@ impl Yin {
             difference: vec![0.0; max_lag + 1],
             cumulative: vec![0.0; max_lag + 1],
             correlation: vec![0.0; max_lag.min(EXACT_LAG as usize + 1) + 2 * CONTEXT + 1],
+            sums: vec![0.0; window + max_lag + 1],
+            mean: 0.0,
         }
     }
 
@@ -335,16 +340,28 @@ impl Yin {
         let w = self.window;
         let n = self.size as f64;
         let frame = &context[CONTEXT..];
+        // The frame's sums, for removing the window's mean: the difference between
+        // samples is the same with any constant added, but its terms, interpolated
+        // two ways, would not cancel one exactly.
+        self.sums[0] = 0.0;
+        for (j, v) in frame[..self.sums.len() - 1].iter().enumerate() {
+            self.sums[j + 1] = self.sums[j] + v;
+        }
+        let m = self.sums[w] / w as f64;
+        self.mean = m;
+        let sum = |from: usize| self.sums[from + w] - self.sums[from];
         for (i, c) in self.correlation.iter_mut().enumerate() {
             // Lag i - CONTEXT. The transforms gave the lags from 0 to max_lag;
             // the others, before the frame or past its last lag, are summed here:
             // frame[j + lag] is context[CONTEXT + j + lag] = context[i + j].
             *c = match i.checked_sub(CONTEXT) {
-                Some(lag) if lag <= self.max_lag => self.b_real[lag] / n,
+                Some(lag) if lag <= self.max_lag => {
+                    self.b_real[lag] / n - m * (sum(0) + sum(lag)) + w as f64 * m * m
+                }
                 _ => frame[..w]
                     .iter()
                     .zip(&context[i..i + w])
-                    .map(|(a, b)| a * b)
+                    .map(|(a, b)| (a - m) * (b - m))
                     .sum(),
             };
         }
@@ -357,7 +374,12 @@ impl Yin {
     /// shifted window linearly, which errs by about 1 / window of it.
     fn difference_at(&self, tau: f64) -> f64 {
         let w = self.window;
-        let energy = |from: usize| self.squares[from + w] - self.squares[from];
+        // The energy of the shifted window with its mean removed, as the table.
+        let m = self.mean;
+        let energy = |from: usize| {
+            let sum = self.sums[from + w] - self.sums[from];
+            self.squares[from + w] - self.squares[from] - 2.0 * m * sum + w as f64 * m * m
+        };
         let whole = tau.floor() as usize;
         let frac = tau - whole as f64;
         let weights = kernel(frac);

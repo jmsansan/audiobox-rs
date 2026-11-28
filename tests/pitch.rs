@@ -964,3 +964,28 @@ fn exact_search_decides_dc_offsets_cancel() {
         assert!(frame.confidence > 0.85, "{frame:?}");
     }
 }
+
+#[test]
+fn a_tiny_tone_on_an_offset_with_a_strict_threshold() {
+    // D5 at 16 kHz, 0.004 on a 0.1 offset: the offset cancels between samples.
+    let rate = 16_000u32;
+    let f = 1174.659;
+    let samples: Vec<f32> = (0..4800)
+        .map(|i| (0.1 + 0.004 * (2.0 * PI * f * i as f64 / rate as f64).sin()) as f32)
+        .collect();
+    let strict = PitchOptions {
+        threshold: 0.02,
+        ..PitchOptions::new(100.0, 2000.0, 160)
+    };
+    let t = Audio::new(vec![samples], rate)
+        .unwrap()
+        .pitch_track(&strict)
+        .unwrap();
+    for frame in t.frames.iter().filter(|f| f.state == PitchState::Voiced) {
+        assert!(
+            cents(frame.frequency_hz.unwrap(), f).abs() < 5.0,
+            "{frame:?}"
+        );
+    }
+    assert!(t.frames.iter().any(|f| f.state == PitchState::Voiced));
+}

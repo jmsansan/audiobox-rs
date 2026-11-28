@@ -227,7 +227,7 @@ return `InvalidArgument`. `min_hz` is at least `sample_rate / MAX_PITCH_LAG`
 integration window, 3 × 2¹⁶ for refining short periods between samples and 34 × W
 for the correlations that needs beyond the transforms'),
 counted before any frame is measured, or `LimitExceeded`. Ten minutes at
-48 kHz from 60 Hz to 2 kHz every 10 ms is about 11 billion (about 11 s here for
+48 kHz from 60 Hz to 2 kHz every 10 ms is about 15 billion (about 11 s here for
 a high-pitched sound). Several channels
 are mixed once, into one buffer of the input's length. Silent frames skip the
 transforms. The FFT uses the platform's math, so pitches are for reports and
