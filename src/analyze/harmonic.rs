@@ -105,15 +105,16 @@ pub struct HarmonicEnergy {
     /// other bins, and the shares say more about the cut than the sound.
     pub padded: bool,
     /// The bins the fundamental spans, `fundamental_hz / (sample_rate / fft_size)`:
-    /// how finely the window separates frequencies. At the default 25 cents,
-    /// [`HARMONIC_BINS`] (24) or more keep a partial a sixth of the fundamental from
-    /// a low harmonic mostly out of its
-    /// band (its window lobe can still put up to a sixth of its power there, as
-    /// near the tenth harmonic); fewer resolve less (a short range gets fewer), and
-    /// wider bands hold
-    /// more of it, as far as its strongest bins fall inside them. The bands
-    /// widen with the harmonic: at 25 cents, from the 12th harmonic on, a band is
-    /// wider than a sixth of the fundamental.
+    /// how finely the window separates frequencies. More bins keep a partial near
+    /// a harmonic further out of its band; fewer resolve less (a short range gets
+    /// fewer). There is no fixed bound: bins are assigned to a band by their centre
+    /// frequencies, and a partial's window lobe spreads over neighbouring bins, so
+    /// how much of a partial outside a band lands in it depends on where the band's
+    /// edge and the partial fall among the bins (with 24 bins and 25 cents, from
+    /// none to about half for a partial a sixth of the fundamental from the tenth
+    /// harmonic). Bands widen with the harmonic and with `tolerance_cents`: at 25
+    /// cents, from the 12th harmonic on, a band is wider than a sixth of the
+    /// fundamental.
     pub fundamental_bins: f64,
     /// The harmonics counted: every multiple of the fundamental up to half the
     /// sample rate.

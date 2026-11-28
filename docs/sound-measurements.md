@@ -348,7 +348,9 @@ fn inharmonicity(note: &Audio) -> Result<()> {
   shorter range, or frames set shorter by hand, give fewer bins and resolve less
   (a quarter second of 55 Hz at 48 kHz gets 8192-sample frames, 9.4 bins: such a
   partial is then partly counted as the third harmonic). The result reports the
-  bins the fundamental spans (`fundamental_bins`). The bands widen with the
+  bins the fundamental spans (`fundamental_bins`). Bins are assigned to a band by
+  their centre frequencies, so how much of a nearby partial lands in a band also
+  depends on where its edge and the partial fall among the bins. The bands widen with the
   harmonic, too: at 25 cents, from the 12th harmonic on, a band is wider than a
   sixth of the fundamental, so a partial that close to a high harmonic counts
   largely as it, more so with longer frames; a smaller `tolerance_cents`
