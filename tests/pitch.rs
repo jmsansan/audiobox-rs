@@ -1185,3 +1185,49 @@ fn measurements_go_to_the_deepest_dips_and_octave_candidates() {
         .frequency_hz;
     assert!(cents(other, g / 2.0).abs() < 5.0, "{frame:?}");
 }
+
+#[test]
+fn narrow_pulses_with_strict_thresholds_and_clean_octaves() {
+    // A band-limited pulse of `n` harmonics at `f` Hz and `duty`, in cosine phase.
+    let pulse = |rate: u32, f: f64, duty: f64, n: usize, len: usize| -> Vec<f32> {
+        (0..len)
+            .map(|i| {
+                (1..=n)
+                    .map(|k| {
+                        let k = k as f64;
+                        0.1 * (PI * k * duty).sin() / k
+                            * (2.0 * PI * k * f * i as f64 / rate as f64).cos()
+                    })
+                    .sum::<f64>() as f32
+            })
+            .collect()
+    };
+    // A 2 % pulse at 878 Hz, threshold 0.01: the fundamental, located exactly
+    // when its parabola's place fails, not the octave below.
+    let rate = 44_100;
+    let f = 878.066;
+    let strict = PitchOptions {
+        threshold: 0.01,
+        ..PitchOptions::new(400.0, 1200.0, 441)
+    };
+    let t = Audio::new(vec![pulse(rate, f, 0.02, 20, 8820)], rate)
+        .unwrap()
+        .pitch_track(&strict)
+        .unwrap();
+    for frame in &t.frames {
+        let p = frame.frequency_hz.expect("voiced");
+        assert!(cents(p, f).abs() < 5.0, "{frame:?}");
+    }
+    // A clean 5 % pulse at 110 Hz: no rival an octave up.
+    let t = Audio::new(vec![pulse(RATE, 110.0, 0.05, 30, 9600)], RATE)
+        .unwrap()
+        .pitch_track(&PitchOptions::new(60.0, 1000.0, 480))
+        .unwrap();
+    for frame in &t.frames {
+        let p = frame.frequency_hz.expect("voiced");
+        assert!(cents(p, 110.0).abs() < 5.0, "{frame:?}");
+        if let Some(a) = frame.alternative {
+            assert!(a.confidence > 0.5, "{frame:?}");
+        }
+    }
+}

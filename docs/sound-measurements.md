@@ -190,8 +190,11 @@ fn melody(voice: &Audio) -> Result<()> {
     sinc. A short one, and a longer one whose parabola puts it within 20 cents of
     an end of the range, where a cent can decide, is first located exactly too,
     the same way over four periods (64 to 384 samples) mid-window; another longer
-    one keeps its parabola's place, which a short search would bias for a dip that
-    is no exact period. A dip that then fails the threshold keeps its own place.
+    one is measured at its parabola's place, which a short search would bias for
+    a dip that is no exact period, and located exactly only when it fails there:
+    the parabola can misplace a dip so narrow (a pulse's) that a fraction of a
+    sample decides a strict threshold. A dip that then fails the threshold keeps
+    its own place.
     The table's depth is too coarse for a strict threshold.
   The first dip whose depth passes the threshold is YIN's choice; if its period
   is outside the range, the frame has no pitch. In the tests, across 16, 44.1
@@ -204,16 +207,18 @@ fn melody(voice: &Audio) -> Result<()> {
   the normalized difference at the refined bottom, from 0 to 1: of the pitch's
   dip for a voiced frame, of the deepest dip in the range for an unvoiced one (0
   without one, as for a tone below the range); 0 when silent.
-- **Alternative.** For a voiced frame, the other octave: the deepest dip in the
+- **Alternative.** For a voiced frame, the other octave: of the dips in the
   range within a semitone of half or twice the pitch's period, refined as any
-  dip is, and measured as the pitch is, over the whole window with the signal
+  dip is, the deepest of each octave by the table is measured as the pitch is
+  (two exact depths a frame, however many dips the bands hold), over the whole window with the signal
   interpolated, at its own place, so the two compare like with like. A
   sound with a weak fundamental and a strong octave has both
   octaves as dips, so the pitch and the alternative are the two candidates:
   when their confidences are close, the octave is ambiguous, and the caller
-  decides. Any periodic sound also repeats at twice its period, so that dip
-  counts only when deeper than the pitch by more than 0.01 and the parabola's
-  uncertainty (how much it lowered either depth): a clean tone has no rival.
+  decides. Half the period counts only with a confidence above 0.5. Any
+  periodic sound also repeats at twice its period, so that dip counts only when
+  deeper than the pitch by more than 0.01 and the parabola's uncertainty (how
+  much it lowered either depth): a clean tone has no rival.
   Other periods, such as a fifth's, are not offered.
 - **Smoothing.** `median` (odd, 1 to 15) replaces each voiced pitch with the median
   of the voiced pitches within that many frames; silent and unvoiced frames stay

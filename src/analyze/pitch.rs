@@ -122,9 +122,11 @@ pub struct PitchFrame {
     /// The confidence of the pitch for a voiced frame, of the deepest dip in the
     /// range for an unvoiced one (0 without one); 0 when silent.
     pub confidence: f64,
-    /// The other octave of a voiced frame: the deepest dip in the range within a
-    /// semitone of half or twice the pitch's period. When its confidence is close
-    /// to the pitch's, the octave is ambiguous. Twice the period, which any
+    /// The other octave of a voiced frame: the deeper of the two dips, each the
+    /// deepest by the table in the range within a semitone of half or twice the
+    /// pitch's period, measured exactly. When its confidence is close to the
+    /// pitch's, the octave is ambiguous. Half the period counts only with a
+    /// confidence above 0.5. Twice the period, which any
     /// periodic sound repeats at, counts only when deeper by more than 0.01 and the
     /// refinement's uncertainty. `None` when the frame is not voiced or has no such
     /// dip. With smoothing, it and the confidence still describe the frame's own
@@ -764,30 +766,42 @@ impl Audio {
                 // about 1 / window, too coarse for a strict threshold. Up to
                 // `MAX_EXACT` such measurements a frame, kept for the confidence and
                 // the alternative too.
-                // A short period is placed exactly too, and a longer one within 20
-                // cents of an end of the range, where a cent can decide; otherwise
-                // a longer one keeps its parabola's place, which a short search
-                // would bias for a dip that is no exact period. A dip that fails
-                // keeps its own place.
+                // A short period is placed exactly first, and a longer one within
+                // 20 cents of an end of the range, where a cent can decide; another
+                // longer one is measured at its parabola's place, which a short
+                // search would bias for a dip that is no exact period, and located
+                // exactly only when it fails there, as the parabola can misplace a
+                // dip so narrow that a fraction of a sample decides a strict
+                // threshold. A dip that fails keeps its own place.
                 let cents_to_end = |lag: f64| {
                     let f = rate / lag;
                     (1200.0 * (f / o.min_hz).log2())
                         .abs()
                         .min((1200.0 * (f / o.max_hz).log2()).abs())
                 };
+                // At most one search and two exact depths a dip.
                 let measure = |b: &mut Bottom| {
-                    let lag = if b.lag < EXACT_LAG || cents_to_end(b.lag) < 20.0 {
-                        yin.exact(x, b.lag)
-                    } else {
-                        b.lag
-                    };
+                    let first = b.lag < EXACT_LAG || cents_to_end(b.lag) < 20.0;
+                    let mut own = None;
+                    if !first {
+                        own = yin.exact_depth(&context, b.lag);
+                        if let Some(depth) = own.filter(|&d| d < o.threshold) {
+                            b.depth = depth;
+                            b.lowered = 0.0;
+                            return;
+                        }
+                    }
+                    let lag = yin.exact(x, b.lag);
                     if let Some(depth) = yin.exact_depth(&context, lag) {
                         if depth < o.threshold {
                             b.lag = lag;
                             b.depth = depth;
-                        } else if let Some(own) = yin.exact_depth(&context, b.lag) {
+                        } else if let Some(own) = own.or_else(|| yin.exact_depth(&context, b.lag)) {
                             b.depth = own.min(depth);
                         }
+                        b.lowered = 0.0;
+                    } else if let Some(own) = own {
+                        b.depth = own;
                         b.lowered = 0.0;
                     }
                 };
@@ -819,10 +833,20 @@ impl Audio {
                         let r = b.lag / (chosen.lag * k);
                         r.max(1.0 / r) < semitone
                     };
-                    // Each octave candidate is measured as the pitch was, over the
-                    // whole window with the signal interpolated, at its own place.
-                    frame.alternative = dips(lo)
-                        .filter(|b| in_range(b.lag) && (octave(b, 0.5) || octave(b, 2.0)))
+                    // The deepest dip of each octave by the table, measured as the
+                    // pitch was, over the whole window with the signal interpolated,
+                    // at its own place: two exact depths, however many dips the
+                    // bands hold. Half the period counts only when its confidence
+                    // is above one half, so that a clean tone has no rival there
+                    // either.
+                    let deepest = |k: f64| {
+                        dips(lo)
+                            .filter(|b| in_range(b.lag) && octave(b, k))
+                            .min_by(|a, b| a.depth.total_cmp(&b.depth))
+                    };
+                    frame.alternative = [deepest(0.5), deepest(2.0)]
+                        .into_iter()
+                        .flatten()
                         .map(|mut b| {
                             if let Some(depth) = yin.exact_depth(&context, b.lag) {
                                 b.depth = depth;
@@ -831,7 +855,7 @@ impl Audio {
                             b
                         })
                         .filter(|b| {
-                            octave(b, 0.5)
+                            octave(b, 0.5) && b.depth < 0.5
                                 || b.depth < chosen.depth - 0.01 - b.lowered.max(chosen.lowered)
                         })
                         .min_by(|a, b| a.depth.total_cmp(&b.depth))
