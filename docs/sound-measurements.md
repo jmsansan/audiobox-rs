@@ -303,7 +303,10 @@ fn inharmonicity(note: &Audio) -> Result<()> {
 - **Frames.** `HarmonicOptions::new` takes the shortest power of two of at least
   4096 samples in which the fundamental spans `HARMONIC_BINS` (24) bins, at most
   1,048,576, every half frame: 8192 samples at 220 Hz and 48 kHz, 32768 at 55
-  Hz, 65536 for a 41 Hz low E at 96 kHz. A shorter range gets the longest power
+  Hz, 65536 for a 41 Hz low E at 96 kHz. The length changes in steps of a
+  power of two, so ranges either side of a step, or fundamentals either side of
+  one, can give shares a few points apart on sounds with partials near a band's
+  edge. A shorter range gets the longest power
   of two within it, down to the length at which the fundamental spans
   `MIN_HARMONIC_BINS` (8) bins. A range shorter even than that is one frame,
   zero-padded, and the result says so (`padded`): the sound's cut-off edges
@@ -318,7 +321,11 @@ fn inharmonicity(note: &Audio) -> Result<()> {
   measured (one, or all). Frame `i` starts at `range.start + i × hop`, and when
   the hops leave a tail, one more frame ends at the range's end, so that every
   sample of the range is measured; it weighs as much as the fraction of a hop it
-  adds, so that a range one sample longer changes the shares by next to nothing.
+  adds, so that, for given frames, a range one sample longer changes the shares
+  by next to nothing. The window tapers toward a frame's ends, so sound in the
+  first and last few thousand samples of a range weighs less than sound in its
+  middle, and a partial heard only there is undercounted: leave the range some
+  margin around what is to be measured.
   Each
   frame's mean is removed before the window, so a DC offset adds nothing, and
   every bin but DC counts: rumble and aliases away from the harmonics are
@@ -340,8 +347,9 @@ fn inharmonicity(note: &Audio) -> Result<()> {
   partial is then partly counted as the third harmonic). The result reports the
   bins the fundamental spans (`fundamental_bins`). The bands widen with the
   harmonic, too: at 25 cents, from the 12th harmonic on, a band is wider than a
-  sixth of the fundamental, so a partial that close to a high harmonic counts as
-  it whatever the frames; a smaller `tolerance_cents` narrows the bands.
+  sixth of the fundamental, so a partial that close to a high harmonic counts
+  largely as it, more so with longer frames; a smaller `tolerance_cents`
+  narrows the bands.
 - **Shares.** `harmonic_shares` per harmonic, `harmonic_share` for all bands and
   `inharmonic_share` for the rest, each from 0 to 1. When there is no energy to
   share, as for silence, a DC offset alone or an empty range, the two totals are
