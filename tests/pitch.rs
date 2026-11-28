@@ -330,10 +330,10 @@ fn bad_arguments_are_refused() {
     assert_eq!(error.code, ErrorCode::LimitExceeded);
     assert_eq!(error.message, "Too many pitch analysis frames");
     // The work limit, 2^36, at its edge: at 20 Hz a frame spans 4807 frames,
-    // integrates over 2399 and transforms 8192, so 51420 frames ×
-    // (8192 × (13 + 1) + 4 × 2^16 + 400 × 2399) fit and one more does not. The input
+    // integrates over 2399 and transforms 8192, so 33064 frames ×
+    // (8192 × (13 + 1) + 8 × 2^16 + 600 × 2399) fit and one more does not. The input
     // is silent, so nothing is transformed.
-    for (frames, fits) in [(51420, true), (51421, false)] {
+    for (frames, fits) in [(33064, true), (33065, false)] {
         let long = Audio::new(vec![vec![0.0; frames + 4806]], RATE).unwrap();
         let result = long.pitch_track(&PitchOptions::new(20.0, 1000.0, 1));
         match fits {
@@ -342,9 +342,9 @@ fn bad_arguments_are_refused() {
         }
     }
     // A shorter frame: 100 Hz to 2 kHz spans 962 frames, integrates over 479 and
-    // transforms 1024, so 147781 frames × (1024 × (10 + 1) + 4 × 2^16 + 400 ×
+    // transforms 1024, so 83503 frames × (1024 × (10 + 1) + 8 × 2^16 + 600 ×
     // 479) fit and one more does not.
-    for (frames, fits) in [(147781, true), (147782, false)] {
+    for (frames, fits) in [(83503, true), (83504, false)] {
         let long = Audio::new(vec![vec![0.0; frames + 961]], RATE).unwrap();
         let result = long.pitch_track(&PitchOptions::new(100.0, 2000.0, 1));
         match fits {
@@ -1127,4 +1127,61 @@ fn a_bright_note_at_the_floor_just_over_48_samples() {
             );
         }
     }
+}
+
+#[test]
+fn measurements_go_to_the_deepest_dips_and_octave_candidates() {
+    let rate = 16_000u32;
+    let pulse = |f: f64, duty: f64, amp: f64, i: usize| -> f64 {
+        (1..)
+            .map(|k| k as f64 * f)
+            .take_while(|&h| h < 0.45 * rate as f64)
+            .enumerate()
+            .map(|(n, h)| {
+                let k = (n + 1) as f64;
+                amp * (PI * k * duty).sin() / k * (2.0 * PI * h * i as f64 / rate as f64).sin()
+            })
+            .sum()
+    };
+    // A sine with a strong pulse at its third harmonic, threshold 0.01: the
+    // fundamental is measured exactly and kept, not its repeat.
+    let f = 316.832;
+    let samples: Vec<f32> = (0..4800)
+        .map(|i| {
+            (0.3 * (2.0 * PI * f * i as f64 / rate as f64).sin() + pulse(3.0 * f, 0.1, 0.4, i))
+                as f32
+        })
+        .collect();
+    let strict = PitchOptions {
+        threshold: 0.01,
+        ..PitchOptions::new(140.0, 400.0, 160)
+    };
+    for frame in &Audio::new(vec![samples], rate)
+        .unwrap()
+        .pitch_track(&strict)
+        .unwrap()
+        .frames
+    {
+        if let Some(p) = frame.frequency_hz {
+            assert!(cents(p, f).abs() < 5.0, "{frame:?}");
+        }
+    }
+    // A pulse over a weak sine an octave below: the octave below is offered.
+    let g = 673.684;
+    let samples: Vec<f32> = (0..4800)
+        .map(|i| {
+            (pulse(g, 0.08, 0.4, i) + 0.05 * (2.0 * PI * g / 2.0 * i as f64 / rate as f64).sin())
+                as f32
+        })
+        .collect();
+    let t = Audio::new(vec![samples], rate)
+        .unwrap()
+        .pitch_track(&PitchOptions::new(235.0, 760.0, 160))
+        .unwrap();
+    let frame = t.frames[0];
+    let other = frame
+        .alternative
+        .expect("an octave alternative")
+        .frequency_hz;
+    assert!(cents(other, g / 2.0).abs() < 5.0, "{frame:?}");
 }

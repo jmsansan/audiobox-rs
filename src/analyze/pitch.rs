@@ -18,17 +18,17 @@ const MIN_PITCH_WINDOW: usize = 96;
 /// Periods shorter than this, in frames, are refined by evaluating the
 /// difference between samples; longer ones by a parabola.
 const EXACT_LAG: f64 = 48.0;
-/// The work, per frame, of the two exact searches of a short period in the
+/// The work, per frame, of the four exact searches in the
 /// units of [`MAX_PITCH_WORK`]: 10 evaluations of at most 384 terms of 32 taps
-/// each, within 4 × 2^16, plus `WINDOW_WORK` per frame of the window.
-const EXACT_WORK: u64 = 4 << 16;
+/// each, within 8 × 2^16, plus `WINDOW_WORK` per frame of the window.
+const EXACT_WORK: u64 = 8 << 16;
 /// The work per frame of the window of the rest: the correlation table's lags
-/// beyond the transforms' (2 × `CONTEXT`), up to four exact depths over the window
-/// (4 × 32) and the refinement of the dips from the table, at most one every two
+/// beyond the transforms' (2 × `CONTEXT`), up to ten exact depths over the window
+/// (10 × 32) and the refinement of the dips from the table, at most one every two
 /// lags, a few hundred operations each; rounded up.
-const WINDOW_WORK: u64 = 400;
+const WINDOW_WORK: u64 = 600;
 /// The most exact searches of a short period in one frame, within `EXACT_WORK`.
-const MAX_EXACT: usize = 2;
+const MAX_EXACT: usize = 4;
 /// How far above the threshold a short dip's table depth may be and still have
 /// its exact depth decide.
 const EXACT_MARGIN: f64 = 0.03;
@@ -43,9 +43,9 @@ const CONTEXT: usize = HALF + 1;
 /// The widest median smoothing, in frames.
 pub const MAX_PITCH_MEDIAN: usize = 15;
 /// The most work one [`Audio::pitch_track`] is allowed, as an estimate: analysis
-/// frames × (L × (log₂ L + 1) + 4 × 2^16 + 400 × W), with L the transform size, the
+/// frames × (L × (log₂ L + 1) + 8 × 2^16 + 600 × W), with L the transform size, the
 /// power of two at or above [`PitchTrack::span_frames`], W the integration
-/// window, 4 × 2^16 for two exact searches and 400 × W for the
+/// window, 8 × 2^16 for four exact searches and 600 × W for the
 /// correlation table, the exact depths and the refinement of dips. Every frame
 /// counts, silent or not.
 pub const MAX_PITCH_WORK: u64 = 1 << 36;
@@ -764,41 +764,42 @@ impl Audio {
                 // about 1 / window, too coarse for a strict threshold. Up to
                 // `MAX_EXACT` such measurements a frame, kept for the confidence and
                 // the alternative too.
+                // A short period is placed exactly too, and a longer one within 20
+                // cents of an end of the range, where a cent can decide; otherwise
+                // a longer one keeps its parabola's place, which a short search
+                // would bias for a dip that is no exact period. A dip that fails
+                // keeps its own place.
+                let cents_to_end = |lag: f64| {
+                    let f = rate / lag;
+                    (1200.0 * (f / o.min_hz).log2())
+                        .abs()
+                        .min((1200.0 * (f / o.max_hz).log2()).abs())
+                };
+                let measure = |b: &mut Bottom| {
+                    let lag = if b.lag < EXACT_LAG || cents_to_end(b.lag) < 20.0 {
+                        yin.exact(x, b.lag)
+                    } else {
+                        b.lag
+                    };
+                    if let Some(depth) = yin.exact_depth(&context, lag) {
+                        if depth < o.threshold {
+                            b.lag = lag;
+                            b.depth = depth;
+                        } else if let Some(own) = yin.exact_depth(&context, b.lag) {
+                            b.depth = own.min(depth);
+                        }
+                        b.lowered = 0.0;
+                    }
+                };
+                // In YIN's order, from the shortest lag, up to `MAX_EXACT` dips near
+                // the threshold are measured, enough that a few that fail leave
+                // some for a deeper one.
                 let mut searches = 0;
                 let mut first = None;
                 for b in all.iter_mut() {
-                    if b.depth >= o.threshold + EXACT_MARGIN {
-                        continue;
-                    }
-                    if searches < MAX_EXACT {
+                    if b.depth < o.threshold + EXACT_MARGIN && searches < MAX_EXACT {
                         searches += 1;
-                        // A short period is placed exactly too, and a longer one
-                        // within 20 cents of an end of the range, where a cent can
-                        // decide; otherwise a longer one keeps its parabola's
-                        // place, which a short search would bias for a dip that is
-                        // no exact period.
-                        let cents_to_end = |lag: f64| {
-                            let f = rate / lag;
-                            (1200.0 * (f / o.min_hz).log2())
-                                .abs()
-                                .min((1200.0 * (f / o.max_hz).log2()).abs())
-                        };
-                        let lag = if b.lag < EXACT_LAG || cents_to_end(b.lag) < 20.0 {
-                            yin.exact(x, b.lag)
-                        } else {
-                            b.lag
-                        };
-                        if let Some(depth) = yin.exact_depth(&context, lag) {
-                            if depth < o.threshold {
-                                b.lag = lag;
-                                b.depth = depth;
-                            } else if let Some(own) = yin.exact_depth(&context, b.lag) {
-                                // A dip that fails keeps its own place, which a
-                                // search for a period it does not have may move.
-                                b.depth = own.min(depth);
-                            }
-                            b.lowered = 0.0;
-                        }
+                        measure(b);
                     }
                     if b.depth < o.threshold {
                         first = Some(*b);
@@ -818,13 +819,20 @@ impl Audio {
                         let r = b.lag / (chosen.lag * k);
                         r.max(1.0 / r) < semitone
                     };
+                    // Each octave candidate is measured as the pitch was, over the
+                    // whole window with the signal interpolated, at its own place.
                     frame.alternative = dips(lo)
+                        .filter(|b| in_range(b.lag) && (octave(b, 0.5) || octave(b, 2.0)))
+                        .map(|mut b| {
+                            if let Some(depth) = yin.exact_depth(&context, b.lag) {
+                                b.depth = depth;
+                                b.lowered = 0.0;
+                            }
+                            b
+                        })
                         .filter(|b| {
-                            in_range(b.lag)
-                                && (octave(b, 0.5)
-                                    || (octave(b, 2.0)
-                                        && b.depth
-                                            < chosen.depth - 0.01 - b.lowered.max(chosen.lowered)))
+                            octave(b, 0.5)
+                                || b.depth < chosen.depth - 0.01 - b.lowered.max(chosen.lowered)
                         })
                         .min_by(|a, b| a.depth.total_cmp(&b.depth))
                         .map(|b| PitchCandidate {
