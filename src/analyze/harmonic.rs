@@ -32,7 +32,7 @@ pub struct HarmonicOptions {
     /// less for longer frames), so that a sound weighs the same wherever it
     /// falls between the range's margins; content below a few bins, which each
     /// frame's mean removal and the skipped DC bin treat by frame, can still vary
-    /// by about a percent with its alignment.
+    /// by a few percent with its alignment (3 % for a two-cycle 11.7 Hz burst).
     pub hop: usize,
     /// How far from each harmonic its band reaches, in cents below and above it
     /// (finite, at least 0). Each side of the band is at least 2 bins wide, the
@@ -52,8 +52,9 @@ impl HarmonicOptions {
     /// least 4096 samples that does (8192 at 220 Hz and 48 kHz, 32768 at 55 Hz),
     /// at most 1048576, with a hop of a quarter frame. A range shorter than that
     /// gets the longest power of two within it, down to the length at which the
-    /// fundamental spans [`MIN_HARMONIC_BINS`] bins; shorter still, it is one
-    /// padded frame (see [`HarmonicEnergy::padded`]).
+    /// fundamental spans [`MIN_HARMONIC_BINS`] bins; shorter still, a nonempty range
+    /// is one padded frame (see [`HarmonicEnergy::padded`]), and an empty one has
+    /// none.
     pub fn new(fundamental_hz: f64, sample_rate: u32, range: Range<usize>) -> Self {
         // The shortest power of two, from 16 to 2^20, in which the fundamental
         // spans `bins` bins.
@@ -148,8 +149,9 @@ impl Audio {
     /// Frame `i` starts at `range.start + i * hop` and reads `fft_size` samples
     /// within the range; when the hops leave a tail, one more frame ends at the
     /// range's end, weighed by the fraction of a hop it adds. Only whole frames are
-    /// measured; a range shorter than one
-    /// frame is a single frame, zero-padded. Bad options, a range outside the
+    /// measured; a nonempty range shorter than one
+    /// frame is a single frame, zero-padded, and an empty range has none. Bad
+    /// options, a range outside the
     /// input, a missing channel and non-finite samples return `InvalidArgument`.
     /// Default [`Limits`] apply, plus at most [`MAX_HARMONIC_FRAMES`] frames and
     /// [`MAX_HARMONIC_WORK`], or `LimitExceeded`. The FFT uses the platform's math,

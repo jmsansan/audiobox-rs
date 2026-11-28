@@ -319,7 +319,8 @@ fn inharmonicity(note: &Audio) -> Result<()> {
   0.3 % at 32 points, far less for longer frames), so that a sound weighs
   the same wherever it falls between the range's margins; content below a few
   bins, which each frame's mean removal and the skipped DC bin treat by frame, can
-  still vary by about a percent with its alignment.
+  still vary by a few percent with its alignment (3 % for a two-cycle 11.7 Hz
+  burst).
 - **Energy.** The Hann-windowed one-sided power spectrum, from the magnitudes of
   `analyze::spectrum` (half an interior bin's magnitude squared, all of it at
   Nyquist, so that a sine and a Nyquist component of the same RMS weigh the
@@ -328,7 +329,8 @@ fn inharmonicity(note: &Audio) -> Result<()> {
   the hops leave a tail, one more frame ends at the range's end, so that every
   sample of the range is measured; it weighs as much as the fraction of a hop it
   adds, so that, for given frames, a range one sample longer changes the shares
-  by next to nothing. The window tapers toward a frame's ends, so sound in the
+  by next to nothing, unless that sample is far louder than the rest (a splice
+  after a near-silent range). The window tapers toward a frame's ends, so sound in the
   first and last few thousand samples of a range weighs less than sound in its
   middle, and a partial heard only there is undercounted: leave the range some
   margin around what is to be measured.
