@@ -355,8 +355,9 @@ fn inharmonicity(note: &Audio) -> Result<()> {
   sixth of the fundamental, so a partial that close to a high harmonic is counted
   partly as it, by an amount that depends on where it and the band's edges fall
   among the bins (from under a third to over half at the 12th harmonic); a smaller
-  `tolerance_cents`
-  narrows the bands.
+  `tolerance_cents` narrows the bands only within their clamps: each side stays at
+  least 2 bins and at most a quarter of the fundamental, so low harmonics already
+  at 2 bins and high ones at the quarter do not change.
 - **Shares.** `harmonic_shares` per harmonic, `harmonic_share` for all bands and
   `inharmonic_share` for the rest, each from 0 to 1. When there is no energy to
   share, as for silence, a DC offset alone or an empty range, the two totals are

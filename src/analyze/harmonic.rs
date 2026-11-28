@@ -111,7 +111,8 @@ pub struct HarmonicEnergy {
     /// how much of a partial near a band, inside or outside it, lands in it depends
     /// on where the band's
     /// edge and the partial fall among the bins, and on the frame length.
-    /// Bands widen with the harmonic and with `tolerance_cents`: at 25
+    /// Bands widen with the harmonic and with `tolerance_cents`, within their clamps
+    /// (each side from 2 bins to a quarter of the fundamental): at 25
     /// cents, from the 12th harmonic on, a band is wider than a sixth of the
     /// fundamental.
     pub fundamental_bins: f64,
