@@ -21,6 +21,11 @@
   ambiguous), with optional median smoothing and `PitchTrack::median_frequency`
   (#77). The guide records its accuracy on generated fixtures and its limits on
   chords and mixes.
+- `Audio::harmonic_energy` gives the shares of spectral energy within a band
+  around each harmonic of a fundamental (supplied, or from a pitch track) and
+  elsewhere, over a range of input frames, with the bands, frames and options it
+  measured with: an indicator of aliasing or bell-like partials, not a verdict
+  (#162).
 
 ## 0.6.2 — 2026-11-27
 
