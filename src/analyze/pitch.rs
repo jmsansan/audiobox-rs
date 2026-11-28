@@ -558,9 +558,9 @@ impl Audio {
     /// holds and with their mean removed, is at or below `silence_db`: a DC offset
     /// or a level stuck at one value is silence. Otherwise YIN takes the first dip
     /// of its normalized difference, from the shortest period, whose bottom,
-    /// refined between samples, is below `threshold` (the deepest by the table, measured exactly, when
-    /// none is), or half its period when
-    /// that, measured exactly, is below it too. The frame is voiced when
+    /// refined between samples, is below `threshold` (or the deepest by the table,
+    /// measured exactly, when none is), or half its period when that, measured
+    /// exactly, is below it too. The frame is voiced when
     /// that dip's period lies in the range (within 5 cents of an end, and then set
     /// to it): a tone outside the range has no pitch rather than one of its
     /// period's multiples, and so has a weak fundamental under a strong harmonic
