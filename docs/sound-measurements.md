@@ -187,9 +187,12 @@ fn melody(voice: &Audio) -> Result<()> {
     the threshold plus 0.03 (well below it included) are then measured exactly,
     and the threshold decides on that: the difference over the whole window,
     its first samples included, with the signal itself interpolated by the same
-    sinc. A short one is first located exactly too, the same way over four
-    periods, or 64 samples if longer, mid-window; a longer one keeps its
-    parabola's place. The table's depth is too coarse for a strict threshold.
+    sinc. A short one, and a longer one whose parabola puts it within 20 cents of
+    an end of the range, where a cent can decide, is first located exactly too,
+    the same way over four periods (64 to 384 samples) mid-window; another longer
+    one keeps its parabola's place, which a short search would bias for a dip that
+    is no exact period. A dip that then fails the threshold keeps its own place.
+    The table's depth is too coarse for a strict threshold.
   The first dip whose depth passes the threshold is YIN's choice; if its period
   is outside the range, the frame has no pitch. In the tests, across 16, 44.1
   and 48 kHz, sines err by 0.12 cents at most, tones of up to 10 harmonics by 2
@@ -232,12 +235,12 @@ Bad options, a missing channel, a range outside the input and non-finite samples
 return `InvalidArgument`. `min_hz` is at least `sample_rate / MAX_PITCH_LAG`
 (8192) and `max_hz` at most `sample_rate / MIN_PITCH_LAG` (8). The default
 `Limits` apply, plus at most `MAX_PITCH_FRAMES` (1,048,576) frames and
-`MAX_PITCH_WORK` (2³⁵, a work estimate of frames × (L × (log₂ L + 1) + 3 × 2¹⁶ +
-300 × W), with L the power of two at or above the frame's span, W the
-integration window, 3 × 2¹⁶ for two exact searches of short periods and 300 × W
+`MAX_PITCH_WORK` (2³⁶, a work estimate of frames × (L × (log₂ L + 1) + 4 × 2¹⁶ +
+400 × W), with L the power of two at or above the frame's span, W the
+integration window, 4 × 2¹⁶ for two exact searches and 400 × W
 for the correlation table, the exact depths and the refinement of dips),
 counted before any frame is measured, or `LimitExceeded`. Ten minutes at
-48 kHz from 60 Hz to 2 kHz every 10 ms is about 28 billion (about 13 s here for
+48 kHz from 60 Hz to 2 kHz every 10 ms is about 36 billion (about 13 s here for
 a high-pitched sound). Several channels
 are mixed once, into one buffer of the input's length. Silent frames skip the
 transforms. The FFT uses the platform's math, so pitches are for reports and

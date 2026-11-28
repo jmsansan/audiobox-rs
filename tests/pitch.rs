@@ -329,11 +329,11 @@ fn bad_arguments_are_refused() {
         .unwrap_err();
     assert_eq!(error.code, ErrorCode::LimitExceeded);
     assert_eq!(error.message, "Too many pitch analysis frames");
-    // The work limit, 2^35, at its edge: at 20 Hz a frame spans 4807 frames,
-    // integrates over 2399 and transforms 8192, so 33326 frames ×
-    // (8192 × (13 + 1) + 3 × 2^16 + 300 × 2399) fit and one more does not. The input
+    // The work limit, 2^36, at its edge: at 20 Hz a frame spans 4807 frames,
+    // integrates over 2399 and transforms 8192, so 51420 frames ×
+    // (8192 × (13 + 1) + 4 × 2^16 + 400 × 2399) fit and one more does not. The input
     // is silent, so nothing is transformed.
-    for (frames, fits) in [(33326, true), (33327, false)] {
+    for (frames, fits) in [(51420, true), (51421, false)] {
         let long = Audio::new(vec![vec![0.0; frames + 4806]], RATE).unwrap();
         let result = long.pitch_track(&PitchOptions::new(20.0, 1000.0, 1));
         match fits {
@@ -342,9 +342,9 @@ fn bad_arguments_are_refused() {
         }
     }
     // A shorter frame: 100 Hz to 2 kHz spans 962 frames, integrates over 479 and
-    // transforms 1024, so 97731 frames × (1024 × (10 + 1) + 3 × 2^16 + 300 ×
+    // transforms 1024, so 147781 frames × (1024 × (10 + 1) + 4 × 2^16 + 400 ×
     // 479) fit and one more does not.
-    for (frames, fits) in [(97731, true), (97732, false)] {
+    for (frames, fits) in [(147781, true), (147782, false)] {
         let long = Audio::new(vec![vec![0.0; frames + 961]], RATE).unwrap();
         let result = long.pitch_track(&PitchOptions::new(100.0, 2000.0, 1));
         match fits {
@@ -1095,5 +1095,36 @@ fn an_onset_counts_and_a_bright_note_in_a_narrow_range() {
             cents(frame.frequency_hz.unwrap(), e4).abs() < 5.0,
             "{frame:?}"
         );
+    }
+}
+
+#[test]
+fn a_bright_note_at_the_floor_just_over_48_samples() {
+    // A 945 Hz pulse, 20 harmonics, at the floor of a 945–1100 Hz range: the
+    // exact search places it, so it stays in the range.
+    let f = 945.0;
+    let samples: Vec<f32> = (0..9600)
+        .map(|i| {
+            (1..=20)
+                .map(|k| {
+                    (PI * k as f64 * 0.04).sin() / k as f64
+                        * 0.3
+                        * (2.0 * PI * k as f64 * f * i as f64 / RATE as f64).sin()
+                })
+                .sum::<f64>() as f32
+        })
+        .collect();
+    for threshold in [0.15, 0.01] {
+        let o = PitchOptions {
+            threshold,
+            ..PitchOptions::new(f, 1100.0, 480)
+        };
+        for frame in &track(samples.clone(), o).frames {
+            assert_eq!(frame.state, PitchState::Voiced, "{threshold}: {frame:?}");
+            assert!(
+                cents(frame.frequency_hz.unwrap(), f).abs() < 1.0,
+                "{frame:?}"
+            );
+        }
     }
 }
