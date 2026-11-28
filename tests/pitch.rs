@@ -330,10 +330,10 @@ fn bad_arguments_are_refused() {
     assert_eq!(error.code, ErrorCode::LimitExceeded);
     assert_eq!(error.message, "Too many pitch analysis frames");
     // The work limit, 2^35, at its edge: at 20 Hz a frame spans 4807 frames,
-    // integrates over 2399 and transforms 8192, so 44,512 frames ×
-    // (8192 × (13 + 1) + 3 × (2^16 + 64 × 2399)) fit and 44,513 do not. The input
+    // integrates over 2399 and transforms 8192, so 104971 frames ×
+    // (8192 × (13 + 1) + 2^17 + 34 × 2399) fit and one more does not. The input
     // is silent, so nothing is transformed.
-    for (frames, fits) in [(44_512, true), (44_513, false)] {
+    for (frames, fits) in [(104971, true), (104972, false)] {
         let long = Audio::new(vec![vec![0.0; frames + 4806]], RATE).unwrap();
         let result = long.pitch_track(&PitchOptions::new(20.0, 1000.0, 1));
         match fits {
@@ -342,9 +342,9 @@ fn bad_arguments_are_refused() {
         }
     }
     // A shorter frame: 100 Hz to 2 kHz spans 962 frames, integrates over 479 and
-    // transforms 1024, so 114,593 frames × (1024 × (10 + 1) + 3 × (2^16 + 64 ×
-    // 479)) fit and 114,594 do not.
-    for (frames, fits) in [(114_593, true), (114_594, false)] {
+    // transforms 1024, so 216613 frames × (1024 × (10 + 1) + 2^17 + 34 ×
+    // 479) fit and one more does not.
+    for (frames, fits) in [(216613, true), (216614, false)] {
         let long = Audio::new(vec![vec![0.0; frames + 961]], RATE).unwrap();
         let result = long.pitch_track(&PitchOptions::new(100.0, 2000.0, 1));
         match fits {
@@ -863,4 +863,50 @@ fn strict_and_loose_thresholds_attacks_and_the_upper_margin() {
     );
     let other = frame.alternative.unwrap().frequency_hz;
     assert!(cents(other, 55.0).abs() < 10.0, "{frame:?}");
+}
+
+#[test]
+fn many_short_dips_and_a_loud_onset() {
+    let rate = 16_000u32;
+    let at = |parts: &[(f64, f64)]| -> Vec<f32> {
+        (0..(0.3 * rate as f64) as usize)
+            .map(|i| {
+                parts
+                    .iter()
+                    .map(|&(f, a)| a * (2.0 * PI * f * i as f64 / rate as f64).sin())
+                    .sum::<f64>() as f32
+            })
+            .collect()
+    };
+    // G5 with strong sixth and seventh harmonics: their many short dips do not
+    // keep the fundamental from being refined.
+    let f = 783.991;
+    let note = Audio::new(vec![at(&[(f, 0.3), (6.0 * f, 0.45), (7.0 * f, 0.5)])], rate).unwrap();
+    for (max_hz, voiced) in [(2000.0, true), (700.0, false)] {
+        let t = note
+            .pitch_track(&PitchOptions::new(60.0, max_hz, 160))
+            .unwrap();
+        for frame in &t.frames {
+            assert_eq!(frame.state == PitchState::Voiced, voiced, "{frame:?}");
+            if let Some(p) = frame.frequency_hz {
+                assert!(cents(p, f).abs() < 5.0, "{frame:?}");
+            }
+        }
+    }
+    // A loud 2 kHz click at the start of a quiet G5: the first frame is judged
+    // with the click.
+    let mut samples = at(&[(f, 0.1)]);
+    for (i, s) in samples.iter_mut().enumerate().take(200) {
+        let t = i as f64 / rate as f64;
+        *s += (0.8 * (-t / 0.0004).exp() * (2.0 * PI * 2000.0 * t).sin()) as f32;
+    }
+    let first = Audio::new(vec![samples], rate)
+        .unwrap()
+        .pitch_track(&PitchOptions::new(60.0, 2000.0, 160))
+        .unwrap()
+        .frames[0];
+    assert!(
+        first.state != PitchState::Voiced || first.confidence < 0.9,
+        "{first:?}"
+    );
 }

@@ -15,26 +15,31 @@ pub const MAX_PITCH_LAG: usize = 8192;
 pub const MIN_PITCH_LAG: usize = 8;
 /// The shortest integration window, in frames.
 const MIN_PITCH_WINDOW: usize = 96;
-/// Periods shorter than this, in frames, may be refined by evaluating the
-/// difference between samples; longer ones are refined by a parabola.
+/// Periods shorter than this, in frames, are refined by evaluating the
+/// difference between samples; longer ones by a parabola.
 const EXACT_LAG: f64 = 48.0;
-/// The work of that refinement, in the units of [`MAX_PITCH_WORK`]: 10
-/// evaluations of at most 192 terms of 32 taps.
-const EXACT_WORK: u64 = 1 << 16;
-/// The most refinements between samples in one frame.
-const MAX_REFINEMENTS: u64 = 3;
-/// How far above the threshold a short period's parabola may put its dip and
-/// still be refined before the threshold decides.
-const REFINE_MARGIN: f64 = 0.3;
-/// Short-period dips below this are refined whatever the threshold.
-const REFINE_BELOW: f64 = 0.6;
+/// The work, per frame, of the refinements between samples in the units of
+/// [`MAX_PITCH_WORK`]: at most 24 dips of short periods, a few hundred
+/// operations each, and one search of 10 evaluations of at most 192 terms of 32
+/// taps, within 2^17; plus `TABLE_WORK` per frame of the window for the
+/// correlation table.
+const EXACT_WORK: u64 = 1 << 17;
+/// The correlation table's lags not given by the transforms, rounded up:
+/// `CONTEXT` before the frame and as many past its last lag.
+const TABLE_WORK: u64 = 2 * CONTEXT as u64;
+/// Half the taps of the interpolating sinc.
+const HALF: usize = 16;
+/// Samples of the input read before and after each frame, for interpolating
+/// near its ends.
+const CONTEXT: usize = HALF + 1;
 /// The widest median smoothing, in frames.
 pub const MAX_PITCH_MEDIAN: usize = 15;
 /// The most work one [`Audio::pitch_track`] is allowed, as an estimate: analysis
-/// frames × (L × (log₂ L + 1) + 3 × (2^16 + 64 × W)), with L the transform size, the power
-/// of two at or above [`PitchTrack::span_frames`], W the integration window, and
-/// for each of up to three refinements between samples, a search (2^16) and two
-/// evaluations over the window. Every frame counts, silent or not.
+/// frames × (L × (log₂ L + 1) + 2^17 + 34 × W), with L the transform size, the
+/// power of two at or above [`PitchTrack::span_frames`], W the integration
+/// window, 2^17 for the refinements of short periods between samples and 34 × W
+/// for the correlations their table needs beyond the transforms'. Every frame
+/// counts, silent or not.
 pub const MAX_PITCH_WORK: u64 = 1 << 35;
 
 /// How [`Audio::pitch_track`] looks for a pitch.
@@ -213,8 +218,14 @@ struct Yin {
     b_imag: Vec<f64>,
     squares: Vec<f64>,
     normalized: Vec<f64>,
-    /// The raw difference, before normalization, for refining periods.
+    /// The raw difference, before normalization, for refining periods, and its
+    /// running sum from lag 1.
     difference: Vec<f64>,
+    cumulative: Vec<f64>,
+    /// The correlation over the window at whole lags from `-CONTEXT` to the
+    /// shortest periods' and `CONTEXT` beyond, for evaluating short periods
+    /// between samples.
+    correlation: Vec<f64>,
 }
 
 impl Yin {
@@ -231,6 +242,8 @@ impl Yin {
             squares: vec![0.0; window + max_lag + 1],
             normalized: vec![1.0; max_lag + 1],
             difference: vec![0.0; max_lag + 1],
+            cumulative: vec![0.0; max_lag + 1],
+            correlation: vec![0.0; max_lag.min(EXACT_LAG as usize + 1) + 2 * CONTEXT + 1],
         }
     }
 
@@ -270,6 +283,7 @@ impl Yin {
             let d = (e0 + energy(tau) - 2.0 * r).max(0.0);
             running += d;
             self.difference[tau] = d;
+            self.cumulative[tau] = running;
             self.normalized[tau] = if running > 0.0 {
                 d * tau as f64 / running
             } else {
@@ -312,42 +326,115 @@ impl Yin {
         }
     }
 
-    /// The minimum of the difference near `lag`, between samples. The difference
-    /// is summed at fractional lags directly, with `x` interpolated by a
-    /// Kaiser-windowed sinc, and its minimum found by parabolas over shrinking
-    /// steps. A parabola through the whole lags alone misses the sharp minimum
-    /// of a tone rich in harmonics by several cents at short periods.
-    fn exact(&self, x: &[f64], bottom: Bottom) -> Bottom {
-        let lag = bottom.lag;
-        const HALF: usize = 16;
+    /// Fills the correlation table from `context`: the frame with `CONTEXT`
+    /// samples of the input before and after it, zero where there are none.
+    fn correlate(&mut self, context: &[f64]) {
+        let w = self.window;
+        let n = self.size as f64;
+        let frame = &context[CONTEXT..];
+        for (i, c) in self.correlation.iter_mut().enumerate() {
+            // Lag i - CONTEXT. The transforms gave the lags from 0 to max_lag;
+            // the others, before the frame or past its last lag, are summed here:
+            // frame[j + lag] is context[CONTEXT + j + lag] = context[i + j].
+            *c = match i.checked_sub(CONTEXT) {
+                Some(lag) if lag <= self.max_lag => self.b_real[lag] / n,
+                _ => frame[..w]
+                    .iter()
+                    .zip(&context[i..i + w])
+                    .map(|(a, b)| a * b)
+                    .sum(),
+            };
+        }
+    }
+
+    /// The difference over the whole window at a fractional lag under
+    /// `EXACT_LAG`: e0 + e(tau) - 2 r(tau), the correlation r interpolated
+    /// between whole lags by the windowed sinc (the correlation of the window
+    /// with a band-limited sound is band-limited too), the energy e of the
+    /// shifted window linearly, which errs by about 1 / window of it.
+    fn difference_at(&self, tau: f64) -> f64 {
+        let w = self.window;
+        let energy = |from: usize| self.squares[from + w] - self.squares[from];
+        let whole = tau.floor() as usize;
+        let frac = tau - whole as f64;
+        let weights = kernel(frac);
+        // Tap i reads lag whole + i + 1 - HALF, at index whole + i + 1 - HALF +
+        // CONTEXT of the table.
+        let base = whole + 1 + CONTEXT - HALF;
+        let r: f64 = weights
+            .iter()
+            .zip(&self.correlation[base..base + 2 * HALF])
+            .map(|(a, b)| a * b)
+            .sum();
+        let e = if whole < self.max_lag {
+            energy(whole) + frac * (energy(whole + 1) - energy(whole))
+        } else {
+            energy(whole)
+        };
+        (energy(0) + e - 2.0 * r).max(0.0)
+    }
+
+    /// A dip of a period under `EXACT_LAG` refined between samples over the
+    /// whole window: its bottom found by parabolas over shrinking steps, and its
+    /// normalized depth there.
+    fn between(&self, bottom: Bottom) -> Bottom {
+        let low = (bottom.at as f64 - 1.0).max(1.5);
+        let high = (bottom.at as f64 + 1.0).min(self.max_lag as f64);
+        let mut tau = bottom.lag.clamp(low, high);
+        let mut step = 0.5;
+        for _ in 0..4 {
+            let (a, b, c) = (
+                self.difference_at((tau - step).max(low)),
+                self.difference_at(tau),
+                self.difference_at((tau + step).min(high)),
+            );
+            let curve = a - 2.0 * b + c;
+            if curve <= 0.0 {
+                break;
+            }
+            tau = (tau + step * ((a - c) / (2.0 * curve)).clamp(-1.0, 1.0)).clamp(low, high);
+            step *= 0.25;
+        }
+        Bottom {
+            lag: tau,
+            at: bottom.at,
+            depth: self.depth_at(tau).unwrap_or(bottom.depth),
+            lowered: 0.0,
+        }
+    }
+
+    /// The normalized difference at a fractional lag under `EXACT_LAG`: the
+    /// difference over its running mean from lag 1.
+    fn depth_at(&self, tau: f64) -> Option<f64> {
+        let whole = tau.floor() as usize;
+        let frac = tau - whole as f64;
+        let next = if whole < self.max_lag {
+            self.difference[whole + 1]
+        } else {
+            0.0
+        };
+        let mean = (self.cumulative[whole] + frac * next) / tau;
+        let depth = self.difference_at(tau) / mean;
+        (mean > 0.0 && depth.is_finite()).then(|| depth.clamp(0.0, 1.0))
+    }
+
+    /// The period of a short dip, found more exactly: the difference evaluated
+    /// with the signal `x` itself interpolated by the windowed sinc, over four
+    /// periods (64 samples or more) in the middle of the window, as far as it
+    /// allows. The correlation table's linear energy term can shift a short
+    /// period by a few cents; this does not.
+    fn exact(&self, x: &[f64], lag: f64) -> f64 {
         let last = (lag + 1.0).ceil() as usize + HALF;
-        // The terms whose interpolation stays within the frame, from sample HALF
-        // on: nearly the whole window. The search reads at most 4 periods (64
-        // samples or more) in their middle, as any run of whole samples serves
-        // for a periodic sound; the depth reads them all.
         let available = self.window.min(x.len().saturating_sub(last + 1 + HALF));
         let terms = available.min(((4.0 * lag) as usize).max(64));
         if terms < 4 {
-            return bottom;
+            return lag;
         }
         let first = HALF + (available - terms) / 2;
-        let difference = |tau: f64, samples: std::ops::Range<usize>| {
-            let whole = tau.floor();
-            let frac = tau - whole;
-            let whole = whole as usize;
-            let mut weights = [0.0; 2 * HALF];
-            for (i, w) in weights.iter_mut().enumerate() {
-                // Tap i reads sample whole + i + 1 - HALF, at distance t from tau.
-                let t = (i as f64 + 1.0 - HALF as f64) - frac;
-                let sinc = if t == 0.0 {
-                    1.0
-                } else {
-                    (PI * t).sin() / (PI * t)
-                };
-                let r = t / HALF as f64;
-                *w = sinc * kaiser(1.0 - r * r);
-            }
-            samples
+        let difference = |tau: f64| {
+            let whole = tau.floor() as usize;
+            let weights = kernel(tau - whole as f64);
+            (first..first + terms)
                 .map(|j| {
                     let base = j + whole + 1 - HALF;
                     let value: f64 = weights
@@ -360,14 +447,13 @@ impl Yin {
                 })
                 .sum::<f64>()
         };
-        let search = first..first + terms;
         let mut tau = lag;
         let mut step = 0.5;
         for _ in 0..3 {
             let (a, b, c) = (
-                difference(tau - step, search.clone()),
-                difference(tau, search.clone()),
-                difference(tau + step, search.clone()),
+                difference(tau - step),
+                difference(tau),
+                difference(tau + step),
             );
             let curve = a - 2.0 * b + c;
             if curve <= 0.0 {
@@ -376,23 +462,7 @@ impl Yin {
             tau += step * ((a - c) / (2.0 * curve)).clamp(-1.0, 1.0);
             step *= 0.25;
         }
-        let tau = tau.clamp((lag - 1.0).max(1.5), lag + 1.0);
-        // The depth: the whole lag's normalized difference, lowered by as much as
-        // the refinement lowers the difference over nearly the whole window, so
-        // that a sound that changes within the window is judged by all of it.
-        let all = HALF..HALF + available;
-        let at = difference(bottom.at as f64, all.clone());
-        let whole = bottom.depth + bottom.lowered;
-        let ratio = difference(tau, all) / at;
-        if !(at > 0.0 && ratio.is_finite()) {
-            return bottom;
-        }
-        Bottom {
-            lag: tau,
-            at: bottom.at,
-            depth: (whole * ratio).clamp(0.0, whole),
-            lowered: 0.0,
-        }
+        tau.clamp((lag - 0.5).max(1.5), lag + 0.5)
     }
 
     /// Whether `tau` is a local minimum with both neighbours computed.
@@ -421,9 +491,9 @@ impl Audio {
     /// that dip's period lies in the range (within 5 cents of an end, and then set
     /// to it): a tone outside the range has no pitch rather than one of its
     /// period's multiples, and so has a weak fundamental under a strong harmonic
-    /// above `max_hz`. Periods under 48 frames whose dips are near the threshold
-    /// are refined by evaluating the difference between samples before the
-    /// threshold decides; others by a parabola. Other frames have no pitch. With
+    /// above `max_hz`. Dips of periods under 48 frames are refined by evaluating
+    /// the difference between samples over the whole window before the threshold
+    /// decides; others by a parabola. Other frames have no pitch. With
     /// all channels, the mean of the channels is tracked.
     ///
     /// It is a tool for one voice: in a chord or a mix it finds the period the
@@ -517,10 +587,9 @@ impl Audio {
         }
         let size = span.next_power_of_two();
         // In u64, so that the limit is exact on 32-bit targets too. Each frame
-        // reads its span, runs three transforms of `size` and may refine up to
-        // `MAX_REFINEMENTS` short periods between samples, each a search and two
-        // evaluations over the window of 32 taps.
-        let refine = MAX_REFINEMENTS * (EXACT_WORK + 64 * window as u64);
+        // reads its span, runs three transforms of `size`, fills the correlation
+        // table and refines its short periods between samples.
+        let refine = EXACT_WORK + TABLE_WORK * window as u64;
         if (count as u64)
             .checked_mul(size as u64 * (u64::from(size.trailing_zeros()) + 1) + refine)
             .is_none_or(|n| n > MAX_PITCH_WORK)
@@ -545,19 +614,26 @@ impl Audio {
         let mut yin = Yin::new(window, top);
         let in_range = |lag: f64| (o.min_hz / margin..=o.max_hz * margin).contains(&(rate / lag));
         let pitch = |lag: f64| (rate / lag).clamp(o.min_hz, o.max_hz);
-        let mut x = vec![0.0; span];
+        // The frame, with `CONTEXT` samples of the input on each side for the
+        // interpolation of short periods, zero where the input has none.
+        let mut context = vec![0.0; span + 2 * CONTEXT];
         let silence = super::from_db(o.silence_db);
         let semitone = 2f64.powf(1.0 / 12.0);
         let mut frames = reserve(count)?;
         for start in (0..count).map(|i| i * o.hop) {
+            // Within the frame, its samples; past an input shorter than a frame,
+            // zeros, as for its context.
             let end = (start + span).min(input_frames);
-            for (j, v) in x.iter_mut().enumerate() {
-                *v = if start + j < end {
-                    signal.at(start + j)
-                } else {
-                    0.0
+            for (j, v) in context.iter_mut().enumerate() {
+                let at = (start + j).checked_sub(CONTEXT);
+                *v = match at {
+                    Some(at) if at < end || (j >= span + CONTEXT && at < input_frames) => {
+                        signal.at(at)
+                    }
+                    _ => 0.0,
                 };
             }
+            let x = &context[CONTEXT..CONTEXT + span];
             // The silence gate reads the first period with its mean removed, so
             // that a DC offset or a level stuck at one value counts as silence.
             let heard = (start + window).min(input_frames) - start;
@@ -575,44 +651,39 @@ impl Audio {
                 alternative: None,
             };
             if variance > silence * silence {
-                yin.run(&x);
-                // The dips from `from` on, refined between samples by parabolas.
-                let dips = |from: usize| {
-                    (from..=hi)
-                        .filter(|&t| yin.is_dip(t))
-                        .map(|t| yin.bottom(t))
-                };
+                yin.run(x);
+                yin.correlate(&context);
+                // The dips from `from` on: a short period's refined between samples
+                // over the whole window, as a parabola misjudges it in place and
+                // depth; a longer one by its parabola.
+                let all: Vec<Bottom> = (2..=hi)
+                    .filter(|&t| yin.is_dip(t))
+                    .map(|t| {
+                        let b = yin.bottom(t);
+                        if b.lag < EXACT_LAG { yin.between(b) } else { b }
+                    })
+                    .collect();
+                let dips = |from: usize| all.iter().copied().filter(move |b| b.at >= from);
                 // YIN's choice: the first dip below the threshold, from the shortest
                 // lag. When its period lies outside the range, the frame has no
-                // pitch, rather than one of the period's multiples. A short period's
-                // dip whose parabola puts it near the threshold is first refined
-                // between samples, at most `MAX_REFINEMENTS` a frame, as the work
-                // limit counts: the parabola misjudges short periods.
-                let mut refinements = 0;
-                let mut first = None;
-                for b in dips(2) {
-                    let b = if b.lag < EXACT_LAG
-                        && b.depth < (o.threshold + REFINE_MARGIN).max(REFINE_BELOW)
-                        && refinements < MAX_REFINEMENTS
-                    {
-                        refinements += 1;
-                        yin.exact(&x, b)
-                    } else {
-                        b
-                    };
-                    if b.depth < o.threshold {
-                        first = Some(b);
-                        break;
+                // pitch, rather than one of the period's multiples.
+                let first = dips(2).find(|b| b.depth < o.threshold);
+                if let Some(mut chosen) = first.filter(|b| in_range(b.lag)) {
+                    // A short period's place, found more exactly once.
+                    if chosen.lag < EXACT_LAG {
+                        let lag = yin.exact(x, chosen.lag);
+                        if let Some(depth) = yin.depth_at(lag) {
+                            chosen.lag = lag;
+                            chosen.depth = depth;
+                        }
                     }
-                }
-                if let Some(chosen) = first.filter(|b| in_range(b.lag)) {
                     frame.state = PitchState::Voiced;
                     frame.frequency_hz = Some(pitch(chosen.lag));
                     frame.confidence = (1.0 - chosen.depth).clamp(0.0, 1.0);
                     // The other octave: the deepest dip in the range within a
                     // semitone of half or twice the period. Twice the period, which
                     // any periodic sound repeats at, counts only when deeper than the
-                    // pitch by more than 0.01 and the refinement's uncertainty.
+                    // pitch by more than 0.01 and the parabola's uncertainty.
                     let octave = |b: &Bottom, k: f64| {
                         let r = b.lag / (chosen.lag * k);
                         r.max(1.0 / r) < semitone
@@ -667,6 +738,46 @@ impl Audio {
             frames,
         })
     }
+}
+
+/// Steps of the fractional offset at which the sinc's taps are kept.
+const KERNEL_STEPS: usize = 1024;
+
+/// The windowed-sinc taps for a fractional offset `frac` in 0..1: tap i weighs
+/// the sample i + 1 - HALF whole steps from the floor. They are computed once at
+/// `KERNEL_STEPS` offsets and interpolated linearly between them, within about
+/// 1e-7.
+fn kernel(frac: f64) -> [f64; 2 * HALF] {
+    static TABLE: std::sync::OnceLock<Vec<[f64; 2 * HALF]>> = std::sync::OnceLock::new();
+    let table = TABLE.get_or_init(|| {
+        (0..=KERNEL_STEPS)
+            .map(|s| exact_kernel(s as f64 / KERNEL_STEPS as f64))
+            .collect()
+    });
+    let at = frac.clamp(0.0, 1.0) * KERNEL_STEPS as f64;
+    let step = (at.floor() as usize).min(KERNEL_STEPS - 1);
+    let t = at - step as f64;
+    let (a, b) = (&table[step], &table[step + 1]);
+    let mut weights = [0.0; 2 * HALF];
+    for (i, w) in weights.iter_mut().enumerate() {
+        *w = a[i] + t * (b[i] - a[i]);
+    }
+    weights
+}
+
+fn exact_kernel(frac: f64) -> [f64; 2 * HALF] {
+    let mut weights = [0.0; 2 * HALF];
+    for (i, w) in weights.iter_mut().enumerate() {
+        let t = (i as f64 + 1.0 - HALF as f64) - frac;
+        let sinc = if t == 0.0 {
+            1.0
+        } else {
+            (PI * t).sin() / (PI * t)
+        };
+        let r = t / HALF as f64;
+        *w = sinc * kaiser(1.0 - r * r);
+    }
+    weights
 }
 
 /// A Kaiser window (β = 8) at `u` = 1 − r², with r the distance from its middle

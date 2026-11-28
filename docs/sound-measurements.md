@@ -168,16 +168,17 @@ fn melody(voice: &Audio) -> Result<()> {
   difference function, which is symmetric about a whole period, unlike the
   normalized one: within 0.1 cents for sines and about 1 cent for rich tones
   there, 2 cents just above 48 samples at the most. A parabola misjudges shorter
-  periods, in place and in depth, so a dip of one (from 2 samples) whose
-  parabola puts it below 0.6, or the threshold plus 0.3 if higher, in the range
-  or above it, is refined first, before the threshold decides, up to three a
-  frame. The difference is evaluated between samples, with the signal
-  interpolated by a 32-tap Kaiser-windowed sinc: the period is found over four
-  periods, or 64 samples if longer, in the middle of the window as far as it
-  allows. The dip's depth is its whole lag's normalized difference, lowered by as
-  much as the refinement lowers the difference over nearly the whole window, so
-  a sound that changes within the window, as an attack, is judged by all of it.
-  That is
+  periods, in place and in depth, so every dip of one (from 2 samples), in the
+  range or above it, is refined before the threshold decides: the difference
+  over the whole window is evaluated between samples, its correlation term
+  interpolated from the whole lags' by a 32-tap Kaiser-windowed sinc (the
+  correlation of the window with a band-limited sound is band-limited too) and
+  its energy term linearly, which errs by about 1 / window of it. The depth is
+  read there, normalized as at whole lags, so a sound that changes within the
+  window, as an attack, is judged by all of it. The chosen pitch's period is
+  then found once more exactly, with the signal itself interpolated by the same
+  sinc over four periods, or 64 samples if longer, in the middle of the window
+  as far as it allows. That is
   within 0.03 cents for sines and harmonic tones in the tests, as long as the
   sound has no strong content within a tenth of the Nyquist frequency, which no
   interpolation follows. An estimate within 5 cents past an end of the range is
@@ -206,18 +207,22 @@ fn melody(voice: &Audio) -> Result<()> {
 It is a tool for one voice, not melody extraction: in a chord it finds the period
 the notes repeat at together (a fifth on 220 and 330 Hz gives 110 Hz), or a lower
 confidence when they share none, and it does not choose a part in a mix. Note
-names and quantization are the caller's.
+names and quantization are the caller's. Like any YIN tracker, it can take a
+period that only a sound's strongest harmonics repeat at when they outweigh a
+weak fundamental: with the 6th and 7th harmonics 4 to 5 dB above it, a low note
+can be read at 7/6 of its pitch, and a note whose 6th harmonic dominates at 6/5.
 
 Bad options, a missing channel, a range outside the input and non-finite samples
 return `InvalidArgument`. `min_hz` is at least `sample_rate / MAX_PITCH_LAG`
 (8192) and `max_hz` at most `sample_rate / MIN_PITCH_LAG` (8). The default
 `Limits` apply, plus at most `MAX_PITCH_FRAMES` (1,048,576) frames and
-`MAX_PITCH_WORK` (2³⁵, a work estimate of frames × (L × (log₂ L + 1) + 3 × (2¹⁶ +
-64 × W)), with L the power of two at or above the frame's span, W the integration
-window, and for each of up to three refinements a search and two evaluations
-over the window),
+`MAX_PITCH_WORK` (2³⁵, a work estimate of frames × (L × (log₂ L + 1) + 2¹⁷ +
+34 × W), with L the power of two at or above the frame's span, W the
+integration window, 2¹⁷ for refining short periods between samples and 34 × W
+for the correlations that needs beyond the transforms'),
 counted before any frame is measured, or `LimitExceeded`. Ten minutes at
-48 kHz from 60 Hz to 2 kHz every 10 ms is about 22 billion. Several channels
+48 kHz from 60 Hz to 2 kHz every 10 ms is about 11 billion (about 11 s here for
+a high-pitched sound). Several channels
 are mixed once, into one buffer of the input's length. Silent frames skip the
 transforms. The FFT uses the platform's math, so pitches are for reports and
 not bit-identical across hosts; the tests' tolerances (5 cents for steady
