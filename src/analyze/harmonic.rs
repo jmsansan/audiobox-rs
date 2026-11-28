@@ -26,8 +26,8 @@ pub struct HarmonicOptions {
     /// Samples per analysis frame: a power of two from 16 to 1048576,
     /// Hann-windowed as [`super::spectrum`] does.
     pub fft_size: usize,
-    /// Frames between the starts of analysis frames, from 1 to `fft_size`, so that
-    /// the frames leave no gap.
+    /// Frames between the starts of analysis frames, from 1 to `fft_size / 2`, so
+    /// that the Hann windows overlap by half or more and leave no blind spot.
     pub hop: usize,
     /// How far from each harmonic its band reaches, in cents below and above it
     /// (finite, at least 0). Each side of the band is at least 2 bins wide, the
@@ -102,9 +102,11 @@ pub struct HarmonicEnergy {
     /// other bins, and the shares say more about the cut than the sound.
     pub padded: bool,
     /// The bins the fundamental spans, `fundamental_hz / (sample_rate / fft_size)`:
-    /// how finely the window separates frequencies. [`HARMONIC_BINS`] (24) or more
-    /// keep a partial a sixth of the fundamental from a low harmonic out of its
-    /// band; fewer resolve less (a short range gets fewer). The bands themselves
+    /// how finely the window separates frequencies. At the default 25 cents,
+    /// [`HARMONIC_BINS`] (24) or more keep a partial a sixth of the fundamental from
+    /// a low harmonic out of its
+    /// band; fewer resolve less (a short range gets fewer), and wider bands hold
+    /// more of it (at 100 cents, most of it near the third harmonic). The bands
     /// widen with the harmonic: at 25 cents, from the 12th harmonic on, a band is
     /// wider than a sixth of the fundamental.
     pub fundamental_bins: f64,
@@ -181,9 +183,9 @@ impl Audio {
                 "Fundamental must be at least 8 FFT bins and below half the sample rate",
             ));
         }
-        if o.hop == 0 || o.hop > o.fft_size {
+        if o.hop == 0 || o.hop > o.fft_size / 2 {
             return Err(Error::invalid(
-                "Harmonic hop must be from 1 to the FFT size, so that frames cover the range",
+                "Harmonic hop must be from 1 to half the FFT size, so that windows overlap",
             ));
         }
         if !(o.tolerance_cents.is_finite() && o.tolerance_cents >= 0.0) {

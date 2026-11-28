@@ -313,7 +313,8 @@ fn inharmonicity(note: &Audio) -> Result<()> {
   then spread its energy over other bins, so the shares say more about the cut
   than the sound (a clean quarter second of 41.2 Hz is padded at 48 kHz). The
   fields can be set by hand; the fundamental must then be at least 8 bins, and
-  the hop at most a frame, so that frames leave no gap.
+  the hop at most half a frame, so that the windows overlap by half or more and
+  leave no blind spot between them.
 - **Energy.** The Hann-windowed one-sided power spectrum, from the magnitudes of
   `analyze::spectrum` (half an interior bin's magnitude squared, all of it at
   Nyquist, so that a sine and a Nyquist component of the same RMS weigh the

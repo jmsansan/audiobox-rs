@@ -411,10 +411,10 @@ fn the_tail_of_a_range_is_measured() {
 
 #[test]
 fn frames_cover_the_range_and_the_shares_grow_smoothly() {
-    // A hop longer than a frame would leave gaps.
+    // A hop longer than half a frame would leave blind spots between windows.
     let audio = mono(partials(&[(220.0, 0.5)], 20_000));
     let gappy = HarmonicOptions {
-        hop: 8193,
+        hop: 4097,
         ..HarmonicOptions::new(220.0, RATE, 0..20_000)
     };
     assert_eq!(
